@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>DragonMap — dev</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #1a1f2b; color: #e8e8e8; font-family: system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; }
+
+      .hud {
+        position: fixed; top: 12px; left: 12px; z-index: 10;
+        background: rgba(0,0,0,0.45); padding: 8px 12px; border-radius: 6px;
+        font-size: 12px; line-height: 1.5; pointer-events: none;
+      }
+
+      /* Compact theme dock — collapses to a swatch chip, blooms to a card. */
+      .theme-dock {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        z-index: 10;
+        width: 96px;
+        height: 40px;
+        background: rgba(255, 255, 255, 0.96);
+        color: #0f172a;
+        border-radius: 12px;
+        box-shadow:
+          0 1px 2px rgba(15, 23, 42, 0.06),
+          0 12px 28px rgba(15, 23, 42, 0.14);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        transition:
+          width 260ms cubic-bezier(0.16, 1, 0.3, 1),
+          height 260ms cubic-bezier(0.16, 1, 0.3, 1),
+          box-shadow 260ms ease-out;
+      }
+      .theme-dock[data-expanded="true"] {
+        width: 312px;
+        height: min(560px, calc(100vh - 32px));
+        box-shadow:
+          0 1px 2px rgba(15, 23, 42, 0.04),
+          0 20px 44px rgba(15, 23, 42, 0.22);
+      }
+
+      .theme-trigger {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        height: 40px;
+        padding: 6px 10px 6px 6px;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        font: inherit;
+        color: inherit;
+        text-align: left;
+        flex-shrink: 0;
+        transition: border-color 200ms ease-out;
+      }
+      .theme-dock[data-expanded="true"] .theme-trigger {
+        height: 44px;
+        padding: 8px 14px;
+        border-bottom: 1px solid #e5e7eb;
+        background: linear-gradient(180deg, #f9fafb 0%, #ffffff 100%);
+      }
+      .theme-trigger-swatches {
+        flex: 1;
+        display: flex;
+        height: 28px;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .theme-trigger-swatches span { flex: 1; }
+      /* When expanded, swap the swatch preview for a clear "Themes" header so
+         the trigger row reads as a panel header rather than another theme card. */
+      .theme-trigger-title {
+        display: none;
+        flex: 1;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: #0f172a;
+      }
+      .theme-dock[data-expanded="true"] .theme-trigger-swatches { display: none; }
+      .theme-dock[data-expanded="true"] .theme-trigger-title { display: block; }
+      .theme-trigger-chevron {
+        font-size: 12px;
+        color: #6b7280;
+        transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .theme-dock[data-expanded="true"] .theme-trigger-chevron {
+        transform: rotate(180deg);
+        color: #3b82f6;
+      }
+
+      .theme-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        /* Generous padding (esp. top) so the active card's blue glow shadow
+           isn't clipped by the dock's overflow: hidden. */
+        padding: 24px 20px 24px;
+        overflow-y: auto;
+        flex: 1;
+        min-height: 0;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 160ms ease-out 80ms;
+      }
+      .theme-dock[data-expanded="true"] .theme-grid {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .theme-btn {
+        position: relative;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 0;
+        cursor: pointer;
+        overflow: hidden;
+        background: #ffffff;
+        aspect-ratio: 16 / 9;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+        transition:
+          transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+          box-shadow 160ms ease-out,
+          border-color 160ms ease-out;
+      }
+      .theme-btn:hover {
+        transform: translateY(-2px);
+        border-color: #cbd5f5;
+        box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16);
+      }
+      .theme-btn:focus-visible {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.35);
+      }
+      .theme-btn.active {
+        border-color: #3b82f6;
+        box-shadow:
+          0 0 0 2px rgba(59, 130, 246, 0.45),
+          0 6px 14px rgba(59, 130, 246, 0.20);
+      }
+      .theme-btn.active::after {
+        content: '✓';
+        position: absolute;
+        top: 6px;
+        right: 7px;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #3b82f6;
+        color: white;
+        font-size: 11px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 2px 6px rgba(59, 130, 246, 0.45);
+      }
+
+      .theme-swatches { display: flex; height: 100%; }
+      .theme-swatches span {
+        flex: 1;
+        transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .theme-btn:hover .theme-swatches span:nth-child(odd) { transform: translateY(-2px); }
+      .theme-btn:hover .theme-swatches span:nth-child(even) { transform: translateY(2px); }
+
+      .theme-label {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: linear-gradient(
+          to top,
+          rgba(15, 23, 42, 0.78) 0%,
+          rgba(15, 23, 42, 0.30) 70%,
+          rgba(15, 23, 42, 0) 100%
+        );
+        color: white;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 4px 8px;
+        text-align: left;
+        letter-spacing: 0.02em;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div class="hud" id="hud" aria-hidden="true">
+      <div id="hud-fps">— fps</div>
+      <div id="hud-tier">tier: —</div>
+    </div>
+
+    <div class="theme-dock" id="theme-dock" data-expanded="false">
+      <button class="theme-trigger" id="theme-trigger" aria-expanded="false" aria-controls="theme-grid" aria-label="Themes">
+        <span class="theme-trigger-swatches" id="theme-trigger-swatches"></span>
+        <span class="theme-trigger-title">Themes</span>
+        <span class="theme-trigger-chevron" aria-hidden="true">▾</span>
+      </button>
+      <div class="theme-grid" id="theme-grid"></div>
+    </div>
+
+    <script type="module" src="/examples/basic/main.ts"></script>
+  </body>
+</html>
