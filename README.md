@@ -366,7 +366,7 @@ The dispatcher is **frustum-aware**: each frame, the camera's four screen corner
 | `visibleRadius` | `3` | tier-0 priority radius around camera target |
 | `tileWindowRadius` / `tileWindowRadiusFar` | `6` / `6` | safety cap on tile count when the camera looks near horizon (radius from target) |
 | `workerPoolSize` | `min(4, hardwareConcurrency − 1)` | 3–4 worker threads |
-| `maxTileApplyMsPerFrame` | `6` | per-frame ms budget for applying decoded tiles to the scene |
+| `maxTileApplyMsPerFrame` | `3` | per-frame ms budget for applying decoded tiles to the scene |
 | `dispatchInterval` | `4` | heavy visibility/dispatch pass runs every N-th RAF tick (≈ 15 Hz at 60 FPS) |
 
 Two-tier within the bbox:

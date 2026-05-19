@@ -33,12 +33,16 @@ const DEFAULT_VISIBLE_RADIUS = 3;
  * many times more work than a sparse-ocean tile, and capping by count blew
  * the frame budget on big viewports during initial load.
  *
- * 6 ms keeps one frame's apply work comfortably under a 16.67 ms budget
- * even paired with render, input, and other RAF work. The loop always
- * applies at least one tile per frame so the queue can't stall when a
- * single build happens to exceed the budget.
+ * 3 ms (was 6) — workers can produce decoded tiles faster than the main
+ * thread can usefully *visualize* them. With a 6 ms budget two or three
+ * tiles pop in during the same RAF, and the eye reads it as a single jarring
+ * flash. Halving the budget spreads the same set of tiles across roughly
+ * twice as many frames, giving a smoother cascade fill without slowing the
+ * underlying decode pipeline. The loop always applies at least one tile per
+ * frame so the queue can't stall when a single build happens to exceed the
+ * budget.
  */
-const DEFAULT_APPLY_BUDGET_MS = 6;
+const DEFAULT_APPLY_BUDGET_MS = 3;
 /**
  * Run the heavy visibility/dispatch/evict pass every N-th RAF tick.
  *

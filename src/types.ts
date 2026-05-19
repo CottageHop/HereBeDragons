@@ -150,7 +150,7 @@ export interface HereBeDragonsOptions {
    *     target dispatch first — roughly the on-screen viewport at z=15)
    *   - `tileWindowRadius`: 10 (21×21 pre-loaded buffer for fast panning)
    *   - `tileWindowRadiusFar`: 14 (peripheral ring; ~777 tiles total)
-   *   - `maxTileApplyMsPerFrame`: 6 (per-frame ms budget for applying
+   *   - `maxTileApplyMsPerFrame`: 3 (per-frame ms budget for applying
    *     decoded tiles to the scene; the loop applies tiles closest to the
    *     camera first and yields once the budget is spent)
    *
