@@ -941,6 +941,16 @@ export class TileManager {
     this.spawnDurationMs = Math.max(0, ms);
   }
 
+  /**
+   * Depth of the apply queue — phase responses waiting to be turned into
+   * meshes. Non-zero means the renderer is in the middle of a load burst;
+   * the main loop reads this to suspend the outline pipeline during heavy
+   * GPU upload pressure.
+   */
+  getApplyQueueDepth(): number {
+    return this.applyQueue.length;
+  }
+
   getSpawnDurationMs(): number {
     return this.spawnDurationMs;
   }

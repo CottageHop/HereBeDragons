@@ -925,6 +925,13 @@ class HereBeDragonsImpl implements HereBeDragons {
         this.composer.setCloudTime(this.cloudTime);
         this.composer.setNoiseTime(this.cloudTime);
         this.updateFogForTilt();
+        // Drop the normal+outline pipeline while the tile-apply queue is
+        // non-empty. During a load burst the GPU process is already
+        // saturated uploading new vertex buffers; doing a second full-scene
+        // render for the normal target on top of that is what produces the
+        // visible stutter on the load. Outlines reappear within one frame
+        // of the load completing.
+        this.composer.setOutlineSuspended(this.tileManager.getApplyQueueDepth() > 0);
         this.composer.render();
         // Tag/popup DOM overlays only need repositioning when something
         // moved — gate them with the render so a static idle scene does
