@@ -5,8 +5,10 @@ A 3D vector map for the web. Stylized buildings, drifting volumetric clouds, ray
 **[Live demo →](https://cottagehop.github.io/HereBeDragons/)** &nbsp;·&nbsp; [with Studio](https://cottagehop.github.io/HereBeDragons/?studio=1) &nbsp;·&nbsp; [with demo polygons](https://cottagehop.github.io/HereBeDragons/?polygons=1)
 
 ```
-npm install @cottagehop/here-be-dragons three
+npm install github:cottagehop/HereBeDragons three
 ```
+
+Installed straight from GitHub: npm builds the library on install (via the `prepare` script), so you get `dist/` with bundled JS and type declarations. The package name stays `@cottagehop/here-be-dragons`, so imports are unchanged. Pin a specific release with `github:cottagehop/HereBeDragons#v0.1.0`.
 
 `three` is a peer dependency install it explicitly so your bundler dedupes it with anything else that uses three.
 

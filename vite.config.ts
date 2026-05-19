@@ -29,6 +29,9 @@ export default defineConfig(({ mode }) => {
             formats: ['es'],
             fileName: () => 'index.js'
           },
+          // The library ships no static assets — keep the 13 MB demo
+          // public/tiles.pmtiles out of the published dist/.
+          copyPublicDir: false,
           sourcemap: true,
           rollupOptions: {
             external: ['three']

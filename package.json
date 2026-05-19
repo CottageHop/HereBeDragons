@@ -22,6 +22,7 @@
     "dev": "vite",
     "build": "vite build --mode lib && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "build:demo": "vite build",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -30,11 +31,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/catmullet/HereBeDragons.git"
+    "url": "git+https://github.com/cottagehop/HereBeDragons.git"
   },
-  "homepage": "https://github.com/catmullet/HereBeDragons",
+  "homepage": "https://github.com/cottagehop/HereBeDragons#readme",
   "bugs": {
-    "url": "https://github.com/catmullet/HereBeDragons/issues"
+    "url": "https://github.com/cottagehop/HereBeDragons/issues"
   },
   "author": "Robert Catmull <robert.catmull@realtorhop.com>",
   "peerDependencies": {
