@@ -5,6 +5,15 @@ import type {
   DecodeErrorResponse,
   WorkerMessageOut
 } from './worker/decodeProtocol.js';
+// Inline the decode worker (base64) into the bundle. The previous
+// `new Worker(new URL('./worker/decode.worker.ts', import.meta.url))` pattern
+// made Vite emit the worker as a SEPARATE `dist/assets/decode.worker-*.js`
+// chunk referenced by a runtime-computed URL. That breaks any downstream
+// bundler (Nuxt/Vite/Rollup) consuming the published package: the build either
+// can't resolve the path or doesn't copy the worker file, so it 404s at
+// runtime. Inlining makes the package self-contained for every consumer.
+// `?worker&inline` is typed by `vite/client` (already in tsconfig types).
+import DecodeWorker from './worker/decode.worker.ts?worker&inline';
 
 interface Pending {
   /**
@@ -44,7 +53,7 @@ export class TileWorkerPool {
     const detected = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 2;
     const n = Math.max(1, options.size ?? Math.min(4, (detected ?? 2) - 1));
     for (let i = 0; i < n; i++) {
-      const worker = new Worker(new URL('./worker/decode.worker.ts', import.meta.url), { type: 'module' });
+      const worker = new DecodeWorker();
       worker.onmessage = (e: MessageEvent<WorkerMessageOut>) => this.onMessage(e.data);
       worker.onerror = (e) => {
         console.error('[HereBeDragons] worker error', e.message);
