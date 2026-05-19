@@ -10,6 +10,13 @@ export class Renderer {
   readonly three: THREE.WebGLRenderer;
   readonly dom: HTMLCanvasElement;
   private container: HTMLElement;
+  // Cached container dimensions. `clientWidth`/`clientHeight` are live DOM
+  // properties — every read forces the browser to flush pending style + layout
+  // synchronously. Per-frame callers (LabelsLayer.update, TagsManager.update)
+  // were each triggering one or more reflows every RAF. We refresh these in
+  // `resize()` and serve cached values from `get width()` / `get height()`.
+  private _width = 0;
+  private _height = 0;
 
   constructor(container: HTMLElement, options: RendererOptions = {}) {
     this.container = container;
@@ -50,16 +57,18 @@ export class Renderer {
   }
 
   get width(): number {
-    return this.container.clientWidth;
+    return this._width;
   }
 
   get height(): number {
-    return this.container.clientHeight;
+    return this._height;
   }
 
   resize(): void {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
+    this._width = w;
+    this._height = h;
     this.three.setSize(w, h, false);
   }
 
