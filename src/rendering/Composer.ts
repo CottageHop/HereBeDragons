@@ -216,7 +216,7 @@ export class Composer {
     this.noise.setSources(sources);
   }
 
-  /** Drive the heat-map ring animation. DragonMap passes the cloud time. */
+  /** Drive the heat-map ring animation. HereBeDragons passes the cloud time. */
   setNoiseTime(t: number): void {
     this.noise.setTime(t);
   }

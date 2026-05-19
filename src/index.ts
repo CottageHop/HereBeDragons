@@ -1,14 +1,14 @@
-export { createDragonMap } from './DragonMap.js';
+export { createHereBeDragons } from './HereBeDragons.js';
 export { THEMES, THEME_NAMES } from './themes.js';
 export type { ThemeColors, ThemeName } from './themes.js';
 export type {
-  DragonMapOptions,
-  DragonMap,
+  HereBeDragonsOptions,
+  HereBeDragons,
   LayerName,
   LayerConfig,
   CameraView,
   FlyToOptions,
-  DragonMapEventName,
+  HereBeDragonsEventName,
   TileLoadEvent,
   TileErrorEvent,
   NoiseSource,

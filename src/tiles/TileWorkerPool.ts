@@ -47,7 +47,7 @@ export class TileWorkerPool {
       const worker = new Worker(new URL('./worker/decode.worker.ts', import.meta.url), { type: 'module' });
       worker.onmessage = (e: MessageEvent<WorkerMessageOut>) => this.onMessage(e.data);
       worker.onerror = (e) => {
-        console.error('[DragonMap] worker error', e.message);
+        console.error('[HereBeDragons] worker error', e.message);
       };
       this.workers.push(worker);
     }

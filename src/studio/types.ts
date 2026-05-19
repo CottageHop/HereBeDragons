@@ -1,4 +1,4 @@
-import type { DragonMapOptions, LayerName } from '../types.js';
+import type { HereBeDragonsOptions, LayerName } from '../types.js';
 import type { ThemeColors } from '../themes.js';
 
 /** Options accepted by `createMapStudio(map, options?)`. */
@@ -22,11 +22,11 @@ export interface StudioOptions {
    */
   themes?: string[];
   /**
-   * Original `DragonMapOptions` (or relevant subset) used to bootstrap the
+   * Original `HereBeDragonsOptions` (or relevant subset) used to bootstrap the
    * map. Populates the exported config's non-queryable fields (pmtiles_url,
-   * pixelRatio, background) so the JSON round-trips into createDragonMap.
+   * pixelRatio, background) so the JSON round-trips into createHereBeDragons.
    */
-  initialConfig?: Partial<DragonMapOptions>;
+  initialConfig?: Partial<HereBeDragonsOptions>;
   /**
    * Optional callback for "Export" — receives the JSON config that would be
    * downloaded. Return `false` to suppress the default file-download behavior.
@@ -35,13 +35,13 @@ export interface StudioOptions {
 }
 
 /**
- * JSON snapshot emitted by the studio. Same shape as `DragonMapOptions` —
- * pass it straight into `createDragonMap(container, config)` and the
+ * JSON snapshot emitted by the studio. Same shape as `HereBeDragonsOptions` —
+ * pass it straight into `createHereBeDragons(container, config)` and the
  * declarative `theme` / `customColors` / `clouds` / `compass` fields get
  * applied automatically. The alias exists as a distinct name so application
  * code can label "this came from Studio" vs. "this is hand-built options."
  */
-export type StudioConfig = DragonMapOptions;
+export type StudioConfig = HereBeDragonsOptions;
 
 /** Handle returned by `createMapStudio()`. */
 export interface MapStudio {

@@ -60,13 +60,13 @@ interface ClusterRecord {
 const DEFAULT_MERGE_DISTANCE = 60;
 
 export interface TagsManagerDeps {
-  /** Container element (the same one passed to createDragonMap). */
+  /** Container element (the same one passed to createHereBeDragons). */
   container: HTMLElement;
   renderer: Renderer;
   camera: MapCameraController;
   projection: Projection;
   /**
-   * Called when a tag opens its modal. DragonMap wires this to
+   * Called when a tag opens its modal. HereBeDragons wires this to
    * BuildingsManager so a tag's `buildingId`/`floor` highlights the
    * associated building. Pass `null` to clear any active highlight.
    */
@@ -81,7 +81,7 @@ export interface TagsManagerDeps {
    */
   resolveAutoElevation?: (lon: number, lat: number) => number | null;
   /**
-   * Called when a tag with `floor !== undefined` opens its modal. DragonMap
+   * Called when a tag with `floor !== undefined` opens its modal. HereBeDragons
    * wires this to the camera controller so a floor-specific badge centers,
    * zooms in, and tilts the camera down to better reveal the building's
    * vertical structure. Receives the tag's coords + floor + the badge's
@@ -94,7 +94,7 @@ export interface TagsManagerDeps {
   ) => void;
   /**
    * Called when a floor-tagged modal closes (or is swapped out for another).
-   * The DragonMap implementation restores the full camera view (lat /
+   * The HereBeDragons implementation restores the full camera view (lat /
    * lon / zoom / tilt / bearing) to what it was before `onFloorBadgeOpen`.
    */
   onFloorBadgeClose?: () => void;
@@ -140,7 +140,7 @@ export class TagsManager {
   /**
    * While true, the per-frame auto-close check (anchor tag drifted off-screen
    * or got clustered) is suppressed. Manual closes (close button, click
-   * outside) still work. DragonMap sets this true around its floor-badge
+   * outside) still work. HereBeDragons sets this true around its floor-badge
    * fly-to so intermediate animation frames — which can briefly project the
    * badge out of frustum or re-cluster it — don't trigger a spurious close.
    */
@@ -226,7 +226,7 @@ export class TagsManager {
   }
 
   // -------------------------------------------------------------------------
-  // Public API (called via DragonMap forwarding methods)
+  // Public API (called via HereBeDragons forwarding methods)
   // -------------------------------------------------------------------------
 
   addTag(options: TagOptions): TagHandle {
@@ -396,7 +396,7 @@ export class TagsManager {
 
   /**
    * Toggle the per-frame "anchor tag drifted out of view → close modal" check.
-   * Used by DragonMap to keep the modal open across the duration of a
+   * Used by HereBeDragons to keep the modal open across the duration of a
    * floor-badge fly-to (intermediate animation frames can briefly fall
    * outside the visibility predicate). Manual close paths (close-button,
    * click-outside, switching to another tag) are unaffected.
@@ -407,7 +407,7 @@ export class TagsManager {
 
   /**
    * Drop all cached auto-elevations so they're recomputed on the next frame.
-   * DragonMap calls this on tile load (new buildings may now sit under a
+   * HereBeDragons calls this on tile load (new buildings may now sit under a
    * tag) and on the buildings layer toggling on/off.
    */
   invalidateAutoElevations(): void {
@@ -571,13 +571,13 @@ export class TagsManager {
     this.updateModalPosition();
 
     // Notify the building-highlight system if this tag is anchored to a
-    // building. The handler is wired by DragonMap → BuildingsManager.
+    // building. The handler is wired by HereBeDragons → BuildingsManager.
     if (this.onBuildingHighlight && entry.options.buildingId) {
       this.onBuildingHighlight(entry.options.buildingId, entry.options.floor);
     }
     // Floor-tagged badge: ask the host to center + zoom + tilt the camera
     // so the building's vertical structure (highlighted floor band) is
-    // actually visible. DragonMap saves the full view and restores it
+    // actually visible. HereBeDragons saves the full view and restores it
     // on close.
     //
     // The badge's EFFECTIVE elevation (the Y the badge is actually drawn

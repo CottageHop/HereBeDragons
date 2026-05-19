@@ -1,4 +1,4 @@
-import type { DragonMap } from '../types.js';
+import type { HereBeDragons } from '../types.js';
 import { injectCompassStylesOnce } from './compassStyles.js';
 
 /**
@@ -13,12 +13,12 @@ import { injectCompassStylesOnce } from './compassStyles.js';
 export class Compass {
   readonly element: HTMLDivElement;
   private needle: HTMLDivElement;
-  private map: DragonMap;
+  private map: HereBeDragons;
   private rafHandle = 0;
   private destroyed = false;
   private lastBearing = NaN;
 
-  constructor(map: DragonMap, container: HTMLElement) {
+  constructor(map: HereBeDragons, container: HTMLElement) {
     this.map = map;
     injectCompassStylesOnce();
 

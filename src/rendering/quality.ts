@@ -9,7 +9,7 @@
 import { logger } from '../util/log.js';
 
 export type QualityLevel = 'low' | 'high';
-/** Value accepted by `DragonMapOptions.quality`. `'auto'` detects the GPU. */
+/** Value accepted by `HereBeDragonsOptions.quality`. `'auto'` detects the GPU. */
 export type QualityOption = QualityLevel | 'auto';
 
 export interface QualityProfile {

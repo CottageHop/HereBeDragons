@@ -10,7 +10,7 @@ export function setLogLevel(level: Level): void {
 
 function log(level: Level, args: unknown[]): void {
   if (order[level] < order[currentLevel]) return;
-  const prefix = `[DragonMap]`;
+  const prefix = `[HereBeDragons]`;
   const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
   fn(prefix, ...args);
 }

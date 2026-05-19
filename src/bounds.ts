@@ -2,7 +2,7 @@ import type { BoundingBox } from './types.js';
 
 /**
  * Common country and US-state bounding boxes for use with
- * `DragonMapOptions.bounds`. Values are approximate, sourced from public
+ * `HereBeDragonsOptions.bounds`. Values are approximate, sourced from public
  * GIS bounding-box data, and rounded to 1 decimal so the table stays small.
  *
  * Countries that cross the antimeridian (e.g. Russia, New Zealand, Fiji) are

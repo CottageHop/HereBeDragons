@@ -1,4 +1,4 @@
-# DragonMap
+# HereBeDragons
 
 A 3D vector map for the web — stylized buildings, animated water, drifting volumetric clouds, raymarched lighting. Reads PMTiles vector archives, renders with three.js. Drops into a single `<div>` with one function call.
 
@@ -20,9 +20,9 @@ npm install @cottagehop/here-be-dragons three
   <body>
     <div id="app" style="position: fixed; inset: 0;"></div>
     <script type="module">
-      import { createDragonMap } from '@cottagehop/here-be-dragons';
+      import { createHereBeDragons } from '@cottagehop/here-be-dragons';
 
-      const map = await createDragonMap(document.getElementById('app'), {
+      const map = await createHereBeDragons(document.getElementById('app'), {
         center: { lat: 40.7065, lon: -74.009 },
         zoom: 15,
         pmtiles_url: 'https://your-tiles.example.com/tiles.pmtiles'
@@ -43,20 +43,20 @@ The fastest workflow:
 1. Open the demo with `?studio=1` (or call `createMapStudio(map, ...)` in your code).
 2. Pick a theme, drag the camera sliders, tweak colors, toggle layers — everything is live.
 3. Click **Export JSON**. The browser downloads `here-be-dragons.config.json`.
-4. On your real site, fetch that JSON and pass it straight to `createDragonMap`:
+4. On your real site, fetch that JSON and pass it straight to `createHereBeDragons`:
 
 ```js
-import { createDragonMap } from '@cottagehop/here-be-dragons';
+import { createHereBeDragons } from '@cottagehop/here-be-dragons';
 
 const config = await fetch('/map-config.json').then((r) => r.json());
-await createDragonMap(document.getElementById('app'), config);
+await createHereBeDragons(document.getElementById('app'), config);
 ```
 
-The exported JSON is a literal `DragonMapOptions` value — `theme`, `customColors`, `clouds`, `compass`, layer toggles, camera position, all of it. `createDragonMap` applies the declarative fields automatically. **No imperative `applyTheme` / `setCloudsOpacity` / etc. calls are needed.**
+The exported JSON is a literal `HereBeDragonsOptions` value — `theme`, `customColors`, `clouds`, `compass`, layer toggles, camera position, all of it. `createHereBeDragons` applies the declarative fields automatically. **No imperative `applyTheme` / `setCloudsOpacity` / etc. calls are needed.**
 
 ---
 
-## Options reference (`DragonMapOptions`)
+## Options reference (`HereBeDragonsOptions`)
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -100,10 +100,10 @@ layers: {
 Built-in `ThemeName` values: `'cottagecore'`, `'cottagecoredark'`, `'modern'`, `'greyscale'`, `'dark'`, `'cyberpunk'`, `'eighties'`, `'seventies'`, `'oldworld'`, `'middleearth'`, `'concretejungle'`, `'comic'`.
 
 ```js
-import { createDragonMap, THEMES } from '@cottagehop/here-be-dragons';
+import { createHereBeDragons, THEMES } from '@cottagehop/here-be-dragons';
 
 // As an option:
-await createDragonMap(el, {
+await createHereBeDragons(el, {
   center, zoom, pmtiles_url,
   theme: 'concretejungle',
   customColors: { building: '#222', water: '#0a2030' }
@@ -122,7 +122,7 @@ A `ThemeColors` object has five required keys (`land`, `building`, `park`, `wate
 
 ---
 
-## Instance API (`DragonMap`)
+## Instance API (`HereBeDragons`)
 
 ### View
 
@@ -231,10 +231,10 @@ map.destroy();         // releases GPU resources + DOM
 
 ## The Studio (`createMapStudio`)
 
-The Studio is an in-browser control panel for designing a map without writing code. It edits a live `DragonMap` and exports its state as a JSON config.
+The Studio is an in-browser control panel for designing a map without writing code. It edits a live `HereBeDragons` and exports its state as a JSON config.
 
 ```js
-import { createDragonMap, createMapStudio } from '@cottagehop/here-be-dragons';
+import { createHereBeDragons, createMapStudio } from '@cottagehop/here-be-dragons';
 
 const initialConfig = {
   center: { lat: 40.7065, lon: -74.009 },
@@ -242,7 +242,7 @@ const initialConfig = {
   pmtiles_url: '/tiles.pmtiles'
 };
 
-const map = await createDragonMap(document.getElementById('app'), initialConfig);
+const map = await createHereBeDragons(document.getElementById('app'), initialConfig);
 
 createMapStudio(map, {
   initialConfig,                  // round-trips pmtiles_url / pixelRatio / etc.
@@ -274,7 +274,7 @@ createMapStudio(map, {
 | `injectDefaultStyles` | `boolean` | `true` | Inject the panel's CSS into `<head>`. |
 | `themes` | `string[]` | all registered | Subset of theme names to show. `[]` hides the section. |
 | `compass` | `boolean` | inherit | Force the compass overlay on / off at construction. |
-| `initialConfig` | `Partial<DragonMapOptions>` | `{}` | Source of non-queryable fields (`pmtiles_url`, `pixelRatio`, `background`). |
+| `initialConfig` | `Partial<HereBeDragonsOptions>` | `{}` | Source of non-queryable fields (`pmtiles_url`, `pixelRatio`, `background`). |
 | `onExport` | `(cfg) => boolean \| void` | `undefined` | Intercept the export. Return `false` to suppress the default download. |
 
 ### Studio handle
@@ -334,9 +334,9 @@ If you need a control to round-trip through the exported JSON, write it into the
 
 // 2. Save that file alongside your site assets (e.g. /public/map-config.json).
 
-// 3. Load it in a single fetch + createDragonMap call:
+// 3. Load it in a single fetch + createHereBeDragons call:
 const cfg = await fetch('/map-config.json').then((r) => r.json());
-const map = await createDragonMap(document.getElementById('app'), cfg);
+const map = await createHereBeDragons(document.getElementById('app'), cfg);
 ```
 
 The map renders identically to what you designed in Studio. No imperative setup. No `applyTheme` / `setCloudsOpacity` / `setLayerEnabled` calls.
@@ -382,10 +382,10 @@ Tile builds are throttled to `maxTileBuildsPerFrame` per RAF tick so a burst of 
 
 ### Tuning options
 
-Pass a `performance` object to `createDragonMap`:
+Pass a `performance` object to `createHereBeDragons`:
 
 ```js
-await createDragonMap(el, {
+await createHereBeDragons(el, {
   center, zoom, pmtiles_url,
   performance: {
     visibleRadius: 3,             // smaller "in viewport" set (49 tiles)
@@ -419,7 +419,7 @@ On lower-end GPUs / integrated graphics / mobile, the per-frame rendering cost c
 The `quality` option handles this for you:
 
 ```js
-await createDragonMap(el, {
+await createHereBeDragons(el, {
   center, zoom, pmtiles_url,
   quality: 'auto'   // the default — detects the GPU and downgrades if needed
 });
@@ -434,7 +434,7 @@ An explicit `pixelRatio` or any `performance.*` field always overrides what the 
 If you want to go further than `'low'`, the individual knobs are still there:
 
 ```js
-await createDragonMap(el, {
+await createHereBeDragons(el, {
   center, zoom, pmtiles_url,
   quality: 'low',
   clouds: false,                  // skip the cloud raymarch pass
@@ -472,8 +472,8 @@ Everything is typed. The big ones to know:
 
 ```ts
 import type {
-  DragonMap,
-  DragonMapOptions,
+  HereBeDragons,
+  HereBeDragonsOptions,
   ThemeName,
   ThemeColors,
   LayerName,

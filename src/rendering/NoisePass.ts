@@ -4,7 +4,7 @@ import * as THREE from 'three';
  * Animated decibel heat-map overlay rendered as a screen-space post-process.
  *
  * Inputs: a sparse array of point sound sources `{ x, z, db }` in scene-world
- * coordinates (lat/lon converted by DragonMap before reaching this pass).
+ * coordinates (lat/lon converted by HereBeDragons before reaching this pass).
  *
  * Per pixel: unproject the NDC ray, intersect the ground plane (y = 0), and
  * sum the inverse-square dB contribution from every source. Pixels in audible
@@ -15,7 +15,7 @@ import * as THREE from 'three';
  * Ports PolyMap's `src/noise.wgsl` to GLSL. The only meaningful change from
  * the WGSL original is the ground-position reconstruction: PolyMap assumes
  * an orthographic camera; we reconstruct the world ray and intersect y = 0
- * so a tilted DragonMap camera still gets the correct ground position
+ * so a tilted HereBeDragons camera still gets the correct ground position
  * under each pixel.
  *
  * Pipeline placement: between OutlinePass and CloudsPass. Sits on top of

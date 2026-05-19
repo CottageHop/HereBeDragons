@@ -51,7 +51,7 @@ export interface ThemeColors {
 
 /**
  * Themes ported from PolyMap. The five core slots map to a richer palette in
- * DragonMap via derived shades (see `themeToPaletteOverrides`).
+ * HereBeDragons via derived shades (see `themeToPaletteOverrides`).
  */
 export const THEMES: Record<string, ThemeColors> = {
   cottagecore: {
@@ -217,7 +217,7 @@ function toHex(r: number, g: number, b: number): string {
 }
 
 /**
- * Map a PolyMap-style 5-color theme to DragonMap's full palette by deriving
+ * Map a PolyMap-style 5-color theme to HereBeDragons's full palette by deriving
  * variant shades for road classes, building roof, and landuse subtypes.
  */
 export function themeToPaletteOverrides(

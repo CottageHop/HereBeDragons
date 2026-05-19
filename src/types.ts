@@ -26,7 +26,7 @@ export interface BoundingBox {
   west: number;
 }
 
-export interface DragonMapOptions {
+export interface HereBeDragonsOptions {
   center: { lat: number; lon: number };
   zoom: number;
   tilt?: number;
@@ -76,8 +76,8 @@ export interface DragonMapOptions {
   /**
    * Name of a built-in theme to apply on construction (e.g. `'cottagecore'`,
    * `'concretejungle'`). Equivalent to calling `map.applyTheme(name)` right
-   * after `createDragonMap` resolves — included on the options object so
-   * exported Studio JSON drops straight into `createDragonMap()` without
+   * after `createHereBeDragons` resolves — included on the options object so
+   * exported Studio JSON drops straight into `createHereBeDragons()` without
    * any post-construction setup.
    *
    * The TS shape is `ThemeName | (string & {})`, which keeps autocomplete
@@ -247,7 +247,7 @@ export interface FlyToOptions {
   durationMs?: number;
 }
 
-export type DragonMapEventName =
+export type HereBeDragonsEventName =
   | 'ready'
   | 'tileload'
   | 'tileerror'
@@ -266,7 +266,7 @@ export interface TileErrorEvent {
   error: Error;
 }
 
-export type DragonMapEventPayload =
+export type HereBeDragonsEventPayload =
   | { type: 'ready' }
   | ({ type: 'tileload' } & TileLoadEvent)
   | ({ type: 'tileerror' } & TileErrorEvent)
@@ -287,7 +287,7 @@ export interface NoiseSource {
 
 export type Unsubscribe = () => void;
 
-export interface DragonMap {
+export interface HereBeDragons {
   setView(lat: number, lon: number, zoom?: number): void;
   /** Absolute bearing (deg from north, +CW). Preserves target + distance. */
   setBearing(degrees: number): void;
@@ -417,7 +417,7 @@ export interface DragonMap {
   setBuildingHighlightColors(buildingColor: string, floorColor: string): void;
   getBuildingHighlightColor(): string;
   getFloorHighlightColor(): string;
-  on(event: DragonMapEventName, cb: (e: DragonMapEventPayload) => void): Unsubscribe;
+  on(event: HereBeDragonsEventName, cb: (e: HereBeDragonsEventPayload) => void): Unsubscribe;
   resize(): void;
   destroy(): void;
 }

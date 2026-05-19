@@ -1,4 +1,4 @@
-import { createDragonMap, createMapStudio, THEMES, THEME_NAMES } from '../../src/index.js';
+import { createHereBeDragons, createMapStudio, THEMES, THEME_NAMES } from '../../src/index.js';
 
 const container = document.getElementById('app');
 if (!container) throw new Error('#app not found');
@@ -41,7 +41,7 @@ const mapOptions = {
 // `theme` + `clouds` are now declarative on the options object — no need to
 // call `applyTheme` / `setCloudsEnabled` after construction. Demonstrates the
 // "exported Studio JSON drops straight in" workflow.
-const map = await createDragonMap(container, {
+const map = await createHereBeDragons(container, {
   ...mapOptions,
   theme: initialTheme,
   clouds: false,

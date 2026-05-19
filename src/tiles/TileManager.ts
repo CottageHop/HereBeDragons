@@ -116,7 +116,7 @@ const TILE_SPAWN_DROP = 30;
  * newly loaded tile (buildings + roads + landuse + water) to ease from
  * `TILE_SPAWN_DROP` below ground back up to y = 0. Runtime-tunable per
  * map via `TileManager.setSpawnDurationMs()` (and surfaced as
- * `DragonMap.setTileSpawnDurationMs()` / the studio "Pop-up" slider).
+ * `HereBeDragons.setTileSpawnDurationMs()` / the studio "Pop-up" slider).
  * 0 disables the animation entirely → tiles snap in instantly.
  */
 const DEFAULT_TILE_SPAWN_MS = 3000;
@@ -195,7 +195,7 @@ export class TileManager {
   private currentZoom = 0;
   private disposed = false;
   /**
-   * Tile spawn animation duration (ms). Mutable: DragonMap exposes a
+   * Tile spawn animation duration (ms). Mutable: HereBeDragons exposes a
    * setter so the studio (and apps) can dial this between 0 (instant) and
    * a few seconds for a more dramatic "rise in" effect.
    */

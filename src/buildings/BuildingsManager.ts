@@ -246,7 +246,7 @@ export class BuildingsManager {
 
   /**
    * Update the highlight overlay colors. Pass undefined to leave a color
-   * untouched. Called from DragonMap when applying a theme so the active
+   * untouched. Called from HereBeDragons when applying a theme so the active
    * theme's `highlight` block overrides the defaults.
    */
   setHighlightColors(buildingColor: string | undefined, floorColor: string | undefined): void {

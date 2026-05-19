@@ -1,11 +1,11 @@
 import type {
-  DragonMap,
-  DragonMapOptions,
+  HereBeDragons,
+  HereBeDragonsOptions,
   CameraView,
   FlyToOptions,
   LayerName,
-  DragonMapEventName,
-  DragonMapEventPayload,
+  HereBeDragonsEventName,
+  HereBeDragonsEventPayload,
   NoiseSource,
   Unsubscribe
 } from './types.js';
@@ -45,13 +45,13 @@ import * as THREE from 'three';
 import { logger } from './util/log.js';
 
 type EventMap = {
-  ready: DragonMapEventPayload;
-  tileload: DragonMapEventPayload;
-  tileerror: DragonMapEventPayload;
-  viewchange: DragonMapEventPayload;
+  ready: HereBeDragonsEventPayload;
+  tileload: HereBeDragonsEventPayload;
+  tileerror: HereBeDragonsEventPayload;
+  viewchange: HereBeDragonsEventPayload;
 };
 
-class DragonMapImpl implements DragonMap {
+class HereBeDragonsImpl implements HereBeDragons {
   private readonly bus = new EventBus<EventMap>();
   private readonly renderer: Renderer;
   private readonly scene: SceneRoot;
@@ -238,7 +238,7 @@ class DragonMapImpl implements DragonMap {
    */
   private readonly originalTiltRange: { min: number; max: number } | null;
 
-  constructor(container: HTMLElement, options: DragonMapOptions) {
+  constructor(container: HTMLElement, options: HereBeDragonsOptions) {
     this.projection = new Projection(options.center.lat, options.center.lon);
     // Resolve the render-quality tier first — it caps pixelRatio (the single
     // biggest fill-rate lever on integrated GPUs), the MSAA sample count, and
@@ -538,8 +538,8 @@ class DragonMapImpl implements DragonMap {
         // user returns to exactly where they were before clicking.
         onFloorBadgeOpen: ({ lat, lon, elevation }) => {
           const view = this.camera.getView();
-          const targetZoom = Math.max(view.zoom, DragonMapImpl.FLOOR_BADGE_ZOOM);
-          const targetTilt = Math.max(view.tilt, DragonMapImpl.FLOOR_BADGE_TILT);
+          const targetZoom = Math.max(view.zoom, HereBeDragonsImpl.FLOOR_BADGE_ZOOM);
+          const targetTilt = Math.max(view.tilt, HereBeDragonsImpl.FLOOR_BADGE_TILT);
 
           // The camera's target is always on the ground plane (y = 0), so
           // pointing it directly at (lat, lon) leaves an elevated badge
@@ -690,7 +690,7 @@ class DragonMapImpl implements DragonMap {
    * the user's coordinates. Permission denial / timeout is logged but
    * otherwise silent — the developer-supplied `center` remains in effect.
    */
-  private requestUserLocation(options: DragonMapOptions): void {
+  private requestUserLocation(options: HereBeDragonsOptions): void {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       logger.warn('geolocation unavailable in this environment');
       return;
@@ -853,7 +853,7 @@ class DragonMapImpl implements DragonMap {
       // perpetually dirty like clouds. With zero sources the pass is a
       // no-op so this is free in practice.
       const noiseDirty = this.noiseEnabled;
-      const heartbeat = this.framesSinceRender >= DragonMapImpl.RENDER_HEARTBEAT_FRAMES;
+      const heartbeat = this.framesSinceRender >= HereBeDragonsImpl.RENDER_HEARTBEAT_FRAMES;
       const willRender =
         this.needsRender || tileDirty || layersDirty ||
         cloudsDirty || noiseDirty || heartbeat;
@@ -871,10 +871,10 @@ class DragonMapImpl implements DragonMap {
         // not "120 RAFs that may have been mostly idle."
         if (this.autoUpgradeAllowed) {
           this.autoUpgradeFrameCount++;
-          if (this.autoUpgradeFrameCount > DragonMapImpl.AUTO_UPGRADE_WARMUP_FRAMES) {
+          if (this.autoUpgradeFrameCount > HereBeDragonsImpl.AUTO_UPGRADE_WARMUP_FRAMES) {
             if (smoothedFrameMs <= this.autoUpgradeFrameMs) {
               this.autoUpgradeStreak++;
-              if (this.autoUpgradeStreak >= DragonMapImpl.AUTO_UPGRADE_STREAK_FRAMES) {
+              if (this.autoUpgradeStreak >= HereBeDragonsImpl.AUTO_UPGRADE_STREAK_FRAMES) {
                 logger.info(
                   `auto-upgrade: smoothed frame ${smoothedFrameMs.toFixed(1)} ms ` +
                   `≤ ${this.autoUpgradeFrameMs} ms for ${this.autoUpgradeStreak} frames → quality='high'`
@@ -901,10 +901,10 @@ class DragonMapImpl implements DragonMap {
         // One-shot: once we downgrade we lock in.
         if (this.autoDowngradeAllowed) {
           this.autoDowngradeFrameCount++;
-          if (this.autoDowngradeFrameCount > DragonMapImpl.AUTO_DOWNGRADE_WARMUP_FRAMES) {
+          if (this.autoDowngradeFrameCount > HereBeDragonsImpl.AUTO_DOWNGRADE_WARMUP_FRAMES) {
             if (smoothedFrameMs >= this.autoDowngradeFrameMs) {
               this.autoDowngradeStreak++;
-              if (this.autoDowngradeStreak >= DragonMapImpl.AUTO_DOWNGRADE_STREAK_FRAMES) {
+              if (this.autoDowngradeStreak >= HereBeDragonsImpl.AUTO_DOWNGRADE_STREAK_FRAMES) {
                 logger.info(
                   `auto-downgrade: smoothed frame ${smoothedFrameMs.toFixed(1)} ms ` +
                   `≥ ${this.autoDowngradeFrameMs} ms for ${this.autoDowngradeStreak} frames → quality='low'`
@@ -1060,7 +1060,7 @@ class DragonMapImpl implements DragonMap {
     // Convert geographic → scene-world. The shader operates on the ground
     // plane (y = 0), so we only need (x, z): mercator-east becomes scene X,
     // mercator-north becomes scene -Z (matching the project / unproject
-    // convention used elsewhere — see DragonMap.unproject for the inverse).
+    // convention used elsewhere — see HereBeDragons.unproject for the inverse).
     const scene = sources.map((s) => {
       const m = this.projection.project(s.lon, s.lat);
       return { x: m.x, z: -m.y, db: s.db };
@@ -1330,17 +1330,17 @@ class DragonMapImpl implements DragonMap {
     this.camera.setBounds(bounds);
   }
 
-  /** Clamp (or release) the allowed camera tilt. See DragonMap.setTiltRange. */
+  /** Clamp (or release) the allowed camera tilt. See HereBeDragons.setTiltRange. */
   setTiltRange(range: { min: number; max: number } | null): void {
     this.camera.setTiltRange(range);
   }
 
-  /** Clamp (or release) the allowed camera bearing. See DragonMap.setBearingRange. */
+  /** Clamp (or release) the allowed camera bearing. See HereBeDragons.setBearingRange. */
   setBearingRange(range: { min: number; max: number } | null): void {
     this.camera.setBearingRange(range);
   }
 
-  /** Clamp (or release) the allowed camera zoom. See DragonMap.setZoomRange. */
+  /** Clamp (or release) the allowed camera zoom. See HereBeDragons.setZoomRange. */
   setZoomRange(range: { min: number; max: number } | null): void {
     this.camera.setZoomRange(range);
   }
@@ -1445,7 +1445,7 @@ class DragonMapImpl implements DragonMap {
     return this.buildingsFlat;
   }
 
-  on(event: DragonMapEventName, cb: (e: DragonMapEventPayload) => void): Unsubscribe {
+  on(event: HereBeDragonsEventName, cb: (e: HereBeDragonsEventPayload) => void): Unsubscribe {
     return this.bus.on(event, cb);
   }
 
@@ -1493,11 +1493,11 @@ class DragonMapImpl implements DragonMap {
  * setup. The async resolution fires after the first tile request has been
  * queued; listen for `map.on('ready', ...)` if you need to wait for tiles.
  */
-export async function createDragonMap(
+export async function createHereBeDragons(
   container: HTMLElement,
-  options: DragonMapOptions
-): Promise<DragonMap> {
-  const map = new DragonMapImpl(container, options);
+  options: HereBeDragonsOptions
+): Promise<HereBeDragons> {
+  const map = new HereBeDragonsImpl(container, options);
   await map.init();
   return map;
 }

@@ -24,7 +24,7 @@ export class EventBus<EventMap extends Record<string, unknown>> {
       try {
         (listener as Listener<EventMap[K]>)(event);
       } catch (err) {
-        console.error('[DragonMap] listener error', err);
+        console.error('[HereBeDragons] listener error', err);
       }
     }
   }

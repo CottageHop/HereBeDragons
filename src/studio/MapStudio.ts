@@ -1,4 +1,4 @@
-import type { DragonMap, DragonMapOptions, LayerName } from '../types.js';
+import type { HereBeDragons, HereBeDragonsOptions, LayerName } from '../types.js';
 import { THEMES, THEME_NAMES, type ThemeColors } from '../themes.js';
 import { injectDefaultStudioStylesOnce } from './styles.js';
 import type { MapStudio as MapStudioHandle, StudioConfig, StudioOptions } from './types.js';
@@ -27,18 +27,18 @@ const LAYER_KEYS: ReadonlyArray<LayerName> = [
 
 /**
  * Developer-facing control panel for live-editing map settings and exporting
- * a JSON config that can be passed back to `createDragonMap`.
+ * a JSON config that can be passed back to `createHereBeDragons`.
  *
  * The studio reads queryable state directly from the map (camera, theme,
  * custom colors, clouds) and tracks its own state for non-queryable fields
  * (per-layer enabled flags, `pmtiles_url`). Pass the original
- * `DragonMapOptions` via `options.initialConfig` so the exported JSON
+ * `HereBeDragonsOptions` via `options.initialConfig` so the exported JSON
  * round-trips correctly.
  */
 export class MapStudio implements MapStudioHandle {
-  private readonly map: DragonMap;
+  private readonly map: HereBeDragons;
   private readonly container: HTMLElement;
-  private readonly initialConfig: Partial<DragonMapOptions>;
+  private readonly initialConfig: Partial<HereBeDragonsOptions>;
   private readonly onExport?: StudioOptions['onExport'];
   private readonly themeNames: string[];
 
@@ -72,12 +72,12 @@ export class MapStudio implements MapStudioHandle {
   private readonly cameraSyncHandle: number;
   private destroyed = false;
 
-  constructor(map: DragonMap, options: StudioOptions = {}) {
+  constructor(map: HereBeDragons, options: StudioOptions = {}) {
     this.map = map;
     this.container = options.container ?? document.body;
     this.initialConfig = options.initialConfig ?? {};
     this.onExport = options.onExport;
-    // The compass is owned by DragonMap; the studio just provides a UI
+    // The compass is owned by HereBeDragons; the studio just provides a UI
     // toggle. If the developer explicitly set the option, forward it to the
     // map; otherwise leave whatever state the map was constructed with.
     if (options.compass !== undefined) this.map.setCompassVisible(options.compass);
@@ -90,7 +90,7 @@ export class MapStudio implements MapStudioHandle {
     if (options.injectDefaultStyles !== false) injectDefaultStudioStylesOnce();
 
     // Seed layer state from initial config (defaults to enabled when omitted
-    // so the studio's checkbox UI matches createDragonMap's behavior).
+    // so the studio's checkbox UI matches createHereBeDragons's behavior).
     // Read the live state from the map so opt-in layers (e.g. cars, default
     // off) show up correctly unchecked rather than getting forced on.
     for (const name of LAYER_KEYS) {
@@ -999,7 +999,7 @@ function downloadJson(data: unknown, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
-/** Public factory mirrors `createDragonMap` style. */
-export function createMapStudio(map: DragonMap, options?: StudioOptions): MapStudioHandle {
+/** Public factory mirrors `createHereBeDragons` style. */
+export function createMapStudio(map: HereBeDragons, options?: StudioOptions): MapStudioHandle {
   return new MapStudio(map, options);
 }
