@@ -1,4 +1,4 @@
-import type { HereBeDragons } from '../types.js';
+import type { HereBeDragons, HereBeDragonsEventPayload } from '../types.js';
 import { injectCompassStylesOnce } from './compassStyles.js';
 
 /**
@@ -6,17 +6,23 @@ import { injectCompassStylesOnce } from './compassStyles.js';
  * inverse of the camera's bearing so north always reads correctly. Clicking
  * the compass snaps the camera back to bearing 0.
  *
- * Polled in a RAF loop because there's no direct "bearing changed" signal —
- * the 'viewchange' event fires for every camera mutation including pan/zoom
- * so polling is simpler and cheap.
+ * Subscribes to the map's `viewchange` event — fires only when the camera
+ * actually moves, so an idle compass costs nothing. A previous version
+ * polled `map.getView()` in its own RAF loop; getView() allocates a vector
+ * + does trig per call, so 60 wasted calls per second was visible on the
+ * profile (e.g. while tiles were streaming in and the bearing wasn't
+ * changing at all).
+ *
+ * Reset-to-north animation still uses its own RAF — it's a finite tween
+ * triggered only on click, not a steady-state loop.
  */
 export class Compass {
   readonly element: HTMLDivElement;
   private needle: HTMLDivElement;
   private map: HereBeDragons;
-  private rafHandle = 0;
   private destroyed = false;
   private lastBearing = NaN;
+  private viewUnsub: () => void;
 
   constructor(map: HereBeDragons, container: HTMLElement) {
     this.map = map;
@@ -40,7 +46,27 @@ export class Compass {
     });
 
     container.appendChild(this.element);
-    this.tick();
+
+    // Render the initial bearing once. Subsequent updates come from
+    // viewchange — no polling loop.
+    this.applyBearing(this.map.getView().bearing);
+    this.viewUnsub = this.map.on('viewchange', this.onViewChange);
+  }
+
+  private onViewChange = (e: HereBeDragonsEventPayload): void => {
+    if (this.destroyed) return;
+    // viewchange payload spreads in the CameraView fields, so `bearing` is
+    // present at runtime. The shared union type doesn't narrow it for us.
+    const bearing = (e as { bearing?: number }).bearing;
+    if (typeof bearing === 'number') this.applyBearing(bearing);
+  };
+
+  private applyBearing(bearing: number): void {
+    if (bearing === this.lastBearing) return;
+    this.lastBearing = bearing;
+    // Rotate the needle by -bearing so when the camera bears 30° east of
+    // north, north appears 30° west on the compass (i.e. up and to the left).
+    this.needle.style.transform = `rotate(${-bearing}deg)`;
   }
 
   /**
@@ -74,21 +100,9 @@ export class Compass {
     this.element.hidden = !visible;
   }
 
-  private tick = (): void => {
-    if (this.destroyed) return;
-    const bearing = this.map.getView().bearing;
-    if (bearing !== this.lastBearing) {
-      this.lastBearing = bearing;
-      // Rotate the needle by -bearing so when the camera bears 30° east of
-      // north, north appears 30° west on the compass (i.e. up and to the left).
-      this.needle.style.transform = `rotate(${-bearing}deg)`;
-    }
-    this.rafHandle = requestAnimationFrame(this.tick);
-  };
-
   destroy(): void {
     this.destroyed = true;
-    cancelAnimationFrame(this.rafHandle);
+    this.viewUnsub();
     this.element.remove();
   }
 }
