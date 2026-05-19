@@ -3,10 +3,12 @@ import { createDragonMap, createMapStudio, THEMES, THEME_NAMES } from '../../src
 const container = document.getElementById('app');
 if (!container) throw new Error('#app not found');
 
-// Served by Vite from public/tiles.pmtiles (symlinked to PolyMap's archive).
-// Override with ?pmtiles=URL for a remote source.
+// Served by Vite from public/tiles.pmtiles. Override with ?pmtiles=URL for
+// a remote source. BASE_URL ensures the path works under GitHub Pages where
+// the site is mounted at /HereBeDragons/.
 const url = new URL(window.location.href);
-const pmtilesUrl = url.searchParams.get('pmtiles') ?? '/tiles.pmtiles';
+const pmtilesUrl =
+  url.searchParams.get('pmtiles') ?? `${import.meta.env.BASE_URL}tiles.pmtiles`;
 
 // Default: Lower Manhattan — matches PolyMap's tiles.pmtiles coverage.
 const lat = Number(url.searchParams.get('lat') ?? '40.7065');

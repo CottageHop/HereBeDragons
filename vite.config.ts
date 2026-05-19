@@ -6,6 +6,9 @@ export default defineConfig(({ mode }) => {
   const isLib = mode === 'lib' || process.env.BUILD_LIB === '1';
 
   return {
+    // GitHub Pages serves the demo under /HereBeDragons/. The library build
+    // doesn't ship HTML, so the base is harmless there.
+    base: isLib ? '/' : '/HereBeDragons/',
     plugins: isLib
       ? [
           dts({
