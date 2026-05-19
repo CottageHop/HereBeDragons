@@ -5,6 +5,14 @@ import { buildTileToWorld } from './shared/mercator.js';
 
 const BUILDING_LAYER_NAMES = ['buildings', 'osm_buildings'];
 const DEFAULT_HEIGHT = 6;
+/**
+ * Hard cap (m) on extruded building height. Burj Khalifa is 828 m, so any
+ * single feature above this is almost certainly bad data — a `levels` tag
+ * misread as meters, a `render_height` in the wrong unit, an antenna mast
+ * filed under `building`, etc. Without the cap, a stray entry like that
+ * extrudes a triangle several km tall that visually dominates the scene.
+ */
+const MAX_HEIGHT_M = 1000;
 
 /** Per-building summary emitted alongside the merged tile mesh. Indexed by
  *  the per-vertex `buildingIndex` attribute so the picker can look up the
@@ -487,7 +495,7 @@ function pickHeight(props: VectorTileFeature['properties']): number {
   for (const c of candidates) {
     if (c !== undefined && c !== null && c !== '') {
       const n = typeof c === 'number' ? c : Number(c);
-      if (Number.isFinite(n) && n > 0) return n;
+      if (Number.isFinite(n) && n > 0) return Math.min(n, MAX_HEIGHT_M);
     }
   }
   return DEFAULT_HEIGHT;
