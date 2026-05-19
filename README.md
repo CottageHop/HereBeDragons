@@ -1,6 +1,6 @@
-# HereBeDragons
+<img width="1408" height="768" alt="HereBeDragons_github_header" src="https://github.com/user-attachments/assets/bef38dbb-cb00-4f38-8521-c7c05e87fe32" />
 
-A 3D vector map for the web — stylized buildings, animated water, drifting volumetric clouds, raymarched lighting. Reads PMTiles vector archives, renders with three.js. Drops into a single `<div>` with one function call.
+A 3D vector map for the web stylized buildings, animated water, drifting volumetric clouds, raymarched lighting. Reads PMTiles vector archives, renders with three.js. Drops into a single `<div>` with one function call.
 
 **[Live demo →](https://cottagehop.github.io/HereBeDragons/)** &nbsp;·&nbsp; [with Studio](https://cottagehop.github.io/HereBeDragons/?studio=1) &nbsp;·&nbsp; [with demo polygons](https://cottagehop.github.io/HereBeDragons/?polygons=1)
 
@@ -8,7 +8,7 @@ A 3D vector map for the web — stylized buildings, animated water, drifting vol
 npm install @cottagehop/here-be-dragons three
 ```
 
-`three` is a peer dependency — install it explicitly so your bundler dedupes it with anything else that uses three.
+`three` is a peer dependency install it explicitly so your bundler dedupes it with anything else that uses three.
 
 ---
 
@@ -32,7 +32,7 @@ npm install @cottagehop/here-be-dragons three
 </html>
 ```
 
-That's it. You get a 3D map with stylized buildings, roads, water, and labels. The map sizes to fill its container — give that container a width and height (the `position: fixed; inset: 0;` snippet above is the simplest "fill the page" recipe).
+That's it. You get a 3D map with stylized buildings, roads, water, and labels. The map sizes to fill its container give that container a width and height (the `position: fixed; inset: 0;` snippet above is the simplest "fill the page" recipe).
 
 ---
 
@@ -41,7 +41,7 @@ That's it. You get a 3D map with stylized buildings, roads, water, and labels. T
 The fastest workflow:
 
 1. Open the demo with `?studio=1` (or call `createMapStudio(map, ...)` in your code).
-2. Pick a theme, drag the camera sliders, tweak colors, toggle layers — everything is live.
+2. Pick a theme, drag the camera sliders, tweak colors, toggle layers everything is live.
 3. Click **Export JSON**. The browser downloads `here-be-dragons.config.json`.
 4. On your real site, fetch that JSON and pass it straight to `createHereBeDragons`:
 
@@ -52,7 +52,7 @@ const config = await fetch('/map-config.json').then((r) => r.json());
 await createHereBeDragons(document.getElementById('app'), config);
 ```
 
-The exported JSON is a literal `HereBeDragonsOptions` value — `theme`, `customColors`, `clouds`, `compass`, layer toggles, camera position, all of it. `createHereBeDragons` applies the declarative fields automatically. **No imperative `applyTheme` / `setCloudsOpacity` / etc. calls are needed.**
+The exported JSON is a literal `HereBeDragonsOptions` value `theme`, `customColors`, `clouds`, `compass`, layer toggles, camera position, all of it. `createHereBeDragons` applies the declarative fields automatically. **No imperative `applyTheme` / `setCloudsOpacity` / etc. calls are needed.**
 
 ---
 
@@ -256,14 +256,14 @@ createMapStudio(map, {
 
 ### What the Studio panel exposes
 
-- **Theme picker** — visual grid of every registered theme (filterable via the `themes: [...]` option)
-- **Custom colors** — `land`, `building`, `park`, `water`, `road` color pickers (applied on top of the active theme)
-- **Selection highlight** — popup toggle + building/floor color pickers
-- **Camera** — tilt, bearing, zoom sliders, kept in sync as the user drags on the canvas. Each slider has a `↔` toggle that opens a **Min / Max** sub-editor: turn it on to limit how far the camera can move on that axis. The exported JSON includes `tiltRange` / `bearingRange` / `zoomRange` only for axes whose toggle is active.
-- **Layers** — per-layer checkboxes + a "flatten buildings" toggle
-- **Clouds** — enable/disable + opacity slider
-- **Compass** — show/hide overlay toggle
-- **Export JSON** button — downloads `here-be-dragons.config.json`
+- **Theme picker** visual grid of every registered theme (filterable via the `themes: [...]` option)
+- **Custom colors** `land`, `building`, `park`, `water`, `road` color pickers (applied on top of the active theme)
+- **Selection highlight** popup toggle + building/floor color pickers
+- **Camera** tilt, bearing, zoom sliders, kept in sync as the user drags on the canvas. Each slider has a `↔` toggle that opens a **Min / Max** sub-editor: turn it on to limit how far the camera can move on that axis. The exported JSON includes `tiltRange` / `bearingRange` / `zoomRange` only for axes whose toggle is active.
+- **Layers** per-layer checkboxes + a "flatten buildings" toggle
+- **Clouds** enable/disable + opacity slider
+- **Compass** show/hide overlay toggle
+- **Export JSON** button downloads `here-be-dragons.config.json`
 
 ### `StudioOptions`
 
@@ -311,7 +311,7 @@ document.getElementById('tod').addEventListener('input', (e) => {
 });
 ```
 
-If you need a control to round-trip through the exported JSON, write it into the JSON yourself after `studio.export()` returned its config — or open an issue describing the use case and we'll add a first-class API.
+If you need a control to round-trip through the exported JSON, write it into the JSON yourself after `studio.export()` returned its config or open an issue describing the use case and we'll add a first-class API.
 
 ---
 
@@ -349,17 +349,17 @@ The map renders identically to what you designed in Studio. No imperative setup.
 
 Every tile in the visible window goes through this pipeline:
 
-1. **Fetch** — PMTiles range-request returns the raw MVT bytes. Async, non-blocking.
-2. **Worker decode** — handed to one of the worker threads (round-robin). Inside the worker, decoding runs in **two phases**:
-   - **Phase 1 (base)** — water, waterways, landuse, roads, rails, labels. Cheap to extract (~5–15 ms). Posted back immediately.
-   - **Phase 2 (buildings)** — the heavy one. The union-find that groups multi-part buildings is O(n²) over features in the tile, so a dense Manhattan-scale tile spends 50–200 ms here. Posted back when it finishes.
-3. **Scene update** — the main thread builds three.js meshes from each phase's geometry and adds them to the tile's group as soon as they arrive. The base map appears within milliseconds; buildings fill in afterward.
+1. **Fetch** PMTiles range-request returns the raw MVT bytes. Async, non-blocking.
+2. **Worker decode** handed to one of the worker threads (round-robin). Inside the worker, decoding runs in **two phases**:
+   - **Phase 1 (base)** water, waterways, landuse, roads, rails, labels. Cheap to extract (~5–15 ms). Posted back immediately.
+   - **Phase 2 (buildings)** the heavy one. The union-find that groups multi-part buildings is O(n²) over features in the tile, so a dense Manhattan-scale tile spends 50–200 ms here. Posted back when it finishes.
+3. **Scene update** the main thread builds three.js meshes from each phase's geometry and adds them to the tile's group as soon as they arrive. The base map appears within milliseconds; buildings fill in afterward.
 
 The two-phase split means **users see streets, water, and labels almost instantly** even while building decoding is still grinding. Disabling the `buildings` layer entirely skips phase 2 in the worker.
 
 ### Default tile load (at z=15)
 
-The dispatcher is **frustum-aware**: each frame, the camera's four screen corners are raycast onto the ground plane to compute a tile-coordinate bbox of what's actually visible. Only tiles inside that bbox (plus a 1-tile margin) get loaded. With a 55° camera tilt, the visible region is a trapezoid mostly in front of the camera target — typically 20–40 tiles at z=15, not the symmetric square the older Chebyshev approach loaded.
+The dispatcher is **frustum-aware**: each frame, the camera's four screen corners are raycast onto the ground plane to compute a tile-coordinate bbox of what's actually visible. Only tiles inside that bbox (plus a 1-tile margin) get loaded. With a 55° camera tilt, the visible region is a trapezoid mostly in front of the camera target typically 20–40 tiles at z=15, not the symmetric square the older Chebyshev approach loaded.
 
 | Knob | Default | Result |
 |---|---|---|
@@ -371,14 +371,14 @@ The dispatcher is **frustum-aware**: each frame, the camera's four screen corner
 
 Two-tier within the bbox:
 
-- **Tier 0** — within `visibleRadius` of the camera target. These dispatch first.
-- **Tier 1** — the rest of the frustum bbox (with margin). Dispatched after tier 0.
+- **Tier 0** within `visibleRadius` of the camera target. These dispatch first.
+- **Tier 1** the rest of the frustum bbox (with margin). Dispatched after tier 0.
 
-The candidate set is the camera frustum's actual ground footprint — a convex **trapezoid**, not its bounding box. Every candidate tile is point-in-quad tested against that trapezoid (inflated by a 1-tile margin for smooth panning), so the big off-screen triangles at the near-edge corners of the bounding rectangle never get loaded.
+The candidate set is the camera frustum's actual ground footprint a convex **trapezoid**, not its bounding box. Every candidate tile is point-in-quad tested against that trapezoid (inflated by a 1-tile margin for smooth panning), so the big off-screen triangles at the near-edge corners of the bounding rectangle never get loaded.
 
-Within each tier the order is a **concentric ring expansion from the camera target** (the screen center) — closest squared-Euclidean distance first. Same-ring tiles tiebreak right-before-left so the fan stays visually symmetric.
+Within each tier the order is a **concentric ring expansion from the camera target** (the screen center) closest squared-Euclidean distance first. Same-ring tiles tiebreak right-before-left so the fan stays visually symmetric.
 
-Tile builds are bounded by a per-frame ms budget (`maxTileApplyMsPerFrame`) so a burst of worker completions can't block pointer/wheel input. The drain loop applies tiles closest to the camera first and yields once the budget is spent (always applying at least one tile per frame so the queue can drain even when a single build exceeds the budget). The heavy "what's visible now?" recompute runs only every `dispatchInterval` frames (default 4 → ~15 Hz at 60 FPS), also borrowed from PolyMap — tile fetches are network-bound and decodes take 50–200 ms in workers, so polling visibility at 60 Hz was wasted main-thread work that competed with input and rendering. **You can pan and zoom during the initial load.** As you pan, the frustum bbox shifts and new tiles are dispatched at the new viewport; tiles outside the new bbox stay in the LRU cache for a short grace period.
+Tile builds are bounded by a per-frame ms budget (`maxTileApplyMsPerFrame`) so a burst of worker completions can't block pointer/wheel input. The drain loop applies tiles closest to the camera first and yields once the budget is spent (always applying at least one tile per frame so the queue can drain even when a single build exceeds the budget). The heavy "what's visible now?" recompute runs only every `dispatchInterval` frames (default 4 → ~15 Hz at 60 FPS), also borrowed from PolyMap tile fetches are network-bound and decodes take 50–200 ms in workers, so polling visibility at 60 Hz was wasted main-thread work that competed with input and rendering. **You can pan and zoom during the initial load.** As you pan, the frustum bbox shifts and new tiles are dispatched at the new viewport; tiles outside the new bbox stay in the LRU cache for a short grace period.
 
 ### Tuning options
 
@@ -408,9 +408,9 @@ Concrete trade-offs (frustum-aware loading; "tiles loaded" is the typical count 
 
 Other levers built into the library:
 
-- **Disable layers you don't need** — `layers: { rails: false, cars: false, labels: false }`. Disabled layers are now skipped at the worker level entirely (no decode cost), not just hidden post-render.
-- **Disable buildings if you only need the base map** — the heaviest single extractor. `layers: { buildings: false }`. Frees ~70% of worker CPU per tile.
-- **Disable clouds** — `clouds: false`. Saves a full-screen raymarch pass every frame.
+- **Disable layers you don't need** `layers: { rails: false, cars: false, labels: false }`. Disabled layers are now skipped at the worker level entirely (no decode cost), not just hidden post-render.
+- **Disable buildings if you only need the base map** the heaviest single extractor. `layers: { buildings: false }`. Frees ~70% of worker CPU per tile.
+- **Disable clouds** `clouds: false`. Saves a full-screen raymarch pass every frame.
 
 ### Quality tiers
 
@@ -421,15 +421,15 @@ The `quality` option handles this for you:
 ```js
 await createHereBeDragons(el, {
   center, zoom, pmtiles_url,
-  quality: 'auto'   // the default — detects the GPU and downgrades if needed
+  quality: 'auto'   // the default detects the GPU and downgrades if needed
 });
 ```
 
-- **`'auto'`** (default) — probes the GPU via `WEBGL_debug_renderer_info`. Intel integrated graphics (e.g. the Iris Plus in a 2019 MacBook Pro 13"), software rasterizers, and "no WebGL" all resolve to `'low'`; discrete GPUs, Apple Silicon, and privacy-redacted renderers stay `'high'`. It only ever *downgrades* on a confident match, so a capable machine is never blurred by mistake.
-- **`'low'`** — `pixelRatio` capped to 1 (no Retina super-sampling — the single biggest fill-rate win, ~4× fewer pixels), MSAA off (FXAA alone handles AA), and a tighter tile-load window (`visibleRadius` 2, `tileWindowRadius`/`Far` 4, `dispatchInterval` 6).
-- **`'high'`** — full desktop quality: `pixelRatio` up to 2, 4× MSAA, default tile window.
+- **`'auto'`** (default) probes the GPU via `WEBGL_debug_renderer_info`. Intel integrated graphics (e.g. the Iris Plus in a 2019 MacBook Pro 13"), software rasterizers, and "no WebGL" all resolve to `'low'`; discrete GPUs, Apple Silicon, and privacy-redacted renderers stay `'high'`. It only ever *downgrades* on a confident match, so a capable machine is never blurred by mistake.
+- **`'low'`** `pixelRatio` capped to 1 (no Retina super-sampling the single biggest fill-rate win, ~4× fewer pixels), MSAA off (FXAA alone handles AA), and a tighter tile-load window (`visibleRadius` 2, `tileWindowRadius`/`Far` 4, `dispatchInterval` 6).
+- **`'high'`** full desktop quality: `pixelRatio` up to 2, 4× MSAA, default tile window.
 
-An explicit `pixelRatio` or any `performance.*` field always overrides what the tier would have set — so you can force `quality: 'low'` but keep `pixelRatio: 1.5`, or stay on `'high'` but tighten the tile window.
+An explicit `pixelRatio` or any `performance.*` field always overrides what the tier would have set so you can force `quality: 'low'` but keep `pixelRatio: 1.5`, or stay on `'high'` but tighten the tile window.
 
 If you want to go further than `'low'`, the individual knobs are still there:
 
@@ -448,7 +448,7 @@ await createHereBeDragons(el, {
 
 ## Hosting your tiles
 
-`pmtiles_url` accepts any URL the browser can fetch — absolute, relative, or `https://`. The library uses range requests, so your server must support `Range:` headers (S3, CloudFront, GCS, plain Apache/nginx all do).
+`pmtiles_url` accepts any URL the browser can fetch absolute, relative, or `https://`. The library uses range requests, so your server must support `Range:` headers (S3, CloudFront, GCS, plain Apache/nginx all do).
 
 For local development, drop a `.pmtiles` archive into your `public/` directory and reference it as `'/tiles.pmtiles'`. Build it from OpenStreetMap with [Planetiler](https://github.com/onthegomap/planetiler) or grab one from [Protomaps](https://protomaps.com/).
 
@@ -456,12 +456,12 @@ For local development, drop a `.pmtiles` archive into your `public/` directory a
 
 ## Bundling notes
 
-The decode worker is bundled automatically when you use Vite, Rollup, esbuild, or Webpack 5 — `import.meta.url` resolution handles the worker file location for you. If you're on an older bundler that doesn't, file an issue with the bundler name.
+The decode worker is bundled automatically when you use Vite, Rollup, esbuild, or Webpack 5 `import.meta.url` resolution handles the worker file location for you. If you're on an older bundler that doesn't, file an issue with the bundler name.
 
 The library injects its own CSS for tags, compass, building popup, and Studio. If you want to preload styles to avoid a flash, import them explicitly:
 
 ```js
-import '@cottagehop/here-be-dragons/styles.css';   // (planned — currently auto-injected)
+import '@cottagehop/here-be-dragons/styles.css';   // (planned currently auto-injected)
 ```
 
 ---
@@ -491,13 +491,13 @@ import type {
 
 ## Reference: full feature list
 
-- **3D vector tile rendering** — PMTiles + MVT, decoded in a Web Worker
+- **3D vector tile rendering** PMTiles + MVT, decoded in a Web Worker
 - **Stylized shading** with multi-pass outline pass (depth + normals)
 - **Volumetric raymarched clouds** that drift over the city
 - **Animated traffic** along the road network (opt-in `layers: { cars: true }`)
 - **Rail tracks** with crossties, drawn under the road layer (for "subway under street" effect)
-- **Waterways** — rivers/canals as continuous channels
-- **Interactive building selection** — click to highlight, optional floor band, blueprint mode
+- **Waterways** rivers/canals as continuous channels
+- **Interactive building selection** click to highlight, optional floor band, blueprint mode
 - **Tag overlay** with automatic clustering at distance
 - **Custom polygons** with translucent fills
 - **12 built-in themes** + custom theme support
