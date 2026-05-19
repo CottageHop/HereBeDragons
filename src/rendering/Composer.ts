@@ -51,16 +51,6 @@ export class Composer {
    * quality tier; it's ~30–40 % of the fixed per-frame GPU cost.
    */
   private outlineEnabled = true;
-  /**
-   * Transient flag that suppresses the normal + outline passes for a single
-   * frame. HereBeDragons sets it true while the tile-apply queue is non-empty
-   * — under that load the GPU process is already saturated uploading new
-   * vertex buffers, and the second full-scene render for the normal target
-   * is the biggest single cost we can drop without altering the steady-state
-   * look. Cleared once the queue drains, so outlines reappear within one
-   * frame of the load completing.
-   */
-  private outlineSuspended = false;
 
   /**
    * @param msaaSamples MSAA sample count on the color render target. 4 is the
@@ -287,16 +277,6 @@ export class Composer {
   }
 
   /**
-   * Suspend the normal + outline passes for the next frame(s). Caller flips
-   * this true when the tile-apply queue is non-empty, false when it drains.
-   * Independent of `setOutlineEnabled` — that's the user-facing toggle; this
-   * is the per-frame load-aware gate.
-   */
-  setOutlineSuspended(suspended: boolean): void {
-    this.outlineSuspended = suspended;
-  }
-
-  /**
    * Toggle whether building meshes participate in the normal pass. Off while
    * buildings are flattened — OutlinePass picks up edges from the normal
    * target, so excluding flattened buildings stops every footprint getting
@@ -345,7 +325,7 @@ export class Composer {
     // `colorTarget` straight through.
     let sceneTex: THREE.Texture = this.colorTarget.texture;
 
-    if (this.outlineEnabled && !this.outlineSuspended) {
+    if (this.outlineEnabled) {
       // Pass 2: normals. Labels are excluded — rendering them with the normal
       // override would produce a flat-normal quad whose silhouette becomes a
       // rectangular outline around each label in the next pass. Buildings are
