@@ -28,19 +28,17 @@ const DEFAULT_TILE_WINDOW_RADIUS_FAR = 5;
 /** Tiles within this Chebyshev distance of camera target dispatch FIRST. */
 const DEFAULT_VISIBLE_RADIUS = 3;
 /**
- * Max tile builds to apply to the scene per RAF tick. Caps main-thread cost.
+ * Per-frame time budget (ms) for the apply phase. Replaces the old "N builds
+ * per frame" counter: a tile with 7 layers and a fat buildings extrusion is
+ * many times more work than a sparse-ocean tile, and capping by count blew
+ * the frame budget on big viewports during initial load.
  *
- * With 4 workers feeding the apply queue, the front-end build rate is the
- * dominant bottleneck on visible fill time. Each build is a BufferGeometry
- * allocation + ~1–2 ms synchronous GPU buffer upload (bufferData()) on the
- * next render. At 4/frame and 60 FPS that's ~4–8 ms of main-thread time
- * per RAF, comfortably under the 22 ms default `frameBudgetMs` — and when
- * frames DO go over budget the apply queue gates itself automatically.
- *
- * Was 3 → 4: marginal 33% extra fill rate for one more bufferData() per
- * frame. On a slow machine the budget throttle picks up the slack.
+ * 6 ms keeps one frame's apply work comfortably under a 16.67 ms budget
+ * even paired with render, input, and other RAF work. The loop always
+ * applies at least one tile per frame so the queue can't stall when a
+ * single build happens to exceed the budget.
  */
-const DEFAULT_MAX_BUILDS_PER_FRAME = 4;
+const DEFAULT_APPLY_BUDGET_MS = 6;
 /**
  * Run the heavy visibility/dispatch/evict pass every N-th RAF tick.
  *
@@ -151,15 +149,13 @@ export interface TileManagerDeps {
    */
   visibleRadius?: number;
   /**
-   * Cap on tiles whose meshes get built and added to the scene each RAF
-   * tick. The decode happens off-thread; mesh creation + GPU upload still
-   * costs main-thread time, so a burst of 4–8 simultaneous worker phase
-   * completions can stall pointer/wheel input for a frame. Throttling to
-   * 1/frame (default) means input handlers always get a slot. Raise it for
-   * faster fill at the cost of input smoothness; lower it for smoother
-   * input at the cost of slower fill.
+   * Per-frame ms budget for applying decoded tiles to the scene. The loop
+   * applies tiles until this budget elapses, then yields — guarantees at
+   * least one tile per frame so the queue can drain when a single build
+   * happens to exceed the budget. Lower = smoother input under load;
+   * higher = faster fill.
    */
-  maxTileBuildsPerFrame?: number;
+  maxTileApplyMsPerFrame?: number;
   /**
    * Run the heavy visibility/dispatch/evict pass every N-th RAF tick.
    * Default 4 (≈ 15 Hz at 60 FPS). The apply queue + tile spawn animations
@@ -241,7 +237,7 @@ export class TileManager {
   private readonly tileWindowRadius: number;
   private readonly tileWindowRadiusFar: number;
   private readonly visibleRadius: number;
-  private readonly maxBuildsPerFrame: number;
+  private readonly applyBudgetMs: number;
   private readonly dispatchInterval: number;
   private frameCount = 0;
 
@@ -264,7 +260,7 @@ export class TileManager {
       0,
       Math.min(this.tileWindowRadius, deps.visibleRadius ?? DEFAULT_VISIBLE_RADIUS)
     );
-    this.maxBuildsPerFrame = Math.max(1, deps.maxTileBuildsPerFrame ?? DEFAULT_MAX_BUILDS_PER_FRAME);
+    this.applyBudgetMs = Math.max(0, deps.maxTileApplyMsPerFrame ?? DEFAULT_APPLY_BUDGET_MS);
     this.dispatchInterval = Math.max(1, deps.dispatchInterval ?? DEFAULT_DISPATCH_INTERVAL);
   }
 
@@ -771,27 +767,28 @@ export class TileManager {
   }
 
   /**
-   * Pop up to `maxBuildsPerFrame` pending phase responses off the queue and
-   * actually build their meshes / add them to the scene. Keeps the
-   * synchronous per-RAF main-thread cost bounded — without this, a burst of
-   * worker completions would block pointer/wheel events for ~30–80 ms.
+   * Apply pending phase responses to the scene until the per-frame ms
+   * budget elapses. Bounds the synchronous main-thread cost — without this,
+   * a burst of worker completions would block pointer/wheel events for
+   * tens of ms while we built all the BufferGeometries at once.
    *
    * Items are processed CLOSEST-TO-CAMERA-TARGET FIRST, not FIFO. The
    * dispatch sweep already prioritizes close tiles for fetching, but
-   * parallel HTTP fetches + a single worker mean responses can arrive out
-   * of order — without this sort, a peripheral tile that happened to fetch
-   * first would "appear" before the center tile. Sorting on drain
-   * guarantees the order the user sees matches the priority order, no
-   * matter what the network did.
+   * parallel HTTP fetches mean responses can arrive out of order — without
+   * the priority sort, a peripheral tile that happened to fetch first
+   * would "appear" before the center tile.
    *
-   * The sort is O(N) per drain (find-min, not full re-sort) and runs once
-   * per frame with maxBuildsPerFrame = 1, so the cost is trivial — apply
-   * queue depth is typically < 20.
+   * At least one tile is always applied per frame, even if the budget is
+   * already exceeded by a single build — otherwise heavyweight tiles
+   * (large viewports, many layers + buildings) would stall the queue.
    */
   /** @returns true if at least one tile mesh was built (scene changed). */
   private drainApplyQueue(): boolean {
     let processed = 0;
-    while (processed < this.maxBuildsPerFrame && this.applyQueue.length > 0) {
+    const start = performance.now();
+    const budget = this.applyBudgetMs;
+    while (this.applyQueue.length > 0) {
+      if (processed > 0 && performance.now() - start >= budget) break;
       // Pick the item whose tile is closest to the camera target, instead
       // of the front of the queue. `lastCenterX/Y` is the screen-center
       // tile coord (refreshed by the dispatch sweep ≥ once every

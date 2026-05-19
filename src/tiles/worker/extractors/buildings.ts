@@ -319,7 +319,10 @@ export function extractBuildings(
     positions: new Float32Array(positions),
     indices: new Uint32Array(indices),
     normals: new Float32Array(normals),
-    attributes: { buildingIndex: new Uint32Array(buildingIndex) },
+    // Float32 matches the shader's `attribute float buildingIndex` exactly,
+    // so the main thread can wrap this in a BufferAttribute with zero copy.
+    // Building indices fit well within Float32's 24-bit mantissa precision.
+    attributes: { buildingIndex: new Float32Array(buildingIndex) },
     metadata: { totalVolume, buildings }
   };
 }

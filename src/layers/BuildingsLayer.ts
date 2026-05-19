@@ -47,15 +47,11 @@ export class BuildingsLayer extends Layer {
 
   build(geometry: LayerGeometry): THREE.Object3D {
     const bg = makeBufferGeometry(geometry);
-    // Attach the per-vertex buildingIndex so a raycast hit's vertex index can
-    // be mapped back to a specific building. Converted to Float32Array via
-    // the typed-array constructor (native C++ copy + type conversion) — way
-    // faster than the per-element JS loop it replaced. Building indices fit
-    // well within Float32's 24-bit mantissa precision, so no value loss.
+    // The worker emits buildingIndex as Float32Array already — wrap it in a
+    // BufferAttribute with zero further copying.
     const buildingIndexAttr = geometry.attributes?.buildingIndex;
-    if (buildingIndexAttr instanceof Uint32Array) {
-      const asFloat = new Float32Array(buildingIndexAttr);
-      bg.setAttribute('buildingIndex', new THREE.BufferAttribute(asFloat, 1));
+    if (buildingIndexAttr instanceof Float32Array) {
+      bg.setAttribute('buildingIndex', new THREE.BufferAttribute(buildingIndexAttr, 1));
     }
     const mesh = new THREE.Mesh(bg, this.materials.get(Palette.building));
     // Tag onto the dedicated buildings layer so Composer can exclude buildings

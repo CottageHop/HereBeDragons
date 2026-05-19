@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Layer, splitByClass } from './Layer.js';
+import { Layer, makeSubmeshBufferGeometry } from './Layer.js';
 import { Palette } from '../materials/Palette.js';
 import { LanduseClass } from '../tiles/worker/extractors/landuse.js';
 import type { LayerName } from '../types.js';
@@ -10,9 +10,13 @@ export class LanduseLayer extends Layer {
 
   build(geometry: LayerGeometry): THREE.Object3D {
     const group = new THREE.Group();
-    const submeshes = splitByClass(geometry);
-    for (const [cls, bg] of submeshes) {
-      const slot = paletteForClass(cls);
+    // The worker pre-splits landuse by class so the main thread doesn't have
+    // to walk the index buffer per tile. `submeshes` is always populated for
+    // this layer; the fallback is defensive only.
+    const submeshes = geometry.submeshes ?? [];
+    for (const sub of submeshes) {
+      const bg = makeSubmeshBufferGeometry(sub);
+      const slot = paletteForClass(sub.classId);
       const mesh = new THREE.Mesh(bg, this.materials.get(slot));
       mesh.renderOrder = -6;
       group.add(mesh);

@@ -16,6 +16,10 @@ import { extractRoads } from './extractors/roads.js';
 import { extractRails } from './extractors/rails.js';
 import { extractBuildings } from './extractors/buildings.js';
 import { extractLabels } from './extractors/labels.js';
+import { splitByClass } from './shared/splitByClass.js';
+
+/** Layers whose extractors emit a per-vertex `class` attribute. */
+const CLASS_SPLIT_LAYERS: readonly LayerName[] = ['landuse', 'roads', 'rails'];
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -78,6 +82,12 @@ function decodeTile(req: DecodeRequest): void {
   if (wanted.has('labels')) {
     base.labels = extractLabels(req.z, req.x, req.y, layersByName, req.originLat, req.originLon);
   }
+  // Pre-split class-keyed layers in the worker so the main thread doesn't
+  // have to walk the index buffer + remap vertices during apply.
+  for (const name of CLASS_SPLIT_LAYERS) {
+    const g = base[name];
+    if (g) g.submeshes = splitByClass(g);
+  }
   // `final: !wantsBuildings` — if buildings layer is disabled there's no
   // phase 2 to wait for, so the base message also doubles as the final one.
   postPhase(req, base, 'base', !wantsBuildings);
@@ -115,6 +125,13 @@ function postPhase(
     if (g.normals) transfers.push(g.normals.buffer);
     if (g.attributes) {
       for (const arr of Object.values(g.attributes)) transfers.push(arr.buffer);
+    }
+    if (g.submeshes) {
+      for (const s of g.submeshes) {
+        transfers.push(s.positions.buffer);
+        transfers.push(s.indices.buffer);
+        if (s.normals) transfers.push(s.normals.buffer);
+      }
     }
     if (g.lines) {
       transfers.push(g.lines.positions.buffer);

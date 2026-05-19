@@ -1,10 +1,28 @@
 import type { LayerName } from '../../types.js';
 
+/**
+ * One pre-split per-class chunk of a LayerGeometry. The worker emits these
+ * for class-keyed layers (landuse, roads, rails) so the main thread can
+ * upload each chunk directly without re-walking the index buffer.
+ */
+export interface SubmeshGeometry {
+  classId: number;
+  positions: Float32Array;
+  indices: Uint32Array;
+  normals?: Float32Array;
+}
+
 /** Decoded geometry for a single layer in a single tile. */
 export interface LayerGeometry {
   positions: Float32Array; // XYZ triples
   indices: Uint32Array;
   normals?: Float32Array;
+  /**
+   * Pre-split per-class submeshes. Present when the worker has already done
+   * the splitByClass pass (landuse/roads/rails); consumers should prefer
+   * these over re-splitting `positions + indices + attributes.class`.
+   */
+  submeshes?: SubmeshGeometry[];
   /** Optional per-feature attribute arrays (length = feature count). */
   attributes?: Record<string, Float32Array | Uint8Array | Uint32Array>;
   /**

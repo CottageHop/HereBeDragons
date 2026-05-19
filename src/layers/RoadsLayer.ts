@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Layer, splitByClass } from './Layer.js';
+import { Layer, makeSubmeshBufferGeometry } from './Layer.js';
 import { Palette } from '../materials/Palette.js';
 import { RoadClass } from '../tiles/worker/extractors/roads.js';
 import type { LayerName } from '../types.js';
@@ -19,10 +19,13 @@ export class RoadsLayer extends Layer {
   build(geometry: LayerGeometry): THREE.Object3D {
     const group = new THREE.Group();
     const buffers: THREE.BufferGeometry[] = [];
-    for (const [cls, bg] of splitByClass(geometry)) {
+    // Worker pre-splits this layer by class — see decode.worker.ts.
+    const submeshes = geometry.submeshes ?? [];
+    for (const sub of submeshes) {
+      const bg = makeSubmeshBufferGeometry(sub);
       const slot =
-        cls === RoadClass.Major ? Palette.road_major :
-        cls === RoadClass.Minor ? Palette.road_minor :
+        sub.classId === RoadClass.Major ? Palette.road_major :
+        sub.classId === RoadClass.Minor ? Palette.road_minor :
         Palette.road_path;
       const mesh = new THREE.Mesh(bg, this.materials.get(slot));
       mesh.renderOrder = -2;

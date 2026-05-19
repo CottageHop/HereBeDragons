@@ -80,7 +80,7 @@ The exported JSON is a literal `HereBeDragonsOptions` value — `theme`, `custom
 | `quality` | `'low' \| 'high' \| 'auto'` | `'auto'` | Render-quality tier. `'auto'` detects the GPU and downgrades integrated graphics to `'low'`. See [Performance](#performance-tuning). |
 | `pixelRatio` | `number` | quality-capped `devicePixelRatio` | Override render resolution. Always wins over the `quality` tier's cap. |
 | `background` | `string` | theme sky | Canvas background color. |
-| `performance` | `{ workerPoolSize?, visibleRadius?, tileWindowRadius?, tileWindowRadiusFar?, maxTileBuildsPerFrame? }` | auto | Tile-pipeline tuning. See [Performance](#performance-tuning). |
+| `performance` | `{ workerPoolSize?, visibleRadius?, tileWindowRadius?, tileWindowRadiusFar?, maxTileApplyMsPerFrame? }` | auto | Tile-pipeline tuning. See [Performance](#performance-tuning). |
 
 ### Layers
 
@@ -366,7 +366,7 @@ The dispatcher is **frustum-aware**: each frame, the camera's four screen corner
 | `visibleRadius` | `3` | tier-0 priority radius around camera target |
 | `tileWindowRadius` / `tileWindowRadiusFar` | `6` / `6` | safety cap on tile count when the camera looks near horizon (radius from target) |
 | `workerPoolSize` | `min(4, hardwareConcurrency − 1)` | 3–4 worker threads |
-| `maxTileBuildsPerFrame` | `1` | tile meshes added to the scene per RAF tick |
+| `maxTileApplyMsPerFrame` | `6` | per-frame ms budget for applying decoded tiles to the scene |
 | `dispatchInterval` | `4` | heavy visibility/dispatch pass runs every N-th RAF tick (≈ 15 Hz at 60 FPS) |
 
 Two-tier within the bbox:
@@ -378,7 +378,7 @@ The candidate set is the camera frustum's actual ground footprint — a convex *
 
 Within each tier the order is a **concentric ring expansion from the camera target** (the screen center) — closest squared-Euclidean distance first. Same-ring tiles tiebreak right-before-left so the fan stays visually symmetric.
 
-Tile builds are throttled to `maxTileBuildsPerFrame` per RAF tick so a burst of worker completions can't block pointer/wheel input. The heavy "what's visible now?" recompute runs only every `dispatchInterval` frames (default 4 → ~15 Hz at 60 FPS), also borrowed from PolyMap — tile fetches are network-bound and decodes take 50–200 ms in workers, so polling visibility at 60 Hz was wasted main-thread work that competed with input and rendering. **You can pan and zoom during the initial load.** As you pan, the frustum bbox shifts and new tiles are dispatched at the new viewport; tiles outside the new bbox stay in the LRU cache for a short grace period.
+Tile builds are bounded by a per-frame ms budget (`maxTileApplyMsPerFrame`) so a burst of worker completions can't block pointer/wheel input. The drain loop applies tiles closest to the camera first and yields once the budget is spent (always applying at least one tile per frame so the queue can drain even when a single build exceeds the budget). The heavy "what's visible now?" recompute runs only every `dispatchInterval` frames (default 4 → ~15 Hz at 60 FPS), also borrowed from PolyMap — tile fetches are network-bound and decodes take 50–200 ms in workers, so polling visibility at 60 Hz was wasted main-thread work that competed with input and rendering. **You can pan and zoom during the initial load.** As you pan, the frustum bbox shifts and new tiles are dispatched at the new viewport; tiles outside the new bbox stay in the LRU cache for a short grace period.
 
 ### Tuning options
 
@@ -392,7 +392,7 @@ await createHereBeDragons(el, {
     tileWindowRadius: 6,          // shrink the pre-loaded buffer (~169 tiles)
     tileWindowRadiusFar: 8,
     workerPoolSize: 2,
-    maxTileBuildsPerFrame: 1      // strictest input-smoothness mode
+    maxTileApplyMsPerFrame: 3     // tighter budget = smoother input under load
   }
 });
 ```
@@ -442,7 +442,7 @@ await createHereBeDragons(el, {
     rails: false,                 // skip ribbon + crosstie geometry
     labels: false,                // skip the sprite-text overlay
   },
-  performance: { maxTileBuildsPerFrame: 1, workerPoolSize: 2 }
+  performance: { maxTileApplyMsPerFrame: 3, workerPoolSize: 2 }
 });
 ```
 

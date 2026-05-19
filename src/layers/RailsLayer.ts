@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Layer, splitByClass } from './Layer.js';
+import { Layer, makeSubmeshBufferGeometry } from './Layer.js';
 import { Palette } from '../materials/Palette.js';
 import { RailPart } from '../tiles/worker/extractors/rails.js';
 import type { LayerName } from '../types.js';
@@ -16,8 +16,11 @@ export class RailsLayer extends Layer {
 
   build(geometry: LayerGeometry): THREE.Object3D {
     const group = new THREE.Group();
-    for (const [cls, bg] of splitByClass(geometry)) {
-      const slot = cls === RailPart.Tie ? Palette.rail_tie : Palette.rail_strip;
+    // Worker pre-splits this layer by class — see decode.worker.ts.
+    const submeshes = geometry.submeshes ?? [];
+    for (const sub of submeshes) {
+      const bg = makeSubmeshBufferGeometry(sub);
+      const slot = sub.classId === RailPart.Tie ? Palette.rail_tie : Palette.rail_strip;
       const mesh = new THREE.Mesh(bg, this.materials.get(slot));
       // Same renderOrder as roads so the order between scene meshes is
       // determined by polygon offset rather than draw order.

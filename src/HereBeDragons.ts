@@ -407,7 +407,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       tileWindowRadius: options.performance?.tileWindowRadius ?? qtile?.tileWindowRadius,
       tileWindowRadiusFar: options.performance?.tileWindowRadiusFar ?? qtile?.tileWindowRadiusFar,
       visibleRadius: options.performance?.visibleRadius ?? qtile?.visibleRadius,
-      maxTileBuildsPerFrame: options.performance?.maxTileBuildsPerFrame,
+      maxTileApplyMsPerFrame: options.performance?.maxTileApplyMsPerFrame,
       dispatchInterval: options.performance?.dispatchInterval ?? qtile?.dispatchInterval,
       onTileLoad: (z, x, y) => {
         // New tile means new buildings — auto-elevations on tags hovering

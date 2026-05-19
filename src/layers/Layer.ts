@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { LayerGeometry } from '../tiles/worker/decodeProtocol.js';
+import type { LayerGeometry, SubmeshGeometry } from '../tiles/worker/decodeProtocol.js';
 import type { StylizedMaterials } from '../materials/StylizedMaterials.js';
 import type { LayerName } from '../types.js';
 
@@ -38,59 +38,18 @@ export function makeBufferGeometry(geometry: LayerGeometry): THREE.BufferGeometr
 }
 
 /**
- * Split a LayerGeometry into per-class submeshes based on a per-vertex class
- * attribute. Assumes that within each triangle, all three vertices share the
- * same class — true by construction in our extractors.
- *
- * Returns: array of [classId, BufferGeometry].
+ * Build a Three BufferGeometry from a worker-emitted SubmeshGeometry — the
+ * pre-split per-class chunks for landuse/roads/rails. Zero-copy on the
+ * underlying typed arrays.
  */
-export function splitByClass(geometry: LayerGeometry, attrName = 'class'): Array<[number, THREE.BufferGeometry]> {
-  const classes = geometry.attributes?.[attrName];
-  if (!classes) {
-    return [[0, makeBufferGeometry(geometry)]];
+export function makeSubmeshBufferGeometry(sub: SubmeshGeometry): THREE.BufferGeometry {
+  const bg = new THREE.BufferGeometry();
+  bg.setAttribute('position', new THREE.BufferAttribute(sub.positions, 3));
+  if (sub.normals) {
+    bg.setAttribute('normal', new THREE.BufferAttribute(sub.normals, 3));
+  } else {
+    bg.computeVertexNormals();
   }
-  const { positions, indices, normals } = geometry;
-  const byClass = new Map<number, number[]>();
-  for (let i = 0; i < indices.length; i += 3) {
-    const cls = (classes as Uint8Array)[indices[i]];
-    let bucket = byClass.get(cls);
-    if (!bucket) {
-      bucket = [];
-      byClass.set(cls, bucket);
-    }
-    bucket.push(indices[i], indices[i + 1], indices[i + 2]);
-  }
-
-  const submeshes: Array<[number, THREE.BufferGeometry]> = [];
-  for (const [cls, tris] of byClass) {
-    // Compact vertex buffer for this submesh.
-    const remap = new Map<number, number>();
-    const subPositions: number[] = [];
-    const subNormals: number[] | null = normals ? [] : null;
-    const subIndices: number[] = [];
-
-    for (const idx of tris) {
-      let nidx = remap.get(idx);
-      if (nidx === undefined) {
-        nidx = subPositions.length / 3;
-        remap.set(idx, nidx);
-        subPositions.push(positions[idx * 3], positions[idx * 3 + 1], positions[idx * 3 + 2]);
-        if (subNormals && normals) {
-          subNormals.push(normals[idx * 3], normals[idx * 3 + 1], normals[idx * 3 + 2]);
-        }
-      }
-      subIndices.push(nidx);
-    }
-
-    const bg = new THREE.BufferGeometry();
-    bg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(subPositions), 3));
-    if (subNormals) {
-      bg.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(subNormals), 3));
-    } else {
-      bg.computeVertexNormals();
-    }
-    bg.setIndex(new THREE.BufferAttribute(new Uint32Array(subIndices), 1));
-    submeshes.push([cls, bg]);
-  }
-  return submeshes;
+  bg.setIndex(new THREE.BufferAttribute(sub.indices, 1));
+  return bg;
 }

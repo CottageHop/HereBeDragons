@@ -150,14 +150,14 @@ export interface HereBeDragonsOptions {
    *     target dispatch first — roughly the on-screen viewport at z=15)
    *   - `tileWindowRadius`: 10 (21×21 pre-loaded buffer for fast panning)
    *   - `tileWindowRadiusFar`: 14 (peripheral ring; ~777 tiles total)
-   *   - `maxTileBuildsPerFrame`: 2 (worker results are queued; this many
-   *     get built into three.js meshes per RAF so pointer/wheel input
-   *     always has a frame to run)
+   *   - `maxTileApplyMsPerFrame`: 6 (per-frame ms budget for applying
+   *     decoded tiles to the scene; the loop applies tiles closest to the
+   *     camera first and yields once the budget is spent)
    *
    * Reducing `tileWindowRadius` from 10 → 6 cuts buffer tile count from
    * 441 → 169 (faster first paint, more pop-in when panning). Raising
-   * `maxTileBuildsPerFrame` makes the map fill faster at the cost of input
-   * smoothness during the initial load burst.
+   * `maxTileApplyMsPerFrame` makes the map fill faster at the cost of
+   * input smoothness during the initial load burst.
    */
   /**
    * Low-resolution underlay. When enabled, a small set of lower-zoom tiles
@@ -181,7 +181,7 @@ export interface HereBeDragonsOptions {
     visibleRadius?: number;
     tileWindowRadius?: number;
     tileWindowRadiusFar?: number;
-    maxTileBuildsPerFrame?: number;
+    maxTileApplyMsPerFrame?: number;
     /**
      * Run the heavy visibility/dispatch/evict pass every N-th RAF tick.
      * Default 4 (≈ 15 Hz at 60 FPS). The apply queue + tile spawn
