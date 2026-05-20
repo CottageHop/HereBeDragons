@@ -97,15 +97,28 @@ export interface QualityProfile {
 }
 
 const PROFILES: Record<QualityLevel, QualityProfile> = {
-  // `'high'` is now the FORMER `'low'` preset: full 3D map, but cheap —
-  // 1× pixels, no MSAA, no clouds raymarch, no outline pipeline. Suitable
-  // for the vast majority of modern devices. Was the desktop "everything-
-  // on" preset, but that proved too aggressive in practice — we'd rather
-  // give every viable device the 3D experience than gate it behind a
-  // discrete GPU.
+  // `'high'`: full 3D map for the vast majority of modern devices. Still no
+  // clouds raymarch and no outline pipeline (the two heaviest fixed costs) —
+  // those stay gated behind an explicit opt-in. What it DOES carry now is the
+  // anti-aliasing the cheap pipeline was missing:
+  //
+  //   • Retina rendering (pixelRatioCap 2). At 1× the scene rendered at CSS
+  //     resolution and the browser upscaled the canvas to a HiDPI display —
+  //     everything came out soft. min(dpr, 2) renders at the panel's real
+  //     pixel grid (the headline cost — see the file-level note — but the
+  //     `'high'` chain is just one color pass + FXAA, so it's affordable).
+  //   • 4× MSAA on the color/normal targets. Roads and rails are thin
+  //     world-space ribbons (7–12 m wide); zoomed out they fall below one
+  //     pixel and, single-sampled, rasterization flips them on/off as the
+  //     camera pans — the "lines crawling" shimmer. MSAA gives sub-pixel
+  //     coverage so they fade smoothly instead. Costs bandwidth only at
+  //     edges + one resolve, not a full 4× shading pass.
+  //
+  // A machine that can't sustain this auto-downgrades to `'low'` (which drops
+  // pixelRatio back to 1 — the big fill-rate lever).
   high: {
-    pixelRatioCap: 1,
-    msaaSamples: 0,
+    pixelRatioCap: 2,
+    msaaSamples: 4,
     clouds: false,
     outlines: false,
     flatBuildings: false,
