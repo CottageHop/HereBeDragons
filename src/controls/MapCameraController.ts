@@ -27,12 +27,23 @@ const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
 
 export class MapCameraController {
+  /** Pan speed for mouse drag (desktop) — three.js MapControls default. */
+  private static readonly MOUSE_PAN_SPEED = 1.0;
+  /**
+   * Pan speed for touch/swipe (phones). MapControls uses one panSpeed for all
+   * input, and a finger swipe panned noticeably slower than a mouse drag felt
+   * right, so touch gets a bump while the mouse stays at the desktop default.
+   */
+  private static readonly TOUCH_PAN_SPEED = 1.5;
+
   readonly three: THREE.PerspectiveCamera;
   readonly controls: MapControls;
   onChange?: () => void;
 
   private projection: Projection;
   private bounds: BoundingBox | null = null;
+  private dom: HTMLCanvasElement;
+  private onPointerDown: (e: PointerEvent) => void;
 
   constructor(dom: HTMLCanvasElement, projection: Projection, init: CameraInitOptions) {
     this.projection = projection;
@@ -74,6 +85,17 @@ export class MapCameraController {
       this.onChange?.();
     });
 
+    // MapControls reads panSpeed fresh on every move, so switching it on
+    // pointerdown (by pointerType) applies cleanly to the gesture that
+    // follows: touch swipes pan faster, mouse drags keep the desktop feel.
+    this.dom = dom;
+    this.controls.panSpeed = MapCameraController.MOUSE_PAN_SPEED;
+    this.onPointerDown = (e: PointerEvent) => {
+      this.controls.panSpeed = e.pointerType === 'touch'
+        ? MapCameraController.TOUCH_PAN_SPEED
+        : MapCameraController.MOUSE_PAN_SPEED;
+    };
+    dom.addEventListener('pointerdown', this.onPointerDown);
   }
 
   update(_dt: number): void {
@@ -263,6 +285,7 @@ export class MapCameraController {
   }
 
   dispose(): void {
+    this.dom.removeEventListener('pointerdown', this.onPointerDown);
     this.controls.dispose();
   }
 }
