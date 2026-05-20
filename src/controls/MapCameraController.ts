@@ -34,7 +34,7 @@ export class MapCameraController {
    * input, and a finger swipe panned noticeably slower than a mouse drag felt
    * right, so touch gets a bump while the mouse stays at the desktop default.
    */
-  private static readonly TOUCH_PAN_SPEED = 1.5;
+  private static readonly TOUCH_PAN_SPEED = 2.25;
 
   readonly three: THREE.PerspectiveCamera;
   readonly controls: MapControls;
