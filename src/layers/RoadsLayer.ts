@@ -13,6 +13,20 @@ import type { LayerGeometry } from '../tiles/worker/decodeProtocol.js';
  */
 export const ROAD_GROUPS = new Set<THREE.Group>();
 
+/**
+ * Live registry of every loaded road group carrying bridge centerlines (in
+ * `userData.bridgeLines`). The BridgesManager iterates this to stitch and arch
+ * bridge decks. Auto-cleaned on tile eviction via a sentinel geometry.
+ */
+export const BRIDGE_GROUPS = new Set<THREE.Group>();
+
+/**
+ * Bumped whenever a bridge group is added or removed. The BridgesManager
+ * watches this counter so it only rebuilds the (potentially expensive) stitched
+ * decks when the set of loaded bridge tiles actually changed.
+ */
+export let bridgeVersion = 0;
+
 export class RoadsLayer extends Layer {
   readonly name: LayerName = 'roads';
 
@@ -44,6 +58,41 @@ export class RoadsLayer extends Layer {
         for (const b of buffers) b.removeEventListener('dispose', cleanup);
       };
       for (const b of buffers) b.addEventListener('dispose', cleanup);
+    }
+    // Tunnels: a flat ribbon drawn with the shared dashed + faded material so
+    // an underground roadway reads as below the surface. Geometry carries a
+    // `dashU` attribute (distance along the centerline) for the dash pattern.
+    if (geometry.tunnels) {
+      const tg = new THREE.BufferGeometry();
+      tg.setAttribute('position', new THREE.BufferAttribute(geometry.tunnels.positions, 3));
+      tg.setAttribute('dashU', new THREE.BufferAttribute(geometry.tunnels.dashU, 1));
+      tg.setAttribute('dashV', new THREE.BufferAttribute(geometry.tunnels.dashV, 1));
+      tg.setIndex(new THREE.BufferAttribute(geometry.tunnels.indices, 1));
+      const mesh = new THREE.Mesh(tg, this.materials.getTunnelMaterial());
+      mesh.renderOrder = -3;
+      group.add(mesh);
+    }
+
+    // Bridge centerlines for the BridgesManager. Registered with a dedicated
+    // sentinel geometry rather than the ribbon buffers above: a mid-span tile
+    // (a bridge over open water) can have bridges but no ribbon submeshes, so
+    // there'd be no buffer whose dispose marks tile eviction.
+    if (geometry.bridges) {
+      group.userData.bridgeLines = geometry.bridges;
+      BRIDGE_GROUPS.add(group);
+      bridgeVersion++;
+      const sentinel = new THREE.BufferGeometry();
+      sentinel.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3));
+      const sentinelMesh = new THREE.Mesh(sentinel, this.materials.get(Palette.road_major));
+      sentinelMesh.visible = false;
+      sentinelMesh.frustumCulled = false;
+      group.add(sentinelMesh);
+      const cleanup = (): void => {
+        BRIDGE_GROUPS.delete(group);
+        bridgeVersion++;
+        sentinel.removeEventListener('dispose', cleanup);
+      };
+      sentinel.addEventListener('dispose', cleanup);
     }
     return group;
   }

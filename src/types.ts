@@ -34,6 +34,13 @@ export interface HereBeDragonsOptions {
   pmtiles_url: string;
   layers?: Partial<Record<LayerName, boolean | LayerConfig>>;
   pixelRatio?: number;
+  /**
+   * MSAA sample count on the color/normal render targets, overriding the
+   * quality tier's default (4 on `'high'`, 0 on `'low'`). 0 disables MSAA
+   * (FXAA-only AA). Fixed at construction — it can't change at runtime. Mainly
+   * useful for isolating MSAA's cost when tuning performance.
+   */
+  msaa?: number;
   background?: string;
   /**
    * Render-quality tier.
@@ -54,6 +61,20 @@ export interface HereBeDragonsOptions {
    * value the profile would have set.
    */
   quality?: 'low' | 'high' | 'auto';
+  /**
+   * Dynamic resolution. Default `true`. The renderer is render-on-demand, so
+   * the only times it draws are while the camera moves and while tiles stream
+   * in — exactly when a Retina-resolution render is most expensive and least
+   * visible (the image is in motion). When enabled, the map renders at a
+   * cheaper `pixelRatio` (capped to 1) during those moments and snaps to the
+   * full tier resolution the instant motion settles, so a resting map stays
+   * crisp without paying the full fill-rate cost mid-pan.
+   *
+   * No effect on a 1× (non-Retina) display, where the motion ratio already
+   * equals the rest ratio. Ignored when an explicit `pixelRatio` is set — that
+   * option means "render at exactly this ratio, always."
+   */
+  dynamicResolution?: boolean;
   /**
    * Restrict camera panning to this geographic box. The camera target's
    * lat/lon is clamped on every frame; the user can still zoom freely.
@@ -322,8 +343,19 @@ export interface HereBeDragons {
   setNoiseSources(sources: ReadonlyArray<NoiseSource>): void;
   /** The render-quality tier currently in effect ('low' or 'high'). */
   getQualityTier(): 'low' | 'high';
-  /** Effective device-pixel-ratio handed to the WebGL renderer. */
+  /**
+   * The device-pixel-ratio the WebGL renderer is using *right now*. With
+   * dynamic resolution on this drops to the motion ratio (≤1) while panning /
+   * streaming and returns to the tier's rest ratio once the view settles.
+   */
   getPixelRatio(): number;
+  /**
+   * Toggle dynamic resolution at runtime (see `dynamicResolution` option).
+   * No-op when an explicit `pixelRatio` was supplied at construction.
+   */
+  setDynamicResolution(on: boolean): void;
+  /** Whether dynamic resolution is currently active. */
+  getDynamicResolution(): boolean;
   /**
    * Switch render-quality tier at runtime. Applies the profile's
    * runtime-safe levers: pixelRatio, the cloud pass, and the outline

@@ -232,6 +232,11 @@ function collectStreets(
     if (f.type !== VectorTileFeature.types.indexOf('LineString')) continue;
     const name = f.properties.name;
     if (!name || typeof name !== 'string') continue;
+    // Bridges are rendered as elevated decks by the BridgesManager, but street
+    // labels are drawn flat at ground level — a bridge's curved label would lie
+    // on the water under the arched deck. The label system can't follow the
+    // deck's elevation, so skip bridge roads here (the BridgesManager owns them).
+    if (f.properties.is_bridge === true) continue;
 
     const kind = String(f.properties.kind ?? f.properties.highway ?? '').toLowerCase();
     const classified = classifyRoad(kind);

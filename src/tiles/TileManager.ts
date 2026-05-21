@@ -11,7 +11,7 @@ import { lonLatToTile, lonLatToTileFractional, tileKey } from '../core/TileId.js
 import type { LayerName } from '../types.js';
 import { logger } from '../util/log.js';
 
-const DEFAULT_ACTIVE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads', 'rails', 'buildings', 'labels'];
+const DEFAULT_ACTIVE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads', 'rails', 'buildings', 'labels', 'trees'];
 /**
  * Safety cap (Chebyshev distance) on tiles loaded around the camera target,
  * regardless of frustum size. Acts as a fallback for near-horizon views
@@ -435,6 +435,21 @@ export class TileManager {
 
     this.evictUnwanted();
     return dirty;
+  }
+
+  /**
+   * True while tiles are still in flight — fetching, decoding in a worker, or
+   * decoded-and-queued waiting to be built into meshes. Goes false once the
+   * map has fully streamed in for the current view: `inFlightFetches` drains
+   * as fetches resolve, `applyQueue` drains as meshes are built, and `pending`
+   * is cleared on build/drop/error. Drives dynamic resolution — the renderer
+   * stays at the cheaper motion ratio while this is true so the per-frame
+   * cost of tile pop-in (geometry upload + redraw) doesn't fight a full-res
+   * render. (Tiles parked for retry are removed from `pending`, so a transient
+   * fetch failure won't pin this true.)
+   */
+  isStreaming(): boolean {
+    return this.inFlightFetches > 0 || this.applyQueue.length > 0 || this.pending.size > 0;
   }
 
   private chooseZoom(_cameraZoom: number): number {

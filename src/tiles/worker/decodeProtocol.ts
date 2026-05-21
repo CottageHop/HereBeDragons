@@ -45,6 +45,38 @@ export interface LayerGeometry {
     ranges: Uint32Array;
     classes: Uint8Array;
   };
+  /**
+   * Bridge centerlines, split out of the flat road ribbon by the roads
+   * extractor (features tagged `is_bridge`). Same layout as `lines`. Not
+   * rendered per-tile: the BridgesManager collects these across every loaded
+   * tile, stitches the per-tile pieces into complete spans by matching shared
+   * endpoints, and builds one continuous arched deck mesh per span — so a
+   * bridge clipped across tile boundaries still rises as a single smooth arch.
+   *  - `positions`: flat (X, Z) pairs, in scene-world meters.
+   *  - `ranges`: pairs of (startVertexIndex, endVertexIndex) per polyline.
+   *  - `classes`: one byte per polyline (matching RoadClass).
+   */
+  bridges?: {
+    positions: Float32Array;
+    ranges: Uint32Array;
+    classes: Uint8Array;
+  };
+  /**
+   * Tunnel ribbon geometry, split out of the flat road ribbon (features tagged
+   * `is_tunnel`). Already triangulated into a flat ribbon; drawn dashed + faded
+   * by the tunnel material so an underground roadway reads as "below".
+   *  - `positions`: XYZ triples (world meters).
+   *  - `indices`: triangle indices.
+   *  - `dashU`: per-vertex distance along the centerline (meters) for the dash.
+   *  - `dashV`: per-vertex across-width coord (0 left edge … 1 right edge), so
+   *     the material can draw just the road's dashed outline at low opacity.
+   */
+  tunnels?: {
+    positions: Float32Array;
+    indices: Uint32Array;
+    dashU: Float32Array;
+    dashV: Float32Array;
+  };
 }
 
 export interface DecodeRequest {

@@ -97,28 +97,29 @@ export interface QualityProfile {
 }
 
 const PROFILES: Record<QualityLevel, QualityProfile> = {
-  // `'high'`: full 3D map for the vast majority of modern devices. Still no
-  // clouds raymarch and no outline pipeline (the two heaviest fixed costs) —
-  // those stay gated behind an explicit opt-in. What it DOES carry now is the
-  // anti-aliasing the cheap pipeline was missing:
+  // `'high'`: full 3D map for the vast majority of modern devices. No clouds
+  // raymarch, no outline pipeline, and — deliberately — NO MSAA. The headline
+  // quality lever is:
   //
   //   • Retina rendering (pixelRatioCap 2). At 1× the scene rendered at CSS
   //     resolution and the browser upscaled the canvas to a HiDPI display —
   //     everything came out soft. min(dpr, 2) renders at the panel's real
-  //     pixel grid (the headline cost — see the file-level note — but the
-  //     `'high'` chain is just one color pass + FXAA, so it's affordable).
-  //   • 4× MSAA on the color/normal targets. Roads and rails are thin
-  //     world-space ribbons (7–12 m wide); zoomed out they fall below one
-  //     pixel and, single-sampled, rasterization flips them on/off as the
-  //     camera pans — the "lines crawling" shimmer. MSAA gives sub-pixel
-  //     coverage so they fade smoothly instead. Costs bandwidth only at
-  //     edges + one resolve, not a full 4× shading pass.
+  //     pixel grid. The `'high'` chain is just one color pass + FXAA, so even
+  //     at 2× it's affordable, and dynamic resolution drops it to 1× while the
+  //     camera moves so panning stays cheap.
+  //
+  // MSAA was tried here to tame the thin-ribbon shimmer (roads/rails fall below
+  // a pixel zoomed out and crawl as the camera pans) but 4× MSAA on the
+  // HalfFloat target cost far more per frame than the resolution itself —
+  // it was the dominant pan stutter. The shimmer is handled for free instead by
+  // fading sub-pixel ribbons into the ground colour (see StylizedMaterials'
+  // setSubpixelFade), so MSAA stays off.
   //
   // A machine that can't sustain this auto-downgrades to `'low'` (which drops
   // pixelRatio back to 1 — the big fill-rate lever).
   high: {
     pixelRatioCap: 2,
-    msaaSamples: 4,
+    msaaSamples: 0,
     clouds: false,
     outlines: false,
     flatBuildings: false,

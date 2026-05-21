@@ -20,9 +20,15 @@ import { logger } from '../util/log.js';
  * Mirrors PolyMap's `BaseTileManager` (src/tiles.rs). Differences from the
  * main TileManager:
  *   - Fixed zoom (default 11) rather than zoom-tracking.
- *   - Only base layers (water / waterways / landuse / roads) are requested
- *     from the worker — buildings, rails and labels are skipped. Decode is
+ *   - Only ground layers (water / waterways / landuse) are requested from the
+ *     worker — buildings, rails, labels AND roads are skipped. Decode is
  *     ~5–15 ms per tile vs. ~50–200 ms for a full z14 tile.
+ *   - Roads are deliberately excluded: the archive only tags `is_bridge` at
+ *     z12+, so at the underlay's coarse zoom every bridge looks like a normal
+ *     road and would render flat (with the road material's polygon-offset
+ *     poking it through water) beneath the elevated decks the BridgesManager
+ *     builds from the main tiles. The underlay's job is blank-canvas fill, not
+ *     the road network — which streams in fast from the main z14/z15 tiles.
  *   - Far smaller cache (16 tiles) — a z11 tile covers ~25× the area of a
  *     z14, so a 3×3 working set already covers a tilted viewport with pad.
  *   - Concurrent fetch cap of 2, so the underlay never starves the main
@@ -34,9 +40,11 @@ import { logger } from '../util/log.js';
  *     them anywhere z14 has rendered.
  */
 
-/** Layers requested from the worker for base tiles. Equivalent to PolyMap's
- *  DetailLevel::Low. Buildings/rails/labels are intentionally omitted. */
-const BASE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads'];
+/** Layers requested from the worker for base tiles — ground fill only.
+ *  Buildings/rails/labels are omitted for cost; roads are omitted because at
+ *  the coarse underlay zoom bridges aren't tagged and would render flat under
+ *  the elevated decks (see the class comment). */
+const BASE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse'];
 
 const DEFAULT_BASE_ZOOM = 11;
 const DEFAULT_BASE_CACHE_CAP = 16;

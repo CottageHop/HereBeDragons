@@ -29,8 +29,10 @@ import { RailsLayer } from './layers/RailsLayer.js';
 import { BuildingsLayer, BUILDING_THREE_LAYER } from './layers/BuildingsLayer.js';
 import { LabelsLayer, LABEL_THREE_LAYER } from './layers/LabelsLayer.js';
 import { CarsLayer } from './layers/CarsLayer.js';
+import { TreesLayer, TREE_THREE_LAYER } from './layers/TreesLayer.js';
+import { BridgesManager } from './bridges/BridgesManager.js';
 import { Palette } from './materials/Palette.js';
-import { THEMES, themeToPaletteOverrides, themeSky, type ThemeColors } from './themes.js';
+import { THEMES, themeToPaletteOverrides, themeSky, darken, type ThemeColors } from './themes.js';
 import { TagsManager } from './tags/TagsManager.js';
 import type { TagOptions, TagHandle } from './tags/types.js';
 import { PolygonsManager } from './polygons/PolygonsManager.js';
@@ -66,6 +68,8 @@ class HereBeDragonsImpl implements HereBeDragons {
   private readonly baseTileManager: BaseTileManager | null;
   /** Direct handle to the labels layer for setting place-label elevation. */
   private readonly labelsLayer: LabelsLayer;
+  private readonly treesLayer: TreesLayer;
+  private readonly bridgesManager: BridgesManager;
   private rafHandle = 0;
   private destroyed = false;
   private cloudTime = 0;
@@ -173,6 +177,44 @@ class HereBeDragonsImpl implements HereBeDragons {
    * change — the developer asked for a specific value.
    */
   private readonly pixelRatioExplicit: number | undefined;
+  /**
+   * The pixel ratio last pushed to the renderer. Differs from
+   * `effectivePixelRatio` while dynamic resolution is rendering at the cheaper
+   * motion ratio: `effectivePixelRatio` is the *rest* target, this is what's
+   * actually live on the GPU right now. Surfaced by `getPixelRatio()`.
+   */
+  private appliedPixelRatio: number;
+  /**
+   * Whether dynamic resolution is enabled. Forced off when the developer
+   * pinned an explicit `pixelRatio` (they asked for an exact ratio). See the
+   * `dynamicResolution` option.
+   */
+  private dynamicResolutionEnabled: boolean;
+  /**
+   * Pixel-ratio cap applied while the view is moving or tiles are streaming —
+   * 1 (no Retina super-sampling during motion). The rest ratio is
+   * `effectivePixelRatio`; on a 1× display the two are equal so dynamic res is
+   * a no-op.
+   */
+  private static readonly MOTION_PIXEL_RATIO_CAP = 1;
+  /** True while currently rendering at the motion (low) ratio. */
+  private renderingLowRes = false;
+  /** `performance.now()` of the last frame that moved the camera or streamed a tile. */
+  private lastInteractionMs = 0;
+  /**
+   * Set by the camera `onChange` callback, consumed once per RAF tick. A
+   * dedicated flag (not the shared `needsRender`) so the one-frame render we
+   * force to redraw at full resolution on settle isn't mistaken for camera
+   * motion — which would flip us straight back to low res and thrash.
+   */
+  private cameraDirty = false;
+  /**
+   * How long after the last camera move / tile stream to wait before snapping
+   * back to full resolution. Long enough that the damping inertia tail and the
+   * brief gaps between tile builds don't trigger a premature (and costly)
+   * re-allocation to full res mid-interaction.
+   */
+  private static readonly DYNAMIC_RES_SETTLE_MS = 180;
   /** Unregister hook for the `matchMedia` DPR-change listener. */
   private dprWatcherCleanup?: () => void;
   /**
@@ -259,8 +301,13 @@ class HereBeDragonsImpl implements HereBeDragons {
     const effectivePixelRatio = options.pixelRatio ?? Math.min(dpr, quality.pixelRatioCap);
     this.qualityTier = quality.level;
     this.effectivePixelRatio = effectivePixelRatio;
+    this.appliedPixelRatio = effectivePixelRatio;
     this.pixelRatioCap = quality.pixelRatioCap;
     this.pixelRatioExplicit = options.pixelRatio;
+    // Dynamic resolution defaults on, but a pinned `pixelRatio` means "exactly
+    // this, always" — so it disables the motion downscale.
+    this.dynamicResolutionEnabled =
+      (options.dynamicResolution ?? true) && options.pixelRatio === undefined;
     this.renderer = new Renderer(container, {
       pixelRatio: effectivePixelRatio,
       background: options.background
@@ -281,6 +328,9 @@ class HereBeDragonsImpl implements HereBeDragons {
     // outlines that would otherwise be drawn around every building).
     this.camera.three.layers.enable(LABEL_THREE_LAYER);
     this.camera.three.layers.enable(BUILDING_THREE_LAYER);
+    // Trees are billboards (custom vertex shader) — always excluded from the
+    // normal pass, so the camera just keeps this layer on for the color pass.
+    this.camera.three.layers.enable(TREE_THREE_LAYER);
     if (options.bounds) this.camera.setBounds(options.bounds);
     // Save the developer's chosen tilt range BEFORE any tier-imposed cap so
     // setQualityTier can restore it when switching back from `'low'` to
@@ -289,14 +339,14 @@ class HereBeDragonsImpl implements HereBeDragons {
     if (options.tiltRange) this.camera.setTiltRange(options.tiltRange);
     if (options.bearingRange) this.camera.setBearingRange(options.bearingRange);
     if (options.zoomRange) this.camera.setZoomRange(options.zoomRange);
-    // MSAA sample count comes from the quality profile — 4 on desktop, 0 on
-    // the 'low' tier (FXAA-only AA) so integrated GPUs skip the per-pixel
-    // multisample cost.
+    // MSAA sample count comes from the quality profile (4 on 'high', 0 on
+    // 'low'), unless the developer overrides it with the `msaa` option. Fixed
+    // at construction — the render targets are allocated with this sample count.
     this.composer = new Composer(
       this.renderer,
       this.scene.three,
       this.camera.three,
-      quality.msaaSamples
+      options.msaa ?? quality.msaaSamples
     );
     // The 'low' tier skips the normal + outline passes entirely — that's a
     // whole second scene render plus a full-screen Sobel shader gone, the
@@ -350,6 +400,20 @@ class HereBeDragonsImpl implements HereBeDragons {
     // Cars are opt-in — keep the default scene quiet. The user options loop
     // below can flip this back on via `layers: { cars: true }`.
     this.layers.setEnabled('cars', false);
+    this.treesLayer = new TreesLayer(this.scene.materials, {
+      getCameraZoom: () => this.camera.getView().zoom
+    });
+    this.layers.register('trees', this.treesLayer);
+    // Trees are opt-in too — thousands of billboards per tile is a deliberate
+    // choice. Enable via `layers: { trees: true }`.
+    this.layers.setEnabled('trees', false);
+
+    // Arched bridge decks. Not a registry layer: it consumes the bridge
+    // centerlines the roads extractor split out, stitches them across tiles,
+    // and rebuilds the decks globally (ticked from the RAF loop below).
+    this.bridgesManager = new BridgesManager(this.scene.materials, {
+      scene: this.scene.three
+    });
 
     for (const [name, cfg] of Object.entries(options.layers ?? {})) {
       const enabled = typeof cfg === 'boolean' ? cfg : cfg?.enabled !== false;
@@ -463,6 +527,9 @@ class HereBeDragonsImpl implements HereBeDragons {
       // Any camera mutation (pan/zoom/rotate, including the per-frame damping
       // settle) makes the frame dirty — render-on-demand keys off this.
       this.needsRender = true;
+      // Separate signal for dynamic resolution: this fires only on real camera
+      // motion, never on the synthetic full-res redraw we trigger on settle.
+      this.cameraDirty = true;
       const view = this.getView();
       this.bus.emit('viewchange', { type: 'viewchange', ...view });
     };
@@ -807,6 +874,25 @@ class HereBeDragonsImpl implements HereBeDragons {
     }
   }
 
+  /**
+   * Recompute the thin-ribbon sub-pixel fade for the current view. Replaces the
+   * MSAA we dropped for performance: roads/rails dissolve into the ground as
+   * they shrink below ~a pixel so they stop crawling/shimmering when zoomed out.
+   *
+   * `metersPerPixel` is the ground-plane span of one CSS pixel at the camera
+   * target — `(2 * distance * tan(fov/2)) / cssHeight`. CSS height (not the
+   * device drawing buffer) so the fade thresholds don't shift when dynamic
+   * resolution flips the pixel ratio mid-pan.
+   */
+  private updateSubpixelFade(): void {
+    const cam = this.camera.three;
+    const distance = cam.position.distanceTo(this.camera.controls.target);
+    const cssHeight = Math.max(1, this.renderer.height);
+    const halfFov = (cam.fov * Math.PI) / 360; // fov is the full vertical FOV in deg
+    const metersPerPixel = (2 * distance * Math.tan(halfFov)) / cssHeight;
+    this.scene.materials.setSubpixelFade(metersPerPixel);
+  }
+
   private start(): void {
     let last = performance.now();
     // EMA of the RAF-to-RAF delta on RENDER frames only. ~16.7 ms = "keeping
@@ -834,13 +920,30 @@ class HereBeDragonsImpl implements HereBeDragons {
       const frameBudgetOk = smoothedFrameMs < this.frameBudgetMs;
 
       // --- per-frame state updates (cheap; always run) -------------------
-      // camera.update fires onChange → sets needsRender while damping.
+      // camera.update fires onChange → sets needsRender + cameraDirty while
+      // damping.
       this.camera.update(dt);
+      // Consume the real-motion signal (set by camera.onChange just above) —
+      // a dedicated flag so the synthetic settle redraw isn't read as motion.
+      const cameraMoved = this.cameraDirty;
+      this.cameraDirty = false;
       // tileManager / layers report whether they changed the rendered scene.
       const tileDirty = this.tileManager.update(false, frameBudgetOk);
       this.baseTileManager?.update(false);
       const layersDirty = this.layers.update(dt);
+      // Bridge decks rebuild (debounced) when the loaded bridge-tile set
+      // changes; a rebuild is a visible scene change.
+      const bridgesDirty = this.bridgesManager.update(dt);
       this.cloudTime += dt;
+
+      // --- dynamic resolution -------------------------------------------
+      // Drop to the cheap motion pixel ratio while the camera moves or tiles
+      // stream, snap back to full res on settle.
+      this.updateDynamicResolution(
+        now,
+        cameraMoved,
+        tileDirty || this.tileManager.isStreaming()
+      );
 
       // --- render-on-demand decision ------------------------------------
       // Only run the (expensive, 5-pass) render when something actually
@@ -855,7 +958,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       const noiseDirty = this.noiseEnabled;
       const heartbeat = this.framesSinceRender >= HereBeDragonsImpl.RENDER_HEARTBEAT_FRAMES;
       const willRender =
-        this.needsRender || tileDirty || layersDirty ||
+        this.needsRender || tileDirty || layersDirty || bridgesDirty ||
         cloudsDirty || noiseDirty || heartbeat;
 
       // --- FPS measurement + auto-tier watchers (movement frames only) ---
@@ -925,6 +1028,7 @@ class HereBeDragonsImpl implements HereBeDragons {
         this.composer.setCloudTime(this.cloudTime);
         this.composer.setNoiseTime(this.cloudTime);
         this.updateFogForTilt();
+        this.updateSubpixelFade();
         this.composer.render();
         // Tag/popup DOM overlays only need repositioning when something
         // moved — gate them with the render so a static idle scene does
@@ -1074,9 +1178,30 @@ class HereBeDragonsImpl implements HereBeDragons {
     return this.qualityTier;
   }
 
-  /** Effective device-pixel-ratio handed to the WebGL renderer. */
+  /**
+   * The device-pixel-ratio the renderer is using right now. With dynamic
+   * resolution active this is the motion ratio (≤1) while panning / streaming
+   * and the tier's rest ratio once the view settles.
+   */
   getPixelRatio(): number {
-    return this.effectivePixelRatio;
+    return this.appliedPixelRatio;
+  }
+
+  setDynamicResolution(on: boolean): void {
+    // A pinned `pixelRatio` means "exactly this, always" — honour it.
+    if (this.pixelRatioExplicit !== undefined) return;
+    if (on === this.dynamicResolutionEnabled) return;
+    this.dynamicResolutionEnabled = on;
+    if (!on) {
+      // Turning it off: drop the motion-low state and restore full resolution,
+      // redrawing crisp if we were mid-pan at the low ratio.
+      this.renderingLowRes = false;
+      if (this.syncPixelRatio()) this.needsRender = true;
+    }
+  }
+
+  getDynamicResolution(): boolean {
+    return this.dynamicResolutionEnabled;
   }
 
   /**
@@ -1154,12 +1279,66 @@ class HereBeDragonsImpl implements HereBeDragons {
     const dpr = window.devicePixelRatio;
     const pr = Math.min(dpr, this.pixelRatioCap);
     if (Math.abs(pr - this.effectivePixelRatio) < 1e-6) return;
+    // `effectivePixelRatio` is the REST target; `syncPixelRatio()` re-derives
+    // the value actually pushed to the GPU (which may be the motion ratio if
+    // we're mid-pan) and re-allocates the targets only if it changed.
     this.effectivePixelRatio = pr;
-    this.renderer.three.setPixelRatio(pr);
-    // composer.resize() reads renderer.getPixelRatio() — running it without
-    // a fresh canvas size still re-allocates the targets at the new ratio.
-    this.composer.resize(this.renderer.width, this.renderer.height);
+    this.syncPixelRatio();
     this.needsRender = true;
+  }
+
+  /**
+   * The pixel ratio that *should* be live right now: the cheaper motion cap
+   * while dynamic resolution is rendering low-res, otherwise the rest target.
+   */
+  private desiredPixelRatio(): number {
+    if (this.dynamicResolutionEnabled && this.renderingLowRes) {
+      return Math.min(this.effectivePixelRatio, HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP);
+    }
+    return this.effectivePixelRatio;
+  }
+
+  /**
+   * Push `desiredPixelRatio()` to the renderer + composer, re-allocating the
+   * render targets, but only when the value actually changed. The single choke
+   * point for every pixel-ratio change — dynamic-res flips, DPR-monitor
+   * changes, and tier switches all funnel through here so `appliedPixelRatio`
+   * stays the source of truth for what's live on the GPU. Returns whether the
+   * ratio (and therefore the targets) actually changed.
+   */
+  private syncPixelRatio(): boolean {
+    const pr = this.desiredPixelRatio();
+    if (Math.abs(pr - this.appliedPixelRatio) < 1e-6) return false;
+    this.appliedPixelRatio = pr;
+    this.renderer.three.setPixelRatio(pr);
+    // composer.resize() reads renderer.getPixelRatio() — running it without a
+    // fresh canvas size still re-allocates the targets at the new ratio.
+    this.composer.resize(this.renderer.width, this.renderer.height);
+    return true;
+  }
+
+  /**
+   * Dynamic-resolution decision, run once per RAF tick before the render.
+   * Renders at the cheap motion ratio while the camera is moving or tiles are
+   * streaming, then snaps back to the full rest ratio (and forces one redraw)
+   * once both have been quiet for `DYNAMIC_RES_SETTLE_MS`.
+   *
+   * @param now           `performance.now()` for this tick.
+   * @param cameraMoved   The camera moved this frame (real motion, not our
+   *                      own settle redraw — see `cameraDirty`).
+   * @param tilesStreaming Tiles are still fetching / decoding / building.
+   */
+  private updateDynamicResolution(now: number, cameraMoved: boolean, tilesStreaming: boolean): void {
+    if (!this.dynamicResolutionEnabled) return;
+    if (cameraMoved || tilesStreaming) this.lastInteractionMs = now;
+    const active = (now - this.lastInteractionMs) < HereBeDragonsImpl.DYNAMIC_RES_SETTLE_MS;
+    if (active === this.renderingLowRes) return;
+    this.renderingLowRes = active;
+    const changed = this.syncPixelRatio();
+    // Settling back to full res: the scene is otherwise idle, so force the one
+    // crisp frame that replaces the low-res image left on screen. Only when the
+    // ratio actually moved (a no-op on 1× displays, where rest === motion).
+    if (!active && changed) this.needsRender = true;
   }
 
   /**
@@ -1191,6 +1370,11 @@ class HereBeDragonsImpl implements HereBeDragons {
 
   private applyMergedPalette(theme: ThemeColors): void {
     this.scene.materials.setColors(themeToPaletteOverrides(theme));
+    // Trees track the theme: canopy from the park colour (darkened a touch so
+    // they read deeper than the flat park/grass fill), trunk from the building
+    // colour darkened — so a greyscale theme gives a dark-grey trunk, an earthy
+    // theme a brown one, rather than a fixed wood brown that clashes.
+    this.treesLayer.setColors(darken(theme.park, 0.12), darken(theme.building, 0.5));
     // Refresh the building / floor highlight overlay colors. Themes that
     // omit `highlight` reset to the cyan/orange defaults so a previous
     // theme's choices don't leak.
@@ -1471,6 +1655,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.tagsManager.dispose();
     this.polygonsManager.dispose();
     this.buildingsManager.dispose();
+    this.bridgesManager.dispose();
     this.compass.destroy();
     this.tileManager.dispose();
     this.baseTileManager?.dispose();

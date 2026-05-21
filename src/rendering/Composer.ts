@@ -6,6 +6,7 @@ import { NoisePass } from './NoisePass.js';
 import { FxaaPass } from './FxaaPass.js';
 import { LABEL_THREE_LAYER } from '../layers/LabelsLayer.js';
 import { BUILDING_THREE_LAYER } from '../layers/BuildingsLayer.js';
+import { TREE_THREE_LAYER } from '../layers/TreesLayer.js';
 
 /**
  * Multi-pass renderer:
@@ -335,9 +336,13 @@ export class Composer {
       r.clear();
       this.scene.overrideMaterial = this.normalMaterial;
       this.camera.layers.disable(LABEL_THREE_LAYER);
+      // Trees are billboards expanded in a custom vertex shader; the normal
+      // override can't reproduce that, so always exclude them here.
+      this.camera.layers.disable(TREE_THREE_LAYER);
       if (!this.buildingsInNormalPass) this.camera.layers.disable(BUILDING_THREE_LAYER);
       r.render(this.scene, this.camera);
       if (!this.buildingsInNormalPass) this.camera.layers.enable(BUILDING_THREE_LAYER);
+      this.camera.layers.enable(TREE_THREE_LAYER);
       this.camera.layers.enable(LABEL_THREE_LAYER);
       this.scene.overrideMaterial = null;
 

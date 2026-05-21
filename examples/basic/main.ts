@@ -21,6 +21,26 @@ const initialTheme = url.searchParams.get('theme') ?? 'cottagecore';
 const qualityParam = url.searchParams.get('quality');
 const quality: 'low' | 'high' | undefined =
   qualityParam === 'low' || qualityParam === 'high' ? qualityParam : undefined;
+// `?pixelRatio=N` overrides the tier's DPR cap (fractional OK, e.g. 1.5). The
+// renderer is render-on-demand, so the cost of Retina rendering is only paid
+// while the camera moves or tiles stream — scroll the map at different values
+// and watch the HUD's "worst ms" to feel the fill-rate cost of the DPR lever.
+const pixelRatioParam = url.searchParams.get('pixelRatio');
+const pixelRatio =
+  pixelRatioParam != null && Number.isFinite(Number(pixelRatioParam))
+    ? Number(pixelRatioParam)
+    : undefined;
+// `?dynamicResolution=0` disables the motion downscale so you can A/B it
+// against the default (on). Watch the HUD's px readout drop while you drag and
+// snap back crisp when you stop. (No effect alongside an explicit pixelRatio.)
+const dynResParam = url.searchParams.get('dynamicResolution');
+const dynamicResolution =
+  dynResParam == null ? undefined : dynResParam !== '0' && dynResParam !== 'false';
+// `?msaa=0|2|4` overrides the tier's MSAA sample count (fixed at construction).
+// Lets you isolate MSAA's per-frame cost when A/B-testing pan smoothness.
+const msaaParam = url.searchParams.get('msaa');
+const msaa =
+  msaaParam != null && Number.isFinite(Number(msaaParam)) ? Number(msaaParam) : undefined;
 
 const mapOptions = {
   center: { lat, lon },
@@ -34,7 +54,8 @@ const mapOptions = {
     roads: true,
     rails: true,
     buildings: true,
-    labels: true
+    labels: true,
+    trees: true
   }
 };
 
@@ -45,7 +66,10 @@ const map = await createHereBeDragons(container, {
   ...mapOptions,
   theme: initialTheme,
   clouds: false,
-  quality
+  quality,
+  pixelRatio,
+  dynamicResolution,
+  msaa
 });
 
 // --- live HUD: FPS + active quality tier + pixelRatio --------------------
@@ -61,9 +85,10 @@ const map = await createHereBeDragons(container, {
         `tier: ${map.getQualityTier()} · ${map.getPixelRatio().toFixed(2)}× px`;
     };
     refreshTier();
-    // The Studio Quality buttons flip the tier — re-read every 500 ms so
-    // the HUD stays in sync without us wiring an event.
-    setInterval(refreshTier, 500);
+    // Re-read often (150 ms) so two live signals show without wiring events:
+    // the Studio Quality buttons flipping the tier, and dynamic resolution
+    // dropping the px ratio mid-pan then snapping back crisp on settle.
+    setInterval(refreshTier, 150);
 
     let lastFpsUpdate = performance.now();
     let frames = 0;

@@ -16,6 +16,7 @@ import { extractRoads } from './extractors/roads.js';
 import { extractRails } from './extractors/rails.js';
 import { extractBuildings } from './extractors/buildings.js';
 import { extractLabels } from './extractors/labels.js';
+import { extractTrees } from './extractors/trees.js';
 import { splitByClass } from './shared/splitByClass.js';
 
 /** Layers whose extractors emit a per-vertex `class` attribute. */
@@ -82,6 +83,9 @@ function decodeTile(req: DecodeRequest): void {
   if (wanted.has('labels')) {
     base.labels = extractLabels(req.z, req.x, req.y, layersByName, req.originLat, req.originLon);
   }
+  if (wanted.has('trees')) {
+    base.trees = extractTrees(req.z, req.x, req.y, layersByName, req.originLat, req.originLon);
+  }
   // Pre-split class-keyed layers in the worker so the main thread doesn't
   // have to walk the index buffer + remap vertices during apply.
   for (const name of CLASS_SPLIT_LAYERS) {
@@ -137,6 +141,17 @@ function postPhase(
       transfers.push(g.lines.positions.buffer);
       transfers.push(g.lines.ranges.buffer);
       transfers.push(g.lines.classes.buffer);
+    }
+    if (g.bridges) {
+      transfers.push(g.bridges.positions.buffer);
+      transfers.push(g.bridges.ranges.buffer);
+      transfers.push(g.bridges.classes.buffer);
+    }
+    if (g.tunnels) {
+      transfers.push(g.tunnels.positions.buffer);
+      transfers.push(g.tunnels.indices.buffer);
+      transfers.push(g.tunnels.dashU.buffer);
+      transfers.push(g.tunnels.dashV.buffer);
     }
   }
   ctx.postMessage(response, transfers);

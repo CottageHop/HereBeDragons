@@ -10,7 +10,7 @@ export enum RoadClass {
   Path = 2
 }
 
-const WIDTH_M: Record<RoadClass, number> = {
+export const WIDTH_M: Record<RoadClass, number> = {
   [RoadClass.Major]: 12,
   [RoadClass.Minor]: 7,
   [RoadClass.Path]: 3
@@ -18,7 +18,9 @@ const WIDTH_M: Record<RoadClass, number> = {
 
 // Stagger Y so a path crossing a road doesn't z-fight with it. Visual order:
 // major roads on top (most important), paths underneath where they overlap.
-const ROAD_Y_BY_CLASS: Record<RoadClass, number> = {
+// Also the deck base for arched bridges (the BridgesManager adds the arch on
+// top of this) so a bridge meets its connecting flat road at the same height.
+export const ROAD_Y_BY_CLASS: Record<RoadClass, number> = {
   [RoadClass.Major]: -0.30,
   [RoadClass.Minor]: -0.40,
   [RoadClass.Path]:  -0.50
@@ -41,6 +43,22 @@ export function extractRoads(
   const lineRanges: number[] = [];      // (startPairIdx, endPairIdx) per polyline
   const lineClasses: number[] = [];
 
+  // Bridge centerlines, split out of the flat ribbon. The BridgesManager
+  // stitches these across tiles and builds the arched decks (see protocol).
+  const bridgePositions: number[] = [];
+  const bridgeRanges: number[] = [];
+  const bridgeClasses: number[] = [];
+
+  // Tunnel ribbons, split out of the flat ribbon and drawn dashed + faded so an
+  // underground roadway reads as "below" rather than as a normal surface road.
+  // `dashU` is per-vertex distance along the centerline (metres), which the
+  // tunnel material uses to stripe the deck into dashes.
+  const tunnelPositions: number[] = [];
+  const tunnelIndices: number[] = [];
+  const tunnelDashU: number[] = [];
+  const tunnelDashV: number[] = [];
+  const tunnelScratchClasses: number[] = []; // buildRibbon needs a sink; unused
+
   for (const name of ROAD_LAYER_NAMES) {
     const layer = layersByName[name];
     if (!layer) continue;
@@ -52,10 +70,37 @@ export function extractRoads(
       if (f.type !== VectorTileFeature.types.indexOf('LineString')) continue;
       const cls = classifyRoad(f.properties);
       if (cls === null) continue;
+      const isBridge = f.properties.is_bridge === true;
+      const isTunnel = f.properties.is_tunnel === true;
       const half = WIDTH_M[cls] * 0.5;
       const lines = f.loadGeometry();
       for (const line of lines) {
         if (line.length < 2) continue;
+        if (isTunnel && !isBridge) {
+          // Tunnels: own dashed/faded ribbon, never the flat surface ribbon or
+          // the car path (cars shouldn't drive an underground segment on top).
+          buildRibbon(
+            line, t, half, ROAD_Y_BY_CLASS[cls], cls,
+            tunnelPositions, tunnelIndices, tunnelScratchClasses, tunnelDashU, tunnelDashV
+          );
+          continue;
+        }
+        if (isBridge) {
+          // Hand bridges to the BridgesManager as centerlines only — they're
+          // rebuilt as arched decks on the main thread, not as flat ribbons
+          // here. Excluded from `lines` too so cars don't drive the flat span.
+          const startPair = bridgePositions.length / 2;
+          for (let j = 0; j < line.length; j++) {
+            const p = line[j];
+            bridgePositions.push(
+              t.worldOffsetX + p.x * t.scalePerExtentX,
+              -(t.worldOffsetY - p.y * t.scalePerExtentY)
+            );
+          }
+          bridgeRanges.push(startPair, bridgePositions.length / 2);
+          bridgeClasses.push(cls);
+          continue;
+        }
         const lineStartPair = linePositions.length / 2;
         // Project the centerline points alongside ribbon construction so we
         // don't duplicate work.
@@ -74,8 +119,12 @@ export function extractRoads(
     }
   }
 
-  if (indices.length === 0) return null;
+  const hasRibbon = indices.length > 0;
+  const hasBridges = bridgeRanges.length > 0;
+  const hasTunnels = tunnelIndices.length > 0;
+  if (!hasRibbon && !hasBridges && !hasTunnels) return null;
   return {
+    // A bridges/tunnels-only tile still needs valid (empty) ribbon arrays.
     positions: new Float32Array(positions),
     indices: new Uint32Array(indices),
     normals: makeFlatUpNormals(positions.length / 3),
@@ -84,7 +133,22 @@ export function extractRoads(
       positions: new Float32Array(linePositions),
       ranges: new Uint32Array(lineRanges),
       classes: new Uint8Array(lineClasses)
-    }
+    },
+    bridges: hasBridges
+      ? {
+          positions: new Float32Array(bridgePositions),
+          ranges: new Uint32Array(bridgeRanges),
+          classes: new Uint8Array(bridgeClasses)
+        }
+      : undefined,
+    tunnels: hasTunnels
+      ? {
+          positions: new Float32Array(tunnelPositions),
+          indices: new Uint32Array(tunnelIndices),
+          dashU: new Float32Array(tunnelDashU),
+          dashV: new Float32Array(tunnelDashV)
+        }
+      : undefined
   };
 }
 
@@ -111,7 +175,14 @@ function buildRibbon(
   cls: RoadClass,
   positions: number[],
   indices: number[],
-  classes: number[]
+  classes: number[],
+  /** Optional per-vertex dash coordinates for the tunnel material, pushed in
+   *  lockstep with `positions` (left edge then right edge per station):
+   *   - `dashUOut`: distance along the centerline (metres) → dash along length.
+   *   - `dashVOut`: 0 at the left edge, 1 at the right → lets the shader draw
+   *     only the road's outline rather than filling its width. */
+  dashUOut?: number[],
+  dashVOut?: number[]
 ): void {
   const n = line.length;
   const wx: number[] = new Array(n);
@@ -120,6 +191,12 @@ function buildRibbon(
     const p = line[i];
     wx[i] = t.worldOffsetX + p.x * t.scalePerExtentX;
     wz[i] = -(t.worldOffsetY - p.y * t.scalePerExtentY);
+  }
+  // Cumulative distance along the centerline for the dash coordinate.
+  const dist: number[] = new Array(n);
+  dist[0] = 0;
+  for (let i = 1; i < n; i++) {
+    dist[i] = dist[i - 1] + Math.hypot(wx[i] - wx[i - 1], wz[i] - wz[i - 1]);
   }
 
   // Miter normal at each vertex; clamp to avoid spike artifacts at sharp corners.
@@ -171,6 +248,8 @@ function buildRibbon(
     positions.push(wx[i] + nx, yPlane, wz[i] + nz);
     positions.push(wx[i] - nx, yPlane, wz[i] - nz);
     classes.push(cls, cls);
+    if (dashUOut) dashUOut.push(dist[i], dist[i]);
+    if (dashVOut) dashVOut.push(0, 1);
     leftIdx[i] = baseVertex;
     rightIdx[i] = baseVertex + 1;
   }
