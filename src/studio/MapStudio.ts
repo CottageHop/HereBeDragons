@@ -21,6 +21,7 @@ const LAYER_KEYS: ReadonlyArray<LayerName> = [
   'landuse',
   'roads',
   'buildings',
+  'trees',
   'labels',
   'cars'
 ];

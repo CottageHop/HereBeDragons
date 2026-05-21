@@ -252,6 +252,13 @@ export class TileManager {
    * `update()` drains up to `maxBuildsPerFrame` items per RAF.
    */
   private applyQueue: PendingApply[] = [];
+  /**
+   * Bumped by `reload()`. Each in-flight decode captures the generation it was
+   * dispatched under; results from a stale generation are dropped so a reload
+   * (e.g. a per-tile layer toggled on after construction) cleanly supersedes
+   * decodes that were already in flight with the old layer set.
+   */
+  private generation = 0;
 
   constructor(private deps: TileManagerDeps) {
     this.cache = new TileCache(1024, (tile) => deps.scene.removeTile(tile));
@@ -525,6 +532,7 @@ export class TileManager {
       // a disabled `buildings` layer skips the O(n²) extraction entirely
       // rather than decoding then hiding the result.
       const wantedLayers = this.activeLayerSubset();
+      const gen = this.generation;
 
       // The decode worker may finish multiple phases in the same JS task —
       // building meshes synchronously from each callback would block input
@@ -534,6 +542,9 @@ export class TileManager {
         z, x, y, data, originLat, originLon, wantedLayers,
         (response) => {
           if (this.disposed) return;
+          // A reload happened after this decode was dispatched — its layer set
+          // is stale; drop it (the tile has been re-requested under the new gen).
+          if (gen !== this.generation) return;
           if (!this.isInKeepZone(x, y)) return;
           this.applyQueue.push({
             key,
@@ -666,9 +677,30 @@ export class TileManager {
   }
 
   setLayerEnabled(layerName: LayerName, enabled: boolean): void {
+    let present = false;
     for (const [, tile] of this.cache.entries()) {
       tile.setLayerVisible(layerName, enabled);
+      if (tile.getLayer(layerName)) present = true;
     }
+    // Enabling a per-tile layer that no cached tile actually has — e.g. an
+    // opt-in layer (trees) toggled on after construction — needs a re-decode:
+    // toggling visibility can't reveal geometry that was never built.
+    if (enabled && !present && DEFAULT_ACTIVE_LAYERS.includes(layerName)) {
+      this.reload();
+    }
+  }
+
+  /**
+   * Drop all cached + queued tiles so the dispatch loop re-fetches and
+   * re-decodes the visible set under the current layer subset. Used when the
+   * active layer set changes in a way that needs new geometry. In-flight
+   * decodes from before the bump are dropped via the generation guard.
+   */
+  reload(): void {
+    this.generation++;
+    this.cache.clear();
+    this.pending.clear();
+    this.applyQueue.length = 0;
   }
 
   /**
