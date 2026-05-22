@@ -511,4 +511,7 @@ import type {
 
 ## License
 
-See [LICENSE](LICENSE).
+Source-available, no-resale. You may use, modify, and distribute HereBeDragons
+for free, including inside a commercial product or service, but you may not sell
+or resell the software itself (or a derivative of it) as the primary thing of
+value. See [LICENSE](LICENSE) for the exact terms.
