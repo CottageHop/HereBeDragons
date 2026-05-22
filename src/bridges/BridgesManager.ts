@@ -411,8 +411,8 @@ function buildDeckRibbon(
   for (let i = 0; i < n; i++) {
     const i0 = Math.max(0, i - 1);
     const i1 = Math.min(n - 1, i + 1);
-    let tx = pts[i1].x - pts[i0].x;
-    let tz = pts[i1].z - pts[i0].z;
+    const tx = pts[i1].x - pts[i0].x;
+    const tz = pts[i1].z - pts[i0].z;
     const ty = pts[i1].y - pts[i0].y;
     const tl = Math.hypot(tx, tz) || 1;
     const sx = -tz / tl;
