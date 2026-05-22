@@ -1,4 +1,4 @@
-import type { HereBeDragons, HereBeDragonsOptions, LayerName } from '../types.js';
+import type { HereBeDragons, HereBeDragonsOptions, LayerConfig, LayerName } from '../types.js';
 import { THEMES, THEME_NAMES, type ThemeColors } from '../themes.js';
 import { injectDefaultStudioStylesOnce } from './styles.js';
 import type { MapStudio as MapStudioHandle, StudioConfig, StudioOptions } from './types.js';
@@ -41,7 +41,10 @@ export class MapStudio implements MapStudioHandle {
   private readonly container: HTMLElement;
   private readonly initialConfig: Partial<HereBeDragonsOptions>;
   private readonly onExport?: StudioOptions['onExport'];
+  private readonly onImport?: StudioOptions['onImport'];
   private readonly themeNames: string[];
+  /** Pulls each panel control back into sync with the map after an import. */
+  private readonly resyncFns: Array<() => void> = [];
 
   private readonly panel: HTMLDivElement;
   private readonly body: HTMLDivElement;
@@ -64,6 +67,10 @@ export class MapStudio implements MapStudioHandle {
   private tiltRange: RangeState;
   private bearingRange: RangeState;
   private zoomRange: RangeState;
+  /** Full camera controls — kept so `setConfig` can drive their range editors. */
+  private readonly tiltCtl: CameraControl;
+  private readonly bearingCtl: CameraControl;
+  private readonly zoomCtl: CameraControl;
   private readonly cloudsInput: HTMLInputElement;
   private readonly cloudsOpacityInput: HTMLInputElement;
   private readonly cloudsOpacityValue: HTMLSpanElement;
@@ -78,6 +85,7 @@ export class MapStudio implements MapStudioHandle {
     this.container = options.container ?? document.body;
     this.initialConfig = options.initialConfig ?? {};
     this.onExport = options.onExport;
+    this.onImport = options.onImport;
     // The compass is owned by HereBeDragons; the studio just provides a UI
     // toggle. If the developer explicitly set the option, forward it to the
     // map; otherwise leave whatever state the map was constructed with.
@@ -138,6 +146,9 @@ export class MapStudio implements MapStudioHandle {
       themeSection.appendChild(this.themeGrid);
       this.body.appendChild(themeSection);
       this.buildThemeGrid();
+      // After an import, rebuild the grid so the active swatch + toggle reflect
+      // the imported theme.
+      this.resyncFns.push(() => this.buildThemeGrid());
     }
 
     // ----- Custom colors -------------------------------------------------
@@ -165,6 +176,7 @@ export class MapStudio implements MapStudioHandle {
       colorSection.appendChild(row);
       this.colorInputs.set(key, input);
     }
+    this.resyncFns.push(() => this.refreshCustomColorInputs());
     this.body.appendChild(colorSection);
 
     // ----- Highlight overlay colors -------------------------------------
@@ -182,6 +194,7 @@ export class MapStudio implements MapStudioHandle {
       input.addEventListener('change', () => {
         this.map.setBuildingPopup({ popupEnabled: input.checked });
       });
+      this.resyncFns.push(() => { input.checked = this.map.isBuildingPopupEnabled(); });
       row.appendChild(label);
       row.appendChild(input);
       highlightSection.appendChild(row);
@@ -218,6 +231,14 @@ export class MapStudio implements MapStudioHandle {
       highlightSection.appendChild(row);
       this.floorHighlightInput = input;
     }
+    this.resyncFns.push(() => {
+      if (this.buildingHighlightInput) {
+        this.buildingHighlightInput.value = this.map.getBuildingHighlightColor();
+      }
+      if (this.floorHighlightInput) {
+        this.floorHighlightInput.value = this.map.getFloorHighlightColor();
+      }
+    });
     this.body.appendChild(highlightSection);
 
     // ----- Camera --------------------------------------------------------
@@ -237,6 +258,7 @@ export class MapStudio implements MapStudioHandle {
     });
     camSection.appendChild(tiltCtl.row);
     camSection.appendChild(tiltCtl.rangeContainer);
+    this.tiltCtl = tiltCtl;
     this.tiltInput = tiltCtl.input;
     this.tiltValue = tiltCtl.value;
     this.tiltRange = tiltCtl.state;
@@ -253,6 +275,7 @@ export class MapStudio implements MapStudioHandle {
     });
     camSection.appendChild(bearingCtl.row);
     camSection.appendChild(bearingCtl.rangeContainer);
+    this.bearingCtl = bearingCtl;
     this.bearingInput = bearingCtl.input;
     this.bearingValue = bearingCtl.value;
     this.bearingRange = bearingCtl.state;
@@ -272,9 +295,13 @@ export class MapStudio implements MapStudioHandle {
     });
     camSection.appendChild(zoomCtl.row);
     camSection.appendChild(zoomCtl.rangeContainer);
+    this.zoomCtl = zoomCtl;
     this.zoomInput = zoomCtl.input;
     this.zoomValue = zoomCtl.value;
     this.zoomRange = zoomCtl.state;
+    // Main tilt/bearing/zoom readouts already mirror the map via syncFromCamera;
+    // reuse it as the resync hook (range editors are driven by setConfig directly).
+    this.resyncFns.push(() => this.syncFromCamera());
 
     this.body.appendChild(camSection);
 
@@ -298,6 +325,13 @@ export class MapStudio implements MapStudioHandle {
       layerSection.appendChild(row);
       this.layerInputs.set(name, input);
     }
+    this.resyncFns.push(() => {
+      for (const [name, input] of this.layerInputs) {
+        const on = this.map.getLayerEnabled(name);
+        input.checked = on;
+        this.layerState.set(name, on);
+      }
+    });
     // Flatten-buildings toggle — sits in the Layers section since it's a
     // building-display tweak even though it isn't a separate layer.
     const flattenRow = document.createElement('div');
@@ -310,6 +344,7 @@ export class MapStudio implements MapStudioHandle {
     flattenInput.addEventListener('change', () => {
       this.map.setBuildingsFlat(flattenInput.checked);
     });
+    this.resyncFns.push(() => { flattenInput.checked = this.map.getBuildingsFlat(); });
     flattenRow.appendChild(flattenLabel);
     flattenRow.appendChild(flattenInput);
     layerSection.appendChild(flattenRow);
@@ -377,6 +412,7 @@ export class MapStudio implements MapStudioHandle {
       syncQualityUi();
     });
     syncQualityUi();
+    this.resyncFns.push(syncQualityUi);
 
     // ----- Clouds --------------------------------------------------------
     this.body.appendChild(makeSectionHeader('Clouds'));
@@ -405,6 +441,12 @@ export class MapStudio implements MapStudioHandle {
       this.map.setCloudsOpacity(v);
     });
     cloudsSection.appendChild(opacityRow.row);
+    this.resyncFns.push(() => {
+      this.cloudsInput.checked = this.map.getCloudsEnabled();
+      const o = this.map.getCloudsOpacity();
+      this.cloudsOpacityInput.value = String(o);
+      this.cloudsOpacityValue.textContent = o.toFixed(2);
+    });
     this.body.appendChild(cloudsSection);
 
     // ----- Fog ----------------------------------------------------------
@@ -459,6 +501,17 @@ export class MapStudio implements MapStudioHandle {
       this.map.setFogStrength(v);
     });
     fogSection.appendChild(fogStrengthRow.row);
+    this.resyncFns.push(() => {
+      const start = this.map.getFogTiltStart();
+      fogStartRow.input.value = String(start);
+      fogStartRow.value.textContent = `${start}°`;
+      const end = this.map.getFogTiltEnd();
+      fogEndRow.input.value = String(end);
+      fogEndRow.value.textContent = `${end}°`;
+      const strength = this.map.getFogStrength();
+      fogStrengthRow.input.value = String(strength);
+      fogStrengthRow.value.textContent = strength.toFixed(2);
+    });
 
     this.body.appendChild(fogSection);
 
@@ -476,6 +529,11 @@ export class MapStudio implements MapStudioHandle {
       this.map.setLabelHeight(v);
     });
     labelSection.appendChild(labelHeightRow.row);
+    this.resyncFns.push(() => {
+      const h = this.map.getLabelHeight();
+      labelHeightRow.input.value = String(h);
+      labelHeightRow.value.textContent = `${h} m`;
+    });
 
     this.body.appendChild(labelSection);
 
@@ -494,6 +552,11 @@ export class MapStudio implements MapStudioHandle {
       this.map.setTileSpawnDurationMs(v);
     });
     animSection.appendChild(spawnRow.row);
+    this.resyncFns.push(() => {
+      const ms = this.map.getTileSpawnDurationMs();
+      spawnRow.input.value = String(ms);
+      spawnRow.value.textContent = `${ms} ms`;
+    });
     this.body.appendChild(animSection);
 
     // ----- Compass -------------------------------------------------------
@@ -512,17 +575,41 @@ export class MapStudio implements MapStudioHandle {
     compassRow.appendChild(compassLabel);
     compassRow.appendChild(this.compassInput);
     overlaySection.appendChild(compassRow);
+    this.resyncFns.push(() => { this.compassInput.checked = this.map.isCompassVisible(); });
     this.body.appendChild(overlaySection);
 
     // ----- Actions -------------------------------------------------------
     const actions = document.createElement('div');
     actions.className = 'hbd-studio-actions';
+
+    // Hidden file input drives the "Import JSON" button — mirrors the
+    // download-on-export flow in reverse.
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'application/json,.json';
+    fileInput.style.display = 'none';
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files?.[0];
+      if (file) void this.importFromFile(file);
+      // Reset so picking the same file again still fires 'change'.
+      fileInput.value = '';
+    });
+
+    const importBtn = document.createElement('button');
+    importBtn.type = 'button';
+    importBtn.className = 'hbd-studio-btn';
+    importBtn.textContent = 'Import JSON';
+    importBtn.addEventListener('click', () => fileInput.click());
+
     const exportBtn = document.createElement('button');
     exportBtn.type = 'button';
     exportBtn.className = 'hbd-studio-btn primary';
     exportBtn.textContent = 'Export JSON';
     exportBtn.addEventListener('click', () => this.export());
+
+    actions.appendChild(importBtn);
     actions.appendChild(exportBtn);
+    actions.appendChild(fileInput);
     this.panel.appendChild(actions);
 
     this.container.appendChild(this.panel);
@@ -586,6 +673,86 @@ export class MapStudio implements MapStudioHandle {
     // Default behavior: download as a JSON file.
     downloadJson(cfg, 'here-be-dragons.config.json');
     return cfg;
+  }
+
+  setConfig(config: Partial<StudioConfig>): void {
+    if (!config || typeof config !== 'object') return;
+
+    // Theme first: applyTheme resets custom colors, so customColors must layer
+    // on top afterwards (mirrors createHereBeDragons's construction order).
+    if (typeof config.theme === 'string') this.map.applyTheme(config.theme);
+    if (config.customColors && typeof config.customColors === 'object') {
+      this.map.setCustomColors(config.customColors);
+    }
+
+    // Camera ranges before camera values so the clamps are in place when we set
+    // tilt/bearing/zoom. An omitted range resets to default (null) so the map
+    // ends up matching the config exactly — an exported config round-trips.
+    this.tiltCtl.setRange(isRange(config.tiltRange) ? config.tiltRange : null);
+    this.bearingCtl.setRange(isRange(config.bearingRange) ? config.bearingRange : null);
+    this.zoomCtl.setRange(isRange(config.zoomRange) ? config.zoomRange : null);
+
+    // Camera position.
+    const view = this.map.getView();
+    const center =
+      config.center && typeof config.center === 'object' ? config.center : undefined;
+    if (center || isNum(config.zoom)) {
+      const lat = isNum(center?.lat) ? center!.lat : view.lat;
+      const lon = isNum(center?.lon) ? center!.lon : view.lon;
+      const zoom = isNum(config.zoom) ? config.zoom : view.zoom;
+      this.map.setView(lat, lon, zoom);
+    }
+    if (isNum(config.tilt)) this.map.setTilt(config.tilt);
+    if (isNum(config.bearing)) this.map.setBearing(config.bearing);
+
+    // Layers (accepts `boolean` or `{ enabled }` per the options shape).
+    if (config.layers && typeof config.layers === 'object') {
+      for (const name of LAYER_KEYS) {
+        const v = config.layers[name];
+        let on: boolean;
+        if (typeof v === 'boolean') on = v;
+        else if (v && typeof v === 'object') on = (v as LayerConfig).enabled ?? true;
+        else continue;
+        this.map.setLayerEnabled(name, on);
+      }
+    }
+
+    // Quality: only the runtime-switchable tiers ('auto' is construction-only).
+    if (config.quality === 'low' || config.quality === 'high') {
+      this.map.setQualityTier(config.quality);
+    }
+
+    // Clouds — boolean shorthand or `{ enabled, opacity }`.
+    if (typeof config.clouds === 'boolean') {
+      this.map.setCloudsEnabled(config.clouds);
+    } else if (config.clouds && typeof config.clouds === 'object') {
+      if (typeof config.clouds.enabled === 'boolean') {
+        this.map.setCloudsEnabled(config.clouds.enabled);
+      }
+      if (isNum(config.clouds.opacity)) this.map.setCloudsOpacity(config.clouds.opacity);
+    }
+
+    // Fog.
+    if (config.fog && typeof config.fog === 'object') {
+      if (isNum(config.fog.tiltStart)) this.map.setFogTiltStart(config.fog.tiltStart);
+      if (isNum(config.fog.tiltEnd)) this.map.setFogTiltEnd(config.fog.tiltEnd);
+      if (isNum(config.fog.strength)) this.map.setFogStrength(config.fog.strength);
+    }
+
+    if (isNum(config.labelHeight)) this.map.setLabelHeight(config.labelHeight);
+    if (isNum(config.tileSpawnDurationMs)) {
+      this.map.setTileSpawnDurationMs(config.tileSpawnDurationMs);
+    }
+    if (typeof config.compass === 'boolean') this.map.setCompassVisible(config.compass);
+    if (config.buildings && typeof config.buildings === 'object') {
+      this.map.setBuildingPopup(config.buildings);
+    }
+
+    // `pixelRatio` / `background` are construction-only (no runtime setter); we
+    // skip them on import and leave the live map untouched.
+
+    // Pull every panel control back into sync with the map's new state.
+    for (const fn of this.resyncFns) fn();
   }
 
   setOpen(open: boolean): void {
@@ -773,6 +940,30 @@ export class MapStudio implements MapStudioHandle {
       this.zoomValue.textContent = view.zoom.toFixed(1);
     }
   }
+
+  /**
+   * Read a chosen JSON file, parse it, and apply it via `setConfig`. Parse /
+   * shape errors are logged rather than thrown — the studio is a dev tool, so a
+   * malformed file shouldn't take down the host page. An `onImport` callback can
+   * intercept the parsed config (return `false` to handle the apply itself).
+   */
+  private async importFromFile(file: File): Promise<void> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (err) {
+      console.error('[MapStudio] Could not parse imported JSON:', err);
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      console.error('[MapStudio] Imported JSON is not a config object.');
+      return;
+    }
+    const config = parsed as StudioConfig;
+    const handled = this.onImport?.(config);
+    if (handled === false) return;
+    this.setConfig(config);
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -833,6 +1024,11 @@ interface CameraControl {
   input: HTMLInputElement;
   value: HTMLSpanElement;
   state: RangeState;
+  /**
+   * Programmatically set (or clear with `null`) this axis's range, updating the
+   * editor UI and applying it to the map. Used by the studio's import flow.
+   */
+  setRange: (range: { min: number; max: number } | null) => void;
 }
 
 /**
@@ -918,7 +1114,41 @@ function buildCameraControl(opts: CameraControlOptions): CameraControl {
     }
   });
 
-  return { row: main.row, rangeContainer, input: main.input, value: main.value, state };
+  // Programmatic range driver used by the studio's import flow. Mirrors what
+  // the toggle + min/max sliders do when the user sets a range by hand.
+  const setRange = (range: { min: number; max: number } | null): void => {
+    if (range) {
+      let lo = Math.max(min, Math.min(max, range.min));
+      let hi = Math.max(min, Math.min(max, range.max));
+      if (lo > hi) { const t = lo; lo = hi; hi = t; }
+      minRow.input.value = String(lo);
+      minRow.value.textContent = formatSliderValue(lo, step) + unit;
+      maxRow.input.value = String(hi);
+      maxRow.value.textContent = formatSliderValue(hi, step) + unit;
+      state.enabled = true;
+      toggle.setAttribute('aria-pressed', 'true');
+      toggle.classList.add('active');
+      rangeContainer.hidden = false;
+      pushRange();   // writes state.min/max, clamps the main slider, applies to map
+    } else {
+      state.enabled = false;
+      toggle.setAttribute('aria-pressed', 'false');
+      toggle.classList.remove('active');
+      rangeContainer.hidden = true;
+      main.input.min = String(min);
+      main.input.max = String(max);
+      opts.onRangeChange(null);
+    }
+  };
+
+  return {
+    row: main.row,
+    rangeContainer,
+    input: main.input,
+    value: main.value,
+    state,
+    setRange
+  };
 }
 
 /**
@@ -978,6 +1208,20 @@ function formatSliderValue(v: number, step: number): string {
 function roundTo(v: number, digits: number): number {
   const m = Math.pow(10, digits);
   return Math.round(v * m) / m;
+}
+
+/** Finite-number guard for defensively reading values out of imported JSON. */
+function isNum(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/** `{ min, max }` guard for imported camera-range fields. */
+function isRange(v: unknown): v is { min: number; max: number } {
+  return (
+    !!v && typeof v === 'object' &&
+    isNum((v as { min?: unknown }).min) &&
+    isNum((v as { max?: unknown }).max)
+  );
 }
 
 function capitalize(s: string): string {

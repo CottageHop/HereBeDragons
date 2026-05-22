@@ -64,7 +64,10 @@ export const DEFAULT_TAG_STYLES = /* css */ `
   white-space: nowrap;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
   transform: translate(-50%, calc(-100% - 6px));
-  transition: box-shadow 120ms ease-out;
+  /* Grow from the badge's centre on hover via the independent 'scale' property
+     (default transform-origin), so 'transform' (centring) and the per-frame
+     'translate' (screen position) stay untouched. */
+  transition: scale 150ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 150ms ease-out;
 }
 .hbd-tag::after {
   content: '';
@@ -78,8 +81,15 @@ export const DEFAULT_TAG_STYLES = /* css */ `
   border-top: 6px solid var(--hbd-tag-color, #3b82f6);
   transform: translateX(-50%);
 }
-.hbd-tag:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+/* Hover lift. Driven by the JS-applied .hbd-hover class (badges are
+   pointer-events:none, so native :hover never fires); :hover is kept as a
+   fallback for anyone who re-enables pointer events on a custom element. The
+   bigger, lower, softer shadow sells the "raised off the map" feel as the
+   badge scales up. */
+.hbd-tag:hover,
+.hbd-tag.hbd-hover {
+  scale: 1.08;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.26);
 }
 .hbd-tag-icon {
   display: inline-flex;
@@ -116,11 +126,24 @@ export const DEFAULT_TAG_STYLES = /* css */ `
   font-size: 14px;
   font-weight: 700;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), inset 0 0 0 3px rgba(255, 255, 255, 0.35);
+  /* A circle is centred on its anchor, so the default centre transform-origin
+     already grows it symmetrically off the point. */
   transform: translate(-50%, -50%);
-  transition: box-shadow 120ms ease-out;
+  transition: scale 150ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 150ms ease-out;
 }
-.hbd-cluster:hover {
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35), inset 0 0 0 3px rgba(255, 255, 255, 0.5);
+.hbd-cluster:hover,
+.hbd-cluster.hbd-hover {
+  scale: 1.08;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.3), inset 0 0 0 3px rgba(255, 255, 255, 0.5);
+}
+
+/* Respect a user's reduced-motion preference: keep the grown/raised state but
+   skip the animated transition. */
+@media (prefers-reduced-motion: reduce) {
+  .hbd-tag,
+  .hbd-cluster {
+    transition: none;
+  }
 }
 /* The count text inside the cluster shouldn't intercept clicks — let them
    fall through to the cluster element so its click handler fires regardless

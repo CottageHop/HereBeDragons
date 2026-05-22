@@ -32,6 +32,12 @@ export interface StudioOptions {
    * downloaded. Return `false` to suppress the default file-download behavior.
    */
   onExport?: (config: StudioConfig) => boolean | void;
+  /**
+   * Optional callback for "Import" — receives the parsed JSON config from the
+   * chosen file, before it's applied. Return `false` to suppress the default
+   * apply (so you can validate / transform it and call `setConfig` yourself).
+   */
+  onImport?: (config: StudioConfig) => boolean | void;
 }
 
 /**
@@ -54,6 +60,12 @@ export interface MapStudio {
   getConfig(): StudioConfig;
   /** Trigger the export flow (download JSON or invoke onExport). */
   export(): StudioConfig;
+  /**
+   * Apply a config to the live map and sync every panel control to match.
+   * Missing fields are left untouched, except camera ranges (an omitted range
+   * resets to its default) so an exported config round-trips exactly.
+   */
+  setConfig(config: Partial<StudioConfig>): void;
   /** Show or hide the panel. */
   setOpen(open: boolean): void;
   /** Tear down DOM + listeners. */

@@ -57,6 +57,10 @@ export class TreesLayer extends Layer {
     this.texture = makeTreeTexture();
     this.material = new THREE.ShaderMaterial({
       uniforms: {
+        // Standard fog uniforms (fogColor / fogDensity / …) so the renderer can
+        // fill them each frame. Cloned rather than shared so we don't mutate
+        // Three's library uniform objects.
+        ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
         uMap: { value: this.texture },
         uCanopy: { value: new THREE.Color(Palette.landuse_wood.color) },
         uTrunk: { value: new THREE.Color(TRUNK_COLOR) },
@@ -68,7 +72,13 @@ export class TreesLayer extends Layer {
       side: THREE.DoubleSide,
       transparent: false,
       depthTest: true,
-      depthWrite: true
+      depthWrite: true,
+      // Opt into scene fog. Three injects the USE_FOG / FOG_EXP2 defines and
+      // refreshes the fog uniforms; the fog_* chunks in the shaders below run
+      // the same FogExp2 math the toon materials use, so trees fade with the
+      // same atmosphere as buildings/roads/water (and respond to the Fog
+      // tilt/strength controls, which drive scene.fog.density).
+      fog: true
     });
   }
 
@@ -150,6 +160,7 @@ attribute float aScale;
 uniform float uWidth;
 uniform float uHeight;
 varying vec2 vUv;
+#include <fog_pars_vertex>
 void main() {
   vUv = uv;
   // Tree base in world space (modelMatrix carries the tile group's transform,
@@ -171,7 +182,11 @@ void main() {
   float w = uWidth * aScale;
   float h = uHeight * aScale;
   vec3 worldPos = worldBase + right * (position.x * w) + up * (position.y * h);
-  gl_Position = projectionMatrix * viewMatrix * vec4(worldPos, 1.0);
+  // View-space position doubles as the fog depth (consumed by fog_vertex),
+  // matching the scene FogExp2 the toon materials fade with.
+  vec4 mvPosition = viewMatrix * vec4(worldPos, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  #include <fog_vertex>
 }
 `;
 
@@ -180,6 +195,7 @@ uniform sampler2D uMap;
 uniform vec3 uCanopy;
 uniform vec3 uTrunk;
 varying vec2 vUv;
+#include <fog_pars_fragment>
 void main() {
   vec4 tex = texture2D(uMap, vUv);
   // Alpha-tested billboard — hard silhouette, no transparent-pass sorting, and
@@ -190,6 +206,9 @@ void main() {
   vec3 base = mix(uCanopy, uTrunk, step(0.5, tex.b));
   // Render targets are linear; uniforms are linear THREE.Color — output linear.
   gl_FragColor = vec4(base * shade, 1.0);
+  // Blend toward the fog colour by view distance. No-op without scene fog
+  // (the chunk is guarded by USE_FOG).
+  #include <fog_fragment>
 }
 `;
 

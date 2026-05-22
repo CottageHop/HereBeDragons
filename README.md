@@ -44,7 +44,7 @@ The fastest workflow:
 
 1. Open the demo with `?studio=1` (or call `createMapStudio(map, ...)` in your code).
 2. Pick a theme, drag the camera sliders, tweak colors, toggle layers everything is live.
-3. Click **Export JSON**. The browser downloads `here-be-dragons.config.json`.
+3. Click **Export JSON**. The browser downloads `here-be-dragons.config.json`. (Click **Import JSON** to load a saved config back into the panel and keep iterating.)
 4. On your real site, fetch that JSON and pass it straight to `createHereBeDragons`:
 
 ```js
@@ -265,6 +265,7 @@ createMapStudio(map, {
 - **Layers** per-layer checkboxes + a "flatten buildings" toggle
 - **Clouds** enable/disable + opacity slider
 - **Compass** show/hide overlay toggle
+- **Import JSON** button loads a config file (e.g. a previously exported one) and applies every editable setting to the live map, syncing all panel controls to match
 - **Export JSON** button downloads `here-be-dragons.config.json`
 
 ### `StudioOptions`
@@ -278,6 +279,7 @@ createMapStudio(map, {
 | `compass` | `boolean` | inherit | Force the compass overlay on / off at construction. |
 | `initialConfig` | `Partial<HereBeDragonsOptions>` | `{}` | Source of non-queryable fields (`pmtiles_url`, `pixelRatio`, `background`). |
 | `onExport` | `(cfg) => boolean \| void` | `undefined` | Intercept the export. Return `false` to suppress the default download. |
+| `onImport` | `(cfg) => boolean \| void` | `undefined` | Intercept the parsed config before it's applied. Return `false` to apply it yourself via `setConfig`. |
 
 ### Studio handle
 
@@ -286,6 +288,7 @@ const studio = createMapStudio(map, { initialConfig });
 
 studio.getConfig();    // read current config without exporting
 studio.export();       // trigger the export flow programmatically
+studio.setConfig(cfg); // apply a config to the live map + sync the panel controls
 studio.setOpen(false); // collapse the panel
 studio.destroy();      // remove DOM + listeners
 ```

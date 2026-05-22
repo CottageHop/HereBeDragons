@@ -131,6 +131,12 @@ export class TagsManager {
   private readonly clusterPool: HTMLDivElement[] = [];
   /** Number of cluster elements actively visible this frame. */
   private activeClusterCount = 0;
+  /**
+   * The badge element currently under the cursor (tag or cluster), or null.
+   * Carries the `.hbd-hover` class that drives the CSS grow/lift. Tracked in
+   * JS because badges are pointer-events:none, so native `:hover` never fires.
+   */
+  private hoveredEl: HTMLElement | null = null;
 
   private modal: HTMLDivElement;
   private modalTitle: HTMLHeadingElement;
@@ -256,6 +262,7 @@ export class TagsManager {
   removeTag(id: string): void {
     const entry = this.tags.get(id);
     if (!entry) return;
+    if (entry.element === this.hoveredEl) this.setHovered(null);
     entry.element.remove();
     this.tags.delete(id);
     if (this.openTagId === id) this.closeModal();
@@ -370,6 +377,11 @@ export class TagsManager {
 
     this.hideUnusedClusters();
 
+    // Drop the hover lift if the hovered badge got hidden this frame (clustered
+    // away, panned off-screen, or a pooled cluster that's now unused). The next
+    // pointermove re-applies it if the cursor is still over a live badge.
+    if (this.hoveredEl?.hidden) this.setHovered(null);
+
     // 4) Modal follow-up: if the anchored tag became clustered or off-screen,
     //    close the modal; otherwise reposition. While `modalAutoCloseSuppressed`
     //    is set (typically during a camera fly-to that's heading TOWARD the
@@ -434,6 +446,7 @@ export class TagsManager {
     );
     document.removeEventListener('keydown', this.onDocKeyDown);
     this.overlay.removeEventListener('wheel', this.onOverlayWheel);
+    this.setHovered(null);
     this.clearTags();
     this.overlay.remove();
     for (const el of this.clusterPool) el.remove();
@@ -690,12 +703,33 @@ export class TagsManager {
   };
 
   private onDocPointerMoveCapture = (e: PointerEvent): void => {
-    if (e.target !== this.renderer.dom) return;
-    // Don't fight the renderer's drag cursor while a button is held.
-    if (e.buttons > 0) return;
-    const canvas = this.renderer.dom;
-    canvas.style.cursor = this.findHitAt(e.clientX, e.clientY) ? 'pointer' : 'grab';
+    // Pointer is over the studio panel / a modal / outside the map — drop any
+    // hover so a badge doesn't stay lifted while it's no longer under the cursor.
+    if (e.target !== this.renderer.dom) { this.setHovered(null); return; }
+    // Don't fight the renderer's drag cursor — and don't keep a badge lifted —
+    // while a button is held (the user is panning).
+    if (e.buttons > 0) { this.setHovered(null); return; }
+    const hit = this.findHitAt(e.clientX, e.clientY);
+    const hoverEl = hit
+      ? hit.kind === 'cluster'
+        ? hit.el
+        : this.tags.get(hit.id)?.element ?? null
+      : null;
+    this.setHovered(hoverEl);
+    this.renderer.dom.style.cursor = hit ? 'pointer' : 'grab';
   };
+
+  /**
+   * Toggle the hover lift on a badge. The `.hbd-hover` class drives the CSS
+   * grow + raised shadow; we apply it in JS because badges are
+   * pointer-events:none, so the native `:hover` pseudo never fires.
+   */
+  private setHovered(el: HTMLElement | null): void {
+    if (el === this.hoveredEl) return;
+    this.hoveredEl?.classList.remove('hbd-hover');
+    this.hoveredEl = el;
+    el?.classList.add('hbd-hover');
+  }
 
   private onDocPointerUpCapture = (e: PointerEvent): void => {
     if (e.pointerId !== this.claimedPointerId) return;
@@ -738,7 +772,7 @@ export class TagsManager {
    * hard-coded in CSS at 40 × 40, so no measurement is needed for clusters.
    */
   private findHitAt(x: number, y: number):
-    | { kind: 'cluster'; ids: string[] }
+    | { kind: 'cluster'; ids: string[]; el: HTMLDivElement }
     | { kind: 'tag'; id: string }
     | null {
     const canvasRect = this.renderer.dom.getBoundingClientRect();
@@ -768,7 +802,7 @@ export class TagsManager {
       if (cx >= centerX - half && cx <= centerX + half &&
           cy >= centerY - half && cy <= centerY + half) {
         const ids = CLUSTER_IDS.get(el) ?? [];
-        return { kind: 'cluster', ids };
+        return { kind: 'cluster', ids, el };
       }
     }
 
