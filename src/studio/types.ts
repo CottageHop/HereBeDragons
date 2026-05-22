@@ -35,13 +35,18 @@ export interface StudioOptions {
 }
 
 /**
- * JSON snapshot emitted by the studio. Same shape as `HereBeDragonsOptions` —
- * pass it straight into `createHereBeDragons(container, config)` and the
- * declarative `theme` / `customColors` / `clouds` / `compass` fields get
- * applied automatically. The alias exists as a distinct name so application
- * code can label "this came from Studio" vs. "this is hand-built options."
+ * JSON snapshot emitted by the studio. Same shape as `HereBeDragonsOptions`
+ * except `pmtiles_url` is optional: the studio deliberately omits the tile
+ * source URL from exports (it's environment-specific and often private), so
+ * add it back before passing the config into `createHereBeDragons`. The
+ * declarative `theme` / `customColors` / `clouds` / `compass` fields still
+ * apply automatically on import. The distinct name lets application code
+ * label "this came from Studio" vs. "this is hand-built options."
  */
-export type StudioConfig = HereBeDragonsOptions;
+export type StudioConfig = Omit<HereBeDragonsOptions, 'pmtiles_url'> & {
+  /** Omitted from studio exports by design — supply it before constructing a map. */
+  pmtiles_url?: string;
+};
 
 /** Handle returned by `createMapStudio()`. */
 export interface MapStudio {

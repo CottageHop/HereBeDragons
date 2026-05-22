@@ -143,6 +143,11 @@ export class MapStudio implements MapStudioHandle {
     // ----- Custom colors -------------------------------------------------
     this.body.appendChild(makeSectionHeader('Custom Colors'));
     const colorSection = makeSection();
+    const colorNote = document.createElement('p');
+    colorNote.className = 'hbd-studio-note';
+    colorNote.textContent =
+      'Layered on top of the selected theme, which stays the base palette. Exports keep both the theme and these overrides.';
+    colorSection.appendChild(colorNote);
     for (const key of CUSTOM_COLOR_KEYS) {
       const row = document.createElement('div');
       row.className = 'hbd-studio-row';
@@ -544,7 +549,6 @@ export class MapStudio implements MapStudioHandle {
       zoom: roundTo(view.zoom, 3),
       tilt: roundTo(view.tilt, 1),
       bearing: roundTo(view.bearing, 1),
-      pmtiles_url: this.initialConfig.pmtiles_url ?? '',
       layers,
       clouds: {
         enabled: this.map.getCloudsEnabled(),
@@ -552,6 +556,9 @@ export class MapStudio implements MapStudioHandle {
       },
       compass: this.map.isCompassVisible()
     };
+    // The theme is exported as the base palette and customColors as overrides
+    // layered on top — customColors only covers a subset of the theme's keys,
+    // so keeping the theme preserves the colors the pickers don't expose.
     const theme = this.map.getCurrentTheme();
     if (theme) cfg.theme = theme;
     if (Object.keys(customColors).length > 0) cfg.customColors = customColors;

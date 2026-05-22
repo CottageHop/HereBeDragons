@@ -72,6 +72,12 @@ export const DEFAULT_STUDIO_STYLES = /* css */ `
   text-transform: uppercase;
   color: #6b7280;
 }
+.hbd-studio-note {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #9ca3af;
+}
 .hbd-studio-row {
   display: flex;
   align-items: center;

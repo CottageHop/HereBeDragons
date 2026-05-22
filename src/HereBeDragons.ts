@@ -661,6 +661,12 @@ class HereBeDragonsImpl implements HereBeDragons {
           const needsTilt = targetTilt > view.tilt + 0.5;
           if (!needsCenter && !needsZoom && !needsTilt) return;
           this.savedViewForFloorBadge = view;
+          // Lift the tilt/zoom limits for as long as this floor badge stays
+          // open so the reveal can reach FLOOR_BADGE_TILT / FLOOR_BADGE_ZOOM
+          // even when the developer (or a quality tier) clamped the range
+          // tighter. Reinstated in onFloorBadgeClose, after the camera has
+          // flown back inside the original limits.
+          this.camera.suspendLimits();
           // Suppress TagsManager's per-frame "anchor drifted out of view →
           // close modal" check for the ENTIRE duration this floor-badge
           // modal is open, not just the open-fly. The badge can intermit-
@@ -687,17 +693,33 @@ class HereBeDragonsImpl implements HereBeDragons {
           // the flag from getting stuck on across edge cases like rapid
           // open/close.
           this.tagsManager.setModalAutoCloseSuppressed(false);
-          if (this.savedViewForFloorBadge === null) return;
+          if (this.savedViewForFloorBadge === null) {
+            // Nothing was moved on open (so no limits were lifted) — but
+            // reinstate defensively in case a suspend ever outlived its
+            // saved view. No-op when nothing is suspended.
+            this.camera.restoreLimits();
+            return;
+          }
           const restore = this.savedViewForFloorBadge;
           this.savedViewForFloorBadge = null;
-          void this.camera.flyTo({
-            lat: restore.lat,
-            lon: restore.lon,
-            zoom: restore.zoom,
-            tilt: restore.tilt,
-            bearing: restore.bearing,
-            durationMs: 600
-          });
+          void this.camera
+            .flyTo({
+              lat: restore.lat,
+              lon: restore.lon,
+              zoom: restore.zoom,
+              tilt: restore.tilt,
+              bearing: restore.bearing,
+              durationMs: 600
+            })
+            .then(() => {
+              // Reinstate the tilt/zoom limits only after the camera has flown
+              // back inside them — and only if no new floor badge opened while
+              // we flew. Switching straight from one floor badge to another
+              // keeps a floor selected (it sets savedViewForFloorBadge again),
+              // so the limits must stay lifted for the new reveal; restoring
+              // here would clamp it into a visible jump.
+              if (this.savedViewForFloorBadge === null) this.camera.restoreLimits();
+            });
         }
       },
       options.tags ?? {}
