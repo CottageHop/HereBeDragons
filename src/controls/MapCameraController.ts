@@ -44,6 +44,19 @@ export class MapCameraController {
   private bounds: BoundingBox | null = null;
   private dom: HTMLCanvasElement;
   private onPointerDown: (e: PointerEvent) => void;
+  /**
+   * True while a floor-badge reveal has lifted the tilt/zoom limits via
+   * suspendLimits(). Guards against a double-suspend and tells the range
+   * setters to defer their changes until the limits are reinstated.
+   */
+  private limitsSuspended = false;
+  /**
+   * Tilt/zoom limits captured by suspendLimits() and reinstated by
+   * restoreLimits(). `null` whenever no reveal is holding the limits open.
+   */
+  private savedLimits:
+    | { minPolarAngle: number; maxPolarAngle: number; minDistance: number; maxDistance: number }
+    | null = null;
 
   constructor(dom: HTMLCanvasElement, projection: Projection, init: CameraInitOptions) {
     this.projection = projection;
@@ -118,15 +131,28 @@ export class MapCameraController {
    * default (0–75°). Wires straight into MapControls' polar-angle clamping.
    */
   setTiltRange(range: { min: number; max: number } | null): void {
+    let minPolar: number;
+    let maxPolar: number;
     if (range === null) {
-      this.controls.minPolarAngle = 0;
-      this.controls.maxPolarAngle = 75 * DEG;
+      minPolar = 0;
+      maxPolar = 75 * DEG;
+    } else {
+      const min = Math.max(0, Math.min(89, range.min));
+      const max = Math.max(min, Math.min(89, range.max));
+      minPolar = min * DEG;
+      maxPolar = max * DEG;
+    }
+    // While a floor-badge reveal has the limits lifted, record the new range
+    // as what to reinstate on close instead of fighting the relaxed live
+    // controls — so the floor view stays put even if a quality-tier switch
+    // retunes the tilt range mid-reveal.
+    if (this.limitsSuspended && this.savedLimits) {
+      this.savedLimits.minPolarAngle = minPolar;
+      this.savedLimits.maxPolarAngle = maxPolar;
       return;
     }
-    const min = Math.max(0, Math.min(89, range.min));
-    const max = Math.max(min, Math.min(89, range.max));
-    this.controls.minPolarAngle = min * DEG;
-    this.controls.maxPolarAngle = max * DEG;
+    this.controls.minPolarAngle = minPolar;
+    this.controls.maxPolarAngle = maxPolar;
   }
 
   /**
@@ -153,15 +179,65 @@ export class MapCameraController {
    * with maxZoom and vice versa.
    */
   setZoomRange(range: { min: number; max: number } | null): void {
+    let minDist: number;
+    let maxDist: number;
     if (range === null) {
-      this.controls.minDistance = 25;
-      this.controls.maxDistance = 30_000;
+      minDist = 25;
+      maxDist = 30_000;
+    } else {
+      const min = Math.min(range.min, range.max);
+      const max = Math.max(range.min, range.max);
+      minDist = zoomToDistance(max);
+      maxDist = zoomToDistance(min);
+    }
+    // Same deferral as setTiltRange while a floor-badge reveal is active.
+    if (this.limitsSuspended && this.savedLimits) {
+      this.savedLimits.minDistance = minDist;
+      this.savedLimits.maxDistance = maxDist;
       return;
     }
-    const min = Math.min(range.min, range.max);
-    const max = Math.max(range.min, range.max);
-    this.controls.minDistance = zoomToDistance(max);
-    this.controls.maxDistance = zoomToDistance(min);
+    this.controls.minDistance = minDist;
+    this.controls.maxDistance = maxDist;
+  }
+
+  /**
+   * Floor-badge reveal: temporarily lift the tilt and zoom limits so the
+   * camera can tilt down to / zoom in on a building floor even when the
+   * developer (or a quality tier) clamped the range tighter than the floor
+   * view needs. The active limits are captured for restoreLimits() to put
+   * back exactly. Idempotent — a second call without an intervening restore
+   * keeps the originally-saved limits (won't overwrite them with the
+   * already-relaxed values).
+   */
+  suspendLimits(): void {
+    if (this.limitsSuspended) return;
+    this.limitsSuspended = true;
+    this.savedLimits = {
+      minPolarAngle: this.controls.minPolarAngle,
+      maxPolarAngle: this.controls.maxPolarAngle,
+      minDistance: this.controls.minDistance,
+      maxDistance: this.controls.maxDistance
+    };
+    this.controls.minPolarAngle = 0;
+    this.controls.maxPolarAngle = 75 * DEG;
+    this.controls.minDistance = 25;
+    this.controls.maxDistance = 30_000;
+  }
+
+  /**
+   * Reinstate the tilt/zoom limits captured by the last suspendLimits().
+   * No-op if nothing is currently suspended. Call this only AFTER the camera
+   * has settled back inside the original limits, or the first still-relaxed
+   * frames get clamped into a visible jump.
+   */
+  restoreLimits(): void {
+    if (!this.limitsSuspended || !this.savedLimits) return;
+    this.controls.minPolarAngle = this.savedLimits.minPolarAngle;
+    this.controls.maxPolarAngle = this.savedLimits.maxPolarAngle;
+    this.controls.minDistance = this.savedLimits.minDistance;
+    this.controls.maxDistance = this.savedLimits.maxDistance;
+    this.savedLimits = null;
+    this.limitsSuspended = false;
   }
 
   /**
