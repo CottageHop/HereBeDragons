@@ -324,7 +324,8 @@ function formatLabel(key: string): string {
     cottagecoredark: 'Cottage Core Dark',
     middleearth: 'Middle Earth',
     oldworld: 'Old World',
-    concretejungle: 'Concrete Jungle'
+    concretejungle: 'Concrete Jungle',
+    greyscaledark: 'Greyscale (Dark)'
   };
   if (SPECIALS[key]) return SPECIALS[key];
   return key.charAt(0).toUpperCase() + key.slice(1);

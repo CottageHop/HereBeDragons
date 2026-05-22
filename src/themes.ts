@@ -103,6 +103,15 @@ export const THEMES: Record<string, ThemeColors> = {
     beach: '#cccccc',
     sky: '#e8e8e8'
   },
+  greyscaledark: {
+    water: '#0d0d0d',
+    park: '#808080',
+    building: '#383838',
+    road: '#585858',
+    land: '#d8d8d8',
+    beach: '#c0c0c0',
+    sky: '#e8e8e8'
+  },
   dark: {
     water: '#1a3a4a',
     park: '#1e3a1e',

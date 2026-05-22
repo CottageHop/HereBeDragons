@@ -983,7 +983,8 @@ function formatThemeLabel(name: string): string {
     cottagecoredark: 'Cottage Dark',
     middleearth: 'Middle Earth',
     oldworld: 'Old World',
-    concretejungle: 'Concrete Jungle'
+    concretejungle: 'Concrete Jungle',
+    greyscaledark: 'Greyscale (Dark)'
   };
   return SPECIALS[name] ?? capitalize(name);
 }
