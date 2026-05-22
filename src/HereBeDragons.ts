@@ -84,6 +84,16 @@ class HereBeDragonsImpl implements HereBeDragons {
    */
   private needsRender = true;
   /**
+   * Observes the container so the renderer / camera / composer track its size.
+   * Critically covers the case where the container has no layout size yet at
+   * construction (CSS/fonts not applied): the renderer would init at 0×0 and
+   * the composer at a 1×1 target, so the first frame blits a single stretched
+   * sky-blue pixel across the canvas and — with no resize ever firing — stays
+   * that way until a manual refresh. The observer's callback fires when the
+   * real size lands and re-renders correctly.
+   */
+  private resizeObserver?: ResizeObserver;
+  /**
    * Frames elapsed since the last actual `composer.render()`. A safety-net
    * heartbeat: even with `needsRender` false we force a render every
    * `RENDER_HEARTBEAT_FRAMES` so any dirty source we forgot to wire up
@@ -746,6 +756,15 @@ class HereBeDragonsImpl implements HereBeDragons {
       // full-screen raymarch that costs the same every frame regardless of
       // scene content, the heaviest fixed per-frame GPU cost on weak GPUs.
       this.setCloudsEnabled(quality.clouds);
+    }
+
+    // Track the container's size for the lifetime of the map. Besides handling
+    // ordinary layout changes (so consumers don't need their own resize wiring),
+    // this self-heals the first-paint race where the container had no size yet
+    // at construction — see the field comment.
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => this.resize());
+      this.resizeObserver.observe(container);
     }
 
     this.start();
@@ -1648,6 +1667,7 @@ class HereBeDragonsImpl implements HereBeDragons {
   destroy(): void {
     this.destroyed = true;
     cancelAnimationFrame(this.rafHandle);
+    this.resizeObserver?.disconnect();
     this.dprWatcherCleanup?.();
     if (this.onPointerMove) this.renderer.dom.removeEventListener('pointermove', this.onPointerMove);
     if (this.onPointerLeave) this.renderer.dom.removeEventListener('pointerleave', this.onPointerLeave);
