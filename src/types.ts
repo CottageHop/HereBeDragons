@@ -92,6 +92,14 @@ export interface HereBeDragonsOptions {
   tags?: import('./tags/types.js').TagsConfig;
   /** Building picker + popup configuration. */
   buildings?: import('./buildings/types.js').BuildingPopupConfig;
+  /**
+   * Optional parcels overlay. Set `parcels.pmtilesUrl` to load county parcel
+   * boundary polygons from a SECOND PMTiles archive (separate from
+   * `pmtiles_url`) and render them as clickable outline "boxes" above the
+   * basemap. Omit entirely to leave the overlay off — existing single-source
+   * maps behave exactly as before. See `ParcelsConfig` for the full shape.
+   */
+  parcels?: import('./parcels/types.js').ParcelsConfig;
   /** Show the compass overlay. Default true. Click resets bearing to north. */
   compass?: boolean;
   /**
@@ -396,6 +404,18 @@ export interface HereBeDragons {
   clearBuildingSelection(): void;
   /** Subscribe to building click events. */
   onBuildingClick(cb: (info: import('./buildings/types.js').BuildingInfo) => void): Unsubscribe;
+  /**
+   * Subscribe to parcel click events. Fires with the clicked parcel feature's
+   * MVT properties (notably `parcel_id`). No-op when no parcels overlay is
+   * configured. Returns an unsubscribe function.
+   */
+  onParcelClick(
+    cb: (parcel: import('./parcels/types.js').ParcelClickEvent) => void
+  ): Unsubscribe;
+  /** Toggle the parcels overlay on/off (no-op when none is configured). */
+  setParcelsEnabled(on: boolean): void;
+  /** Whether the parcels overlay is currently enabled. */
+  getParcelsEnabled(): boolean;
   /** Enumerate all buildings in currently-loaded tiles. */
   getLoadedBuildings(): import('./buildings/types.js').BuildingInfo[];
   /** Convert scene-world meters (x, z) → geographic (lat, lon). */

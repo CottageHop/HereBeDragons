@@ -32,6 +32,7 @@ export type {
 export { createMapStudio, MapStudio } from './studio/MapStudio.js';
 export type { StudioOptions, StudioConfig, MapStudio as MapStudioHandle } from './studio/types.js';
 export type { PolygonOptions, PolygonHandle, PolygonPoint } from './polygons/types.js';
+export type { ParcelsConfig, ParcelClickEvent, ParcelClickListener } from './parcels/types.js';
 export type {
   BuildingInfo,
   BuildingPopupConfig,

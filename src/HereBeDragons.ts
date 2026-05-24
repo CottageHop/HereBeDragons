@@ -42,6 +42,8 @@ import type {
   BuildingInfo,
   BuildingPopupConfig
 } from './buildings/types.js';
+import { ParcelsManager } from './parcels/ParcelsManager.js';
+import type { ParcelClickEvent } from './parcels/types.js';
 import { Compass } from './studio/Compass.js';
 import * as THREE from 'three';
 import { logger } from './util/log.js';
@@ -133,6 +135,9 @@ class HereBeDragonsImpl implements HereBeDragons {
   private tagsManager: TagsManager;
   private polygonsManager: PolygonsManager;
   private buildingsManager: BuildingsManager;
+  /** Optional parcels overlay (second PMTiles source). Null when no
+   *  `parcels` option was supplied — keeps existing maps zero-cost. */
+  private parcelsManager: ParcelsManager | null = null;
   private compass: Compass;
   /** Initial zoom/tilt/bearing — used by resetView() / double-click reset. */
   private readonly defaultZoom: number;
@@ -730,6 +735,24 @@ class HereBeDragonsImpl implements HereBeDragons {
       projection: this.projection
     });
 
+    // Optional parcels overlay — only constructed when a `parcels.pmtilesUrl`
+    // is supplied, so existing single-source maps allocate nothing for it.
+    // The archive is opened in `init()` (alongside the basemap source).
+    if (options.parcels?.pmtilesUrl) {
+      this.parcelsManager = new ParcelsManager(
+        {
+          renderer: this.renderer,
+          scene: this.scene.three,
+          camera: this.camera,
+          projection: this.projection,
+          // A parcel load / click changes the scene without a camera move or
+          // public setter — nudge render-on-demand so it paints immediately.
+          onSceneChange: () => { this.needsRender = true; }
+        },
+        options.parcels
+      );
+    }
+
     // Compass overlay — mounted on the same container as the canvas. Visible
     // by default unless the developer opts out via `options.compass === false`.
     this.compass = new Compass(this, container);
@@ -832,7 +855,10 @@ class HereBeDragonsImpl implements HereBeDragons {
     // are async and have no ordering dependency, so this saves one stage.
     await Promise.all([
       this.source.open(),
-      this.precompileShaders()
+      this.precompileShaders(),
+      // Open the parcels archive in parallel; its own `open()` swallows
+      // failures so a broken parcel source can never block the basemap.
+      this.parcelsManager?.open() ?? Promise.resolve()
     ]);
     await this.tileManager.start();
     // Kick the underlay dispatcher synchronously so its first fetches go out
@@ -972,6 +998,10 @@ class HereBeDragonsImpl implements HereBeDragons {
       const tileDirty = this.tileManager.update(false, frameBudgetOk);
       this.baseTileManager?.update(false);
       const layersDirty = this.layers.update(dt);
+      // Recompute the parcels overlay's visible tile window + kick loads.
+      // Cheap when no overlay is configured (null), disabled, or below its
+      // minZoom; new tiles flag `needsRender` via the onSceneChange nudge.
+      this.parcelsManager?.update();
       // Bridge decks rebuild (debounced) when the loaded bridge-tile set
       // changes; a rebuild is a visible scene change.
       const bridgesDirty = this.bridgesManager.update(dt);
@@ -1528,6 +1558,29 @@ class HereBeDragonsImpl implements HereBeDragons {
     return this.buildingsManager.on('buildingclick', cb);
   }
 
+  /**
+   * Subscribe to parcel click events. Fires with the clicked parcel feature's
+   * MVT properties (notably `parcel_id`) plus the ground point's lat/lon.
+   * No-op (returns a no-op unsubscribe) when no `parcels` overlay is
+   * configured. Returns an unsubscribe function.
+   */
+  onParcelClick(cb: (parcel: ParcelClickEvent) => void): Unsubscribe {
+    if (!this.parcelsManager) return () => {};
+    return this.parcelsManager.onParcelClick(cb);
+  }
+
+  /** Toggle the parcels overlay on/off. No-op when none is configured. */
+  setParcelsEnabled(on: boolean): void {
+    if (!this.parcelsManager) return;
+    this.parcelsManager.setEnabled(on);
+    this.needsRender = true;
+  }
+
+  /** Whether the parcels overlay is currently enabled (false if unconfigured). */
+  getParcelsEnabled(): boolean {
+    return this.parcelsManager?.isEnabled() ?? false;
+  }
+
   /** Snapshot of every building currently loaded across visible tiles. */
   getLoadedBuildings(): BuildingInfo[] {
     const out: BuildingInfo[] = [];
@@ -1697,6 +1750,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.tagsManager.dispose();
     this.polygonsManager.dispose();
     this.buildingsManager.dispose();
+    this.parcelsManager?.dispose();
     this.bridgesManager.dispose();
     this.compass.destroy();
     this.tileManager.dispose();
