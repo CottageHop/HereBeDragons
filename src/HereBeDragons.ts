@@ -871,9 +871,10 @@ class HereBeDragonsImpl implements HereBeDragons {
 
     // Apply the declarative "look" fields BEFORE starting the render loop so
     // the very first frame paints with the requested theme — without this,
-    // there's a visible flash from the default (light-blue cottagecore sky)
-    // to whatever theme the user actually asked for, ~50–100 ms later.
-    if (options.theme) this.applyTheme(options.theme);
+    // there's a visible flash from the default sky to whatever theme the user
+    // actually asked for, ~50–100 ms later. 'modern' is the default theme when
+    // none is supplied.
+    this.applyTheme(options.theme ?? 'modern');
     if (options.customColors && Object.keys(options.customColors).length > 0) {
       this.setCustomColors(options.customColors);
     }

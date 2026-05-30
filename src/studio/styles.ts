@@ -212,18 +212,12 @@ export const DEFAULT_STUDIO_STYLES = /* css */ `
   grid-template-columns: repeat(2, 1fr);
   gap: 14px;
   margin-top: 12px;
-  /* Padding around the grid so the active card's blue glow isn't clipped.
-     The horizontal padding also keeps the side cards' glow off the scroll
-     edge once the grid starts scrolling (overflow-y: auto below). */
-  padding: 6px 10px;
-  /* Cap the picker height so adding more themes scrolls within the section
-     instead of ballooning the whole panel — the cards keep their grid
-     spacing no matter how many are registered. ~3-4 rows of 16:9 cards. */
-  max-height: 300px;
-  overflow-y: auto;
-  /* Reserve the scrollbar gutter so the grid layout doesn't shift when the
-     scrollbar appears as themes are added. */
-  scrollbar-gutter: stable;
+  /* Pack rows from the top at their natural height so adding themes never
+     stretches or redistributes the cards — they just flow into new rows and
+     the studio body (overflow-y: auto) scrolls when they run past the panel. */
+  align-content: start;
+  /* Padding around the grid so the active card's blue glow isn't clipped. */
+  padding: 6px;
 }
 .hbd-studio-theme-grid[hidden] { display: none; }
 .hbd-studio-theme-btn {

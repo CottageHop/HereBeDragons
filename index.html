@@ -102,9 +102,15 @@
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 18px;
+        /* Pack rows from the top at their natural height — without this the
+           grid stretches its rows to fill the dock when there are few themes,
+           and the spacing reads as uneven/bunched once more are added. */
+        align-content: start;
         /* Generous padding (esp. top) so the active card's blue glow shadow
            isn't clipped by the dock's overflow: hidden. */
         padding: 24px 20px 24px;
+        /* Scroll within the dock once the themes run past its max height
+           (the dock is capped at min(560px, 100vh - 32px)). */
         overflow-y: auto;
         flex: 1;
         min-height: 0;

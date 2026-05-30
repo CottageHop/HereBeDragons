@@ -1,4 +1,4 @@
-<img width="1408" height="768" alt="HereBeDragons_github_header" src="https://github.com/user-attachments/assets/bef38dbb-cb00-4f38-8521-c7c05e87fe32" />
+<img width="1408" height="768" alt="HereBeDragons_github_header" src="assets/header.png" />
 
 A 3D vector map for the web. Stylized buildings, drifting volumetric clouds, raymarched lighting. Reads PMTiles vector archives, renders with three.js. Drops into a single `<div>` with one function call.
 
