@@ -7,6 +7,7 @@ import type {
   HereBeDragonsEventName,
   HereBeDragonsEventPayload,
   NoiseSource,
+  SnapshotOptions,
   Unsubscribe
 } from './types.js';
 import { EventBus } from './core/EventBus.js';
@@ -30,9 +31,13 @@ import { BuildingsLayer, BUILDING_THREE_LAYER } from './layers/BuildingsLayer.js
 import { LabelsLayer, LABEL_THREE_LAYER } from './layers/LabelsLayer.js';
 import { CarsLayer } from './layers/CarsLayer.js';
 import { TreesLayer, TREE_THREE_LAYER } from './layers/TreesLayer.js';
+import { GrassLayer, GRASS_THREE_LAYER } from './layers/GrassLayer.js';
+import { WavesLayer, WAVES_THREE_LAYER } from './layers/WavesLayer.js';
+import { SporesField, SPORES_THREE_LAYER } from './scene/SporesField.js';
+import { SignsLayer, SIGNS_THREE_LAYER } from './layers/SignsLayer.js';
 import { BridgesManager } from './bridges/BridgesManager.js';
 import { Palette } from './materials/Palette.js';
-import { THEMES, themeToPaletteOverrides, themeSky, darken, type ThemeColors } from './themes.js';
+import { THEMES, themeToPaletteOverrides, themeSky, darken, lighten, type ThemeColors } from './themes.js';
 import { TagsManager } from './tags/TagsManager.js';
 import type { TagOptions, TagHandle } from './tags/types.js';
 import { PolygonsManager } from './polygons/PolygonsManager.js';
@@ -42,7 +47,10 @@ import type {
   BuildingInfo,
   BuildingPopupConfig
 } from './buildings/types.js';
+import { ParcelsManager } from './parcels/ParcelsManager.js';
+import type { ParcelClickEvent } from './parcels/types.js';
 import { Compass } from './studio/Compass.js';
+import { ScaleBar, type ScaleBarUnits } from './studio/ScaleBar.js';
 import * as THREE from 'three';
 import { logger } from './util/log.js';
 
@@ -69,6 +77,12 @@ class HereBeDragonsImpl implements HereBeDragons {
   /** Direct handle to the labels layer for setting place-label elevation. */
   private readonly labelsLayer: LabelsLayer;
   private readonly treesLayer: TreesLayer;
+  private readonly grassLayer: GrassLayer;
+  private readonly wavesLayer: WavesLayer;
+  private readonly signsLayer: SignsLayer;
+  /** Drifting pollen motes (atmospheric; theme-gated). Added straight to the
+   *  scene, ticked from the RAF loop — not a tile layer. */
+  private readonly sporesField: SporesField;
   private readonly bridgesManager: BridgesManager;
   private rafHandle = 0;
   private destroyed = false;
@@ -93,6 +107,14 @@ class HereBeDragonsImpl implements HereBeDragons {
    * real size lands and re-renders correctly.
    */
   private resizeObserver?: ResizeObserver;
+  /**
+   * Smoothed (EMA) RAF-to-RAF delta in milliseconds, sampled on render frames
+   * only — see the comment block in `start()` for why idle frames are excluded.
+   * Hoisted from a closure local so the public `getFrameMs()` / `getFps()` can
+   * read it without owning the RAF loop. Reset to vsync (16.7 ms) at the start
+   * of every `start()` call so a visibility-resume gets a fresh measurement.
+   */
+  private smoothedFrameMs = 1000 / 60;
   /**
    * Frames elapsed since the last actual `composer.render()`. A safety-net
    * heartbeat: even with `needsRender` false we force a render every
@@ -133,7 +155,12 @@ class HereBeDragonsImpl implements HereBeDragons {
   private tagsManager: TagsManager;
   private polygonsManager: PolygonsManager;
   private buildingsManager: BuildingsManager;
+  /** Optional parcels overlay (second PMTiles source). Null when no
+   *  `parcels` option was supplied — keeps existing maps zero-cost. */
+  private parcelsManager: ParcelsManager | null = null;
   private compass: Compass;
+  /** Scale-bar overlay. Null when the caller passed `scaleBar: false`. */
+  private scaleBar: ScaleBar | null = null;
   /** Initial zoom/tilt/bearing — used by resetView() / double-click reset. */
   private readonly defaultZoom: number;
   private readonly defaultTilt: number;
@@ -155,14 +182,27 @@ class HereBeDragonsImpl implements HereBeDragons {
   private fogStrength = 1;
   /** Whether buildings are currently flattened to ground (Y collapse). */
   private buildingsFlat = false;
+  /** Painterly watercolor-wash strength on flat surfaces (0..1). Theme-seeded,
+   *  runtime-tunable via setSurfacePainterly. */
+  private surfacePainterlyValue = 0;
+  /** Screen-space paper-grain strength in the final pass (0..1). */
+  private paperGrainValue = 0;
+  /** Procedural road surfacing (cobblestone/dirt) strength (0..1). */
+  private roadTextureValue = 0;
+  /** Whether drifting spore/pollen motes are enabled. */
+  private sporesEnabledValue = false;
+  /** Global wind-sway multiplier for grass + tree billboards (1 = default). */
+  private windStrengthValue = 1;
   /** Most-recently-applied theme name (via applyTheme). Empty if never set. */
   private currentTheme = '';
   /** Active custom color overrides layered on top of the current theme. */
   private customColors: Partial<ThemeColors> = {};
   /** Current cloud opacity (0..1). Tracked so the studio can read it back. */
   private cloudsOpacity = 1;
-  /** Whether the cloud pass is currently enabled. */
-  private cloudsEnabled = true;
+  /** Whether the cloud pass is currently enabled. Off by default; the
+   *  constructor opts in only via an explicit `clouds` option or a quality
+   *  tier whose `clouds` flag is set (both tiers ship it off). */
+  private cloudsEnabled = false;
   /** Whether the dB heat-map overlay pass is currently enabled. */
   private noiseEnabled = false;
   /**
@@ -227,6 +267,9 @@ class HereBeDragonsImpl implements HereBeDragons {
   private static readonly DYNAMIC_RES_SETTLE_MS = 180;
   /** Unregister hook for the `matchMedia` DPR-change listener. */
   private dprWatcherCleanup?: () => void;
+  /** Tab-visibility listener — re-kicks the RAF loop when the tab returns
+   *  from a backgrounded state (the loop drops itself when `document.hidden`). */
+  private visibilityHandler?: () => void;
   /**
    * Whether the RAF loop is allowed to call `setQualityTier('low')` after
    * observing sustained slow frames. True only when the developer didn't
@@ -320,7 +363,11 @@ class HereBeDragonsImpl implements HereBeDragons {
       (options.dynamicResolution ?? true) && options.pixelRatio === undefined;
     this.renderer = new Renderer(container, {
       pixelRatio: effectivePixelRatio,
-      background: options.background
+      background: options.background,
+      // GPU context can drop on a long tab background / driver crash. The
+      // Renderer preventDefault's the lost event; on restore we force a
+      // redraw — Three re-uploads textures + programs + buffers itself.
+      onContextRestored: () => { this.needsRender = true; }
     });
     this.scene = new SceneRoot();
     this.defaultZoom = options.zoom;
@@ -341,6 +388,15 @@ class HereBeDragonsImpl implements HereBeDragons {
     // Trees are billboards (custom vertex shader) — always excluded from the
     // normal pass, so the camera just keeps this layer on for the color pass.
     this.camera.three.layers.enable(TREE_THREE_LAYER);
+    // Grass billboards: same deal as trees — excluded from the normal pass,
+    // present in the color pass.
+    this.camera.three.layers.enable(GRASS_THREE_LAYER);
+    // Shoreline waves: custom animated shader, also excluded from the normal pass.
+    this.camera.three.layers.enable(WAVES_THREE_LAYER);
+    // Drifting spores: custom billboard shader, also excluded from normal pass.
+    this.camera.three.layers.enable(SPORES_THREE_LAYER);
+    // Shop-sign banners: billboard shader, also excluded from normal pass.
+    this.camera.three.layers.enable(SIGNS_THREE_LAYER);
     if (options.bounds) this.camera.setBounds(options.bounds);
     // Save the developer's chosen tilt range BEFORE any tier-imposed cap so
     // setQualityTier can restore it when switching back from `'low'` to
@@ -417,6 +473,36 @@ class HereBeDragonsImpl implements HereBeDragons {
     // Trees are opt-in too — thousands of billboards per tile is a deliberate
     // choice. Enable via `layers: { trees: true }`.
     this.layers.setEnabled('trees', false);
+
+    // Wind-blown grass — scattered billboard tufts over green landuse that
+    // ripple in a travelling wind wave. Opt-in (dense + animates every frame
+    // while in view); enable via `layers: { grass: true }`.
+    this.grassLayer = new GrassLayer(this.scene.materials, {
+      getCameraZoom: () => this.camera.getView().zoom
+    });
+    this.layers.register('grass', this.grassLayer);
+    this.layers.setEnabled('grass', false);
+
+    // Shoreline foam — animated white-capped waves breaking along the coast.
+    // Opt-in (animates every frame while a coast is in view); enable via
+    // `layers: { waves: true }`.
+    this.wavesLayer = new WavesLayer(this.scene.materials, {
+      getCameraZoom: () => this.camera.getView().zoom
+    });
+    this.layers.register('waves', this.wavesLayer);
+    this.layers.setEnabled('waves', false);
+
+    // Sparse Japanese shop-sign banners — opt-in; enable via `layers: { signs: true }`.
+    this.signsLayer = new SignsLayer(this.scene.materials, {
+      getCameraZoom: () => this.camera.getView().zoom
+    });
+    this.layers.register('signs', this.signsLayer);
+    this.layers.setEnabled('signs', false);
+
+    // Drifting pollen motes — a scene-level atmospheric effect (not a tile
+    // layer). Enabled per theme in applyMergedPalette, ticked in the RAF loop.
+    this.sporesField = new SporesField();
+    this.scene.three.add(this.sporesField.mesh);
 
     // Arched bridge decks. Not a registry layer: it consumes the bridge
     // centerlines the roads extractor split out, stitches them across tiles,
@@ -730,10 +816,36 @@ class HereBeDragonsImpl implements HereBeDragons {
       projection: this.projection
     });
 
+    // Optional parcels overlay — only constructed when a `parcels.pmtilesUrl`
+    // is supplied, so existing single-source maps allocate nothing for it.
+    // The archive is opened in `init()` (alongside the basemap source).
+    if (options.parcels?.pmtilesUrl) {
+      this.parcelsManager = new ParcelsManager(
+        {
+          renderer: this.renderer,
+          scene: this.scene.three,
+          camera: this.camera,
+          projection: this.projection,
+          // A parcel load / click changes the scene without a camera move or
+          // public setter — nudge render-on-demand so it paints immediately.
+          onSceneChange: () => { this.needsRender = true; }
+        },
+        options.parcels
+      );
+    }
+
     // Compass overlay — mounted on the same container as the canvas. Visible
     // by default unless the developer opts out via `options.compass === false`.
     this.compass = new Compass(this, container);
     this.compass.setVisible(options.compass !== false);
+
+    // Scale-bar overlay — mounted bottom-right (compass takes bottom-left).
+    // Suppressed only when the caller explicitly passes `scaleBar: false`;
+    // a config object opts in with customisations.
+    if (options.scaleBar !== false) {
+      const scaleBarOpts = typeof options.scaleBar === 'object' ? options.scaleBar : {};
+      this.scaleBar = new ScaleBar(this, container, scaleBarOpts);
+    }
 
     // Watch for `window.devicePixelRatio` changes (e.g. dragging the window
     // between monitors with different DPI). Without this the renderer stays
@@ -779,6 +891,19 @@ class HereBeDragonsImpl implements HereBeDragons {
       // scene content, the heaviest fixed per-frame GPU cost on weak GPUs.
       this.setCloudsEnabled(quality.clouds);
     }
+    // Painterly FX overrides on top of the theme (each defaults to the theme's
+    // value when omitted). Applied after the theme so an explicit option wins.
+    if (options.surfacePainterly !== undefined) this.setSurfacePainterly(options.surfacePainterly);
+    if (options.paperGrain !== undefined) this.setPaperGrain(options.paperGrain);
+    if (options.roadTexture !== undefined) this.setRoadTexture(options.roadTexture);
+    if (options.spores !== undefined) this.setSporesEnabled(options.spores);
+    if (options.buildingStyle !== undefined) this.setBuildingStyle(options.buildingStyle);
+    if (options.cloudPreset !== undefined) this.setCloudPreset(options.cloudPreset);
+    if (options.lightPreset !== undefined) this.setLightPreset(options.lightPreset);
+    if (options.windStrength !== undefined) this.setWindStrength(options.windStrength);
+    if (options.signsDensity !== undefined) this.setSignsDensity(options.signsDensity);
+    if (options.signsMinZoom !== undefined) this.setSignsMinZoom(options.signsMinZoom);
+    if (options.outline !== undefined) this.setOutline(options.outline);
 
     // Track the container's size for the lifetime of the map. Besides handling
     // ordinary layout changes (so consumers don't need their own resize wiring),
@@ -787,6 +912,18 @@ class HereBeDragonsImpl implements HereBeDragons {
     if (typeof ResizeObserver !== 'undefined') {
       this.resizeObserver = new ResizeObserver(() => this.resize());
       this.resizeObserver.observe(container);
+    }
+
+    // Idle-tab pause: when the tab is hidden, `tick` drops the loop instead
+    // of re-arming RAF; this listener re-kicks `start()` once the tab is
+    // visible again. The guard against double-start covers the case where a
+    // visibilitychange fires while `rafHandle` is already armed.
+    if (typeof document !== 'undefined') {
+      this.visibilityHandler = (): void => {
+        if (this.destroyed) return;
+        if (!document.hidden && this.rafHandle === 0) this.start();
+      };
+      document.addEventListener('visibilitychange', this.visibilityHandler);
     }
 
     this.start();
@@ -832,7 +969,10 @@ class HereBeDragonsImpl implements HereBeDragons {
     // are async and have no ordering dependency, so this saves one stage.
     await Promise.all([
       this.source.open(),
-      this.precompileShaders()
+      this.precompileShaders(),
+      // Open the parcels archive in parallel; its own `open()` swallows
+      // failures so a broken parcel source can never block the basemap.
+      this.parcelsManager?.open() ?? Promise.resolve()
     ]);
     await this.tileManager.start();
     // Kick the underlay dispatcher synchronously so its first fetches go out
@@ -861,6 +1001,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     // The building material's onBeforeCompile patches read a buildingIndex
     // attribute — provide a dummy so the patched shader compiles cleanly.
     geo.setAttribute('buildingIndex', new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 1));
+    geo.setAttribute('buildingRoof', new THREE.BufferAttribute(new Float32Array([0, 0, 0]), 1));
 
     const warmup = new THREE.Group();
     warmup.name = 'ShaderWarmup';
@@ -947,10 +1088,22 @@ class HereBeDragonsImpl implements HereBeDragons {
     // impossible to satisfy (you can't be faster than vsync on an idle
     // scene). We now only update the EMA + watchers when the user is
     // actually rendering — see `lastFrameRendered` below.
-    let smoothedFrameMs = 1000 / 60;
+    // Reset the live FPS EMA on every start() — visibility-resume re-enters
+    // here, and a fresh measurement window is what consumers' perf HUDs
+    // (reading via getFps/getFrameMs) should see after a pause.
+    this.smoothedFrameMs = 1000 / 60;
     let lastFrameRendered = false;
     const tick = (): void => {
       if (this.destroyed) return;
+      // Idle-tab pause: if the document is hidden, drop the loop entirely so
+      // the map uses zero CPU/GPU in a background tab. The visibilitychange
+      // listener installed in the constructor re-kicks `start()` (with a
+      // fresh closure + fresh `last` timestamp) once the tab is visible
+      // again, so the first resumed dt isn't a huge jump.
+      if (typeof document !== 'undefined' && document.hidden) {
+        this.rafHandle = 0;
+        return;
+      }
       const now = performance.now();
       const dt = (now - last) / 1000;
       last = now;
@@ -958,7 +1111,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       // an idle frame this might be stale (last value from when we last
       // rendered) — that's fine, it represents the latest known actual
       // workload and is the right value for throttling decisions.
-      const frameBudgetOk = smoothedFrameMs < this.frameBudgetMs;
+      const frameBudgetOk = this.smoothedFrameMs < this.frameBudgetMs;
 
       // --- per-frame state updates (cheap; always run) -------------------
       // camera.update fires onChange → sets needsRender + cameraDirty while
@@ -972,9 +1125,19 @@ class HereBeDragonsImpl implements HereBeDragons {
       const tileDirty = this.tileManager.update(false, frameBudgetOk);
       this.baseTileManager?.update(false);
       const layersDirty = this.layers.update(dt);
+      // Recompute the parcels overlay's visible tile window + kick loads.
+      // Cheap when no overlay is configured (null), disabled, or below its
+      // minZoom; new tiles flag `needsRender` via the onSceneChange nudge.
+      this.parcelsManager?.update();
       // Bridge decks rebuild (debounced) when the loaded bridge-tile set
       // changes; a rebuild is a visible scene change.
       const bridgesDirty = this.bridgesManager.update(dt);
+      // Drifting spores animate while visible (gated by theme + zoom inside).
+      const sporesDirty = this.sporesField.update(
+        dt,
+        this.camera.controls.target,
+        this.camera.getView().zoom
+      );
       this.cloudTime += dt;
 
       // --- dynamic resolution -------------------------------------------
@@ -1000,14 +1163,14 @@ class HereBeDragonsImpl implements HereBeDragons {
       const heartbeat = this.framesSinceRender >= HereBeDragonsImpl.RENDER_HEARTBEAT_FRAMES;
       const willRender =
         this.needsRender || tileDirty || layersDirty || bridgesDirty ||
-        cloudsDirty || noiseDirty || heartbeat;
+        sporesDirty || cloudsDirty || noiseDirty || heartbeat;
 
       // --- FPS measurement + auto-tier watchers (movement frames only) ---
       // Only update when THIS frame and the PREVIOUS frame both rendered.
       // `dt` between two render frames reflects actual render workload;
       // anything else (idle skip, just-resumed-from-idle) doesn't.
       if (willRender && lastFrameRendered) {
-        smoothedFrameMs = smoothedFrameMs * 0.9 + (dt * 1000) * 0.1;
+        this.smoothedFrameMs = this.smoothedFrameMs * 0.9 + (dt * 1000) * 0.1;
 
         // Auto-upgrade: 'auto' mode starts on 'low' and promotes once we
         // see sustained fast frames AFTER the warmup. Counters advance only
@@ -1016,11 +1179,11 @@ class HereBeDragonsImpl implements HereBeDragons {
         if (this.autoUpgradeAllowed) {
           this.autoUpgradeFrameCount++;
           if (this.autoUpgradeFrameCount > HereBeDragonsImpl.AUTO_UPGRADE_WARMUP_FRAMES) {
-            if (smoothedFrameMs <= this.autoUpgradeFrameMs) {
+            if (this.smoothedFrameMs <= this.autoUpgradeFrameMs) {
               this.autoUpgradeStreak++;
               if (this.autoUpgradeStreak >= HereBeDragonsImpl.AUTO_UPGRADE_STREAK_FRAMES) {
                 logger.info(
-                  `auto-upgrade: smoothed frame ${smoothedFrameMs.toFixed(1)} ms ` +
+                  `auto-upgrade: smoothed frame ${this.smoothedFrameMs.toFixed(1)} ms ` +
                   `≤ ${this.autoUpgradeFrameMs} ms for ${this.autoUpgradeStreak} frames → quality='high'`
                 );
                 this.autoUpgradeAllowed = false;
@@ -1046,11 +1209,11 @@ class HereBeDragonsImpl implements HereBeDragons {
         if (this.autoDowngradeAllowed) {
           this.autoDowngradeFrameCount++;
           if (this.autoDowngradeFrameCount > HereBeDragonsImpl.AUTO_DOWNGRADE_WARMUP_FRAMES) {
-            if (smoothedFrameMs >= this.autoDowngradeFrameMs) {
+            if (this.smoothedFrameMs >= this.autoDowngradeFrameMs) {
               this.autoDowngradeStreak++;
               if (this.autoDowngradeStreak >= HereBeDragonsImpl.AUTO_DOWNGRADE_STREAK_FRAMES) {
                 logger.info(
-                  `auto-downgrade: smoothed frame ${smoothedFrameMs.toFixed(1)} ms ` +
+                  `auto-downgrade: smoothed frame ${this.smoothedFrameMs.toFixed(1)} ms ` +
                   `≥ ${this.autoDowngradeFrameMs} ms for ${this.autoDowngradeStreak} frames → quality='low'`
                 );
                 this.autoDowngradeAllowed = false;
@@ -1226,6 +1389,81 @@ class HereBeDragonsImpl implements HereBeDragons {
    */
   getPixelRatio(): number {
     return this.appliedPixelRatio;
+  }
+
+  /** Smoothed RAF-to-RAF frame time in milliseconds, sampled on render frames
+   *  only (idle / hidden-tab frames don't pollute it). Reset on every
+   *  visibility-resume. Useful for consumers to wire their own perf HUDs. */
+  getFrameMs(): number {
+    return this.smoothedFrameMs;
+  }
+
+  /** Smoothed frames-per-second derived from {@link getFrameMs}. */
+  getFps(): number {
+    return this.smoothedFrameMs > 0 ? 1000 / this.smoothedFrameMs : 0;
+  }
+
+  /**
+   * Ground meters per CSS pixel at the camera's current latitude + zoom.
+   * Standard Web Mercator scale (cos(lat) shrink) — accurate for a horizontal
+   * line through the screen centre. Drives the scale-bar widget and is
+   * exported so consumers can build their own distance overlays.
+   */
+  getMetersPerPixel(): number {
+    const v = this.camera.getView();
+    return Projection.metersPerPixel(v.lat, v.zoom);
+  }
+
+  /**
+   * Capture the current map view as a data URL. The render is done
+   * synchronously and the canvas read in the same JS tick — that's the
+   * trick that makes capture work even though we use the default
+   * `preserveDrawingBuffer: false` (which is much faster for the normal
+   * render loop). The DOM overlays — compass, scale-bar, tag popups —
+   * are not included; they're standalone HTML.
+   *
+   * Pass `pixelRatio` to override the renderer's current DPR — 2 or 3 is
+   * a good choice for print/PDF exports. The override is temporary and
+   * is restored before this method returns; the user's normal render loop
+   * is undisturbed.
+   *
+   * @example
+   *   const dataUrl = map.snapshot({ pixelRatio: 2 });
+   *   const link = document.createElement('a');
+   *   link.href = dataUrl;
+   *   link.download = 'property.png';
+   *   link.click();
+   */
+  snapshot(opts: SnapshotOptions = {}): string {
+    const mime = opts.mimeType ?? 'image/png';
+    // Save the current renderer state so we can fully restore.
+    const prevPixelRatio = this.renderer.three.getPixelRatio();
+    const overridePixelRatio = opts.pixelRatio;
+    if (overridePixelRatio !== undefined && overridePixelRatio !== prevPixelRatio) {
+      // setPixelRatio triggers an internal resize of the drawing buffer to
+      // match width * pixelRatio; the canvas's CSS size is unaffected.
+      this.renderer.three.setPixelRatio(overridePixelRatio);
+      this.renderer.three.setSize(this.renderer.width, this.renderer.height, false);
+      this.composer.resize(this.renderer.width, this.renderer.height);
+    }
+    // Synchronous render, then immediate readback. Any await between these
+    // two calls would let the browser composite and clear the framebuffer.
+    this.composer.setCloudTime(this.cloudTime);
+    this.composer.setNoiseTime(this.cloudTime);
+    this.composer.render();
+    const dataUrl =
+      opts.quality !== undefined
+        ? this.renderer.dom.toDataURL(mime, opts.quality)
+        : this.renderer.dom.toDataURL(mime);
+    // Restore: revert pixel-ratio override and nudge needsRender so the
+    // next user-driven RAF redraws at the original quality if needed.
+    if (overridePixelRatio !== undefined && overridePixelRatio !== prevPixelRatio) {
+      this.renderer.three.setPixelRatio(prevPixelRatio);
+      this.renderer.three.setSize(this.renderer.width, this.renderer.height, false);
+      this.composer.resize(this.renderer.width, this.renderer.height);
+      this.needsRender = true;
+    }
+    return dataUrl;
   }
 
   setDynamicResolution(on: boolean): void {
@@ -1416,6 +1654,17 @@ class HereBeDragonsImpl implements HereBeDragons {
     // colour darkened — so a greyscale theme gives a dark-grey trunk, an earthy
     // theme a brown one, rather than a fixed wood brown that clashes.
     this.treesLayer.setColors(darken(theme.park, 0.12), darken(theme.building, 0.5));
+    // Grass base/tip derived from the park colour, both shifted darker for a
+    // deeper, less acid green: a very dark base and a tip just under the park
+    // tone (rather than lightened above it).
+    this.grassLayer.setColors(darken(theme.park, 0.45), darken(theme.park, 0.1));
+    // Shore waves: shallow water from a lightened water colour, wet sand from
+    // the theme's beach colour, foam a warm near-white.
+    this.wavesLayer.setColors(
+      lighten(theme.water, 0.4),
+      theme.beach ?? '#e8d8b0',
+      lighten(theme.beach ?? '#fbf6ec', 0.55)
+    );
     // Refresh the building / floor highlight overlay colors. Themes that
     // omit `highlight` reset to the cyan/orange defaults so a previous
     // theme's choices don't leak.
@@ -1447,7 +1696,32 @@ class HereBeDragonsImpl implements HereBeDragons {
     outline.settings.hatchingScale = theme.outline?.hatchingScale ?? 14;
     outline.settings.saturation = theme.saturation ?? 1.5;
     outline.applySettings();
-    // Theme/colour/sky/fog/outline all just changed — repaint next frame.
+
+    // Atmosphere: a theme can own its sky + light. Apply its cloud/light
+    // presets (or reset to neutral defaults with null) so switching themes
+    // can't leak one theme's towering gold cumulus or golden-hour key light
+    // into the next. The cloud *look* updates even while the pass is toggled
+    // off, so enabling clouds later shows the right style immediately.
+    this.composer.applyCloudPreset(theme.clouds ?? null);
+    this.scene.applyLightPreset(theme.light ?? null);
+    // Painterly building treatment (warm walls + glowing windows + terracotta
+    // roofs). Null resets to plain toon buildings for themes that don't ask
+    // for it, so the look never leaks across a theme swap.
+    this.scene.materials.setPainterly(theme.buildingStyle ?? null);
+    // Watercolor wash on flat surfaces (ground/water/landuse/beach), the paper
+    // grain that unifies it, cobblestone/dirt roads, and drifting pollen — all
+    // theme-seeded here but individually runtime-tunable via their setters. We
+    // track the live values so the getters + studio resync stay accurate.
+    this.surfacePainterlyValue = theme.surfacePainterly ?? 0;
+    this.paperGrainValue = theme.surfacePainterly ?? 0;
+    this.roadTextureValue = theme.roadTexture ?? 0;
+    this.sporesEnabledValue = theme.spores === true;
+    this.scene.materials.setPainterlySurface(this.surfacePainterlyValue);
+    this.composer.setPaperGrain(this.paperGrainValue);
+    this.scene.materials.setRoadTexture(this.roadTextureValue);
+    this.sporesField.setEnabled(this.sporesEnabledValue);
+
+    // Theme/colour/sky/fog/outline/atmosphere all just changed — repaint.
     this.needsRender = true;
   }
 
@@ -1528,6 +1802,29 @@ class HereBeDragonsImpl implements HereBeDragons {
     return this.buildingsManager.on('buildingclick', cb);
   }
 
+  /**
+   * Subscribe to parcel click events. Fires with the clicked parcel feature's
+   * MVT properties (notably `parcel_id`) plus the ground point's lat/lon.
+   * No-op (returns a no-op unsubscribe) when no `parcels` overlay is
+   * configured. Returns an unsubscribe function.
+   */
+  onParcelClick(cb: (parcel: ParcelClickEvent) => void): Unsubscribe {
+    if (!this.parcelsManager) return () => {};
+    return this.parcelsManager.onParcelClick(cb);
+  }
+
+  /** Toggle the parcels overlay on/off. No-op when none is configured. */
+  setParcelsEnabled(on: boolean): void {
+    if (!this.parcelsManager) return;
+    this.parcelsManager.setEnabled(on);
+    this.needsRender = true;
+  }
+
+  /** Whether the parcels overlay is currently enabled (false if unconfigured). */
+  getParcelsEnabled(): boolean {
+    return this.parcelsManager?.isEnabled() ?? false;
+  }
+
   /** Snapshot of every building currently loaded across visible tiles. */
   getLoadedBuildings(): BuildingInfo[] {
     const out: BuildingInfo[] = [];
@@ -1548,6 +1845,22 @@ class HereBeDragonsImpl implements HereBeDragons {
 
   isCompassVisible(): boolean {
     return !this.compass.element.hidden;
+  }
+
+  setScaleBarVisible(on: boolean): void {
+    this.scaleBar?.setVisible(on);
+  }
+
+  isScaleBarVisible(): boolean {
+    return this.scaleBar !== null && !this.scaleBar.element.hidden;
+  }
+
+  setScaleBarUnits(units: ScaleBarUnits): void {
+    this.scaleBar?.setUnits(units);
+  }
+
+  getScaleBarUnits(): ScaleBarUnits | null {
+    return this.scaleBar?.getUnits() ?? null;
   }
 
   /** Restrict (or release) camera panning to a geographic box. */
@@ -1586,6 +1899,136 @@ class HereBeDragonsImpl implements HereBeDragons {
 
   getFloorHighlightColor(): string {
     return this.buildingsManager.getFloorHighlightColor();
+  }
+
+  /** Painterly watercolor-wash strength on flat surfaces (ground/water/landuse/
+   *  beach). 0 = flat toon fills, ~0.9 = the Ghibli hand-painted look. */
+  setSurfacePainterly(strength: number): void {
+    this.surfacePainterlyValue = Math.max(0, Math.min(1, strength));
+    this.scene.materials.setPainterlySurface(this.surfacePainterlyValue);
+    this.needsRender = true;
+  }
+
+  getSurfacePainterly(): number {
+    return this.surfacePainterlyValue;
+  }
+
+  /** Screen-space paper-grain strength in the final pass (0..1). 0 = off. */
+  setPaperGrain(strength: number): void {
+    this.paperGrainValue = Math.max(0, Math.min(1, strength));
+    this.composer.setPaperGrain(this.paperGrainValue);
+    this.needsRender = true;
+  }
+
+  getPaperGrain(): number {
+    return this.paperGrainValue;
+  }
+
+  /** Procedural road surfacing strength (0..1): cobblestone setts on roads,
+   *  mottled earth on paths. 0 = plain ribbons. */
+  setRoadTexture(strength: number): void {
+    this.roadTextureValue = Math.max(0, Math.min(1, strength));
+    this.scene.materials.setRoadTexture(this.roadTextureValue);
+    this.needsRender = true;
+  }
+
+  getRoadTexture(): number {
+    return this.roadTextureValue;
+  }
+
+  /** Toggle the drifting spore/pollen motes (atmospheric). */
+  setSporesEnabled(on: boolean): void {
+    this.sporesEnabledValue = on;
+    this.sporesField.setEnabled(on);
+    this.needsRender = true;
+  }
+
+  getSporesEnabled(): boolean {
+    return this.sporesEnabledValue;
+  }
+
+  /** Global wind-sway multiplier for the grass + tree billboards. 1 = default,
+   *  0 = still, >1 = breezier. Persists across theme changes. */
+  setWindStrength(multiplier: number): void {
+    this.windStrengthValue = Math.max(0, Math.min(3, multiplier));
+    this.grassLayer.setWindStrength(this.windStrengthValue);
+    this.treesLayer.setWindStrength(this.windStrengthValue);
+    this.needsRender = true;
+  }
+
+  getWindStrength(): number {
+    return this.windStrengthValue;
+  }
+
+  /** Shop-sign banner density 0..1 — thins the over-emitted candidate set
+   *  (0 = none, 1 = all). Only matters when the `signs` layer is enabled. */
+  setSignsDensity(density: number): void {
+    this.signsLayer.setDensity(density);
+    this.needsRender = true;
+  }
+
+  getSignsDensity(): number {
+    return this.signsLayer.getDensity();
+  }
+
+  /** Camera zoom at/above which shop-sign banners appear (default 15). */
+  setSignsMinZoom(zoom: number): void {
+    this.signsLayer.setMinZoom(zoom);
+    this.needsRender = true;
+  }
+
+  getSignsMinZoom(): number {
+    return this.signsLayer.getMinZoom();
+  }
+
+  /** Set the illustrated outline/ink look + saturation (strength, darkness,
+   *  halftone, hatching, saturation). Only the provided fields change. */
+  setOutline(config: import('./types.js').OutlineConfig): void {
+    this.composer.setOutlineLook(config);
+    this.needsRender = true;
+  }
+
+  /** The resolved outline/ink look currently in effect. */
+  getOutline(): Required<import('./types.js').OutlineConfig> {
+    return this.composer.getOutlineLook();
+  }
+
+  /** Painterly storybook building treatment — warm plaster walls, glowing
+   *  windows, terracotta/tiled roofs, per-building variety. Pass `null` to
+   *  clear it (flat toon buildings). See {@link ThemeBuildingStyle}. */
+  setBuildingStyle(style: import('./themes.js').ThemeBuildingStyle | null): void {
+    this.scene.materials.setPainterly(style);
+    this.needsRender = true;
+  }
+
+  /** The resolved painterly-building look currently in effect. */
+  getBuildingStyle(): import('./themes.js').ThemeBuildingStyle {
+    return this.scene.materials.getPainterly();
+  }
+
+  /** Set the volumetric-cloud look (coverage, density, altitude band, noise
+   *  scale, wind speed, cloud + shadow colors). Pass `null` to restore the
+   *  neutral default clouds. Independent of the on/off + opacity controls. */
+  setCloudPreset(preset: import('./themes.js').CloudPreset | null): void {
+    this.composer.applyCloudPreset(preset);
+    this.needsRender = true;
+  }
+
+  /** The resolved cloud look currently in effect. */
+  getCloudPreset(): import('./themes.js').CloudPreset {
+    return this.composer.getCloudPreset();
+  }
+
+  /** Set the lighting look (sun color/intensity, fill, ambient, hemisphere
+   *  sky/ground/intensity). Pass `null` to restore the neutral default rig. */
+  setLightPreset(preset: import('./themes.js').LightPreset | null): void {
+    this.scene.applyLightPreset(preset);
+    this.needsRender = true;
+  }
+
+  /** The resolved lighting look currently in effect. */
+  getLightPreset(): import('./themes.js').LightPreset {
+    return this.scene.getLightPreset();
   }
 
   /** Tilt (deg) below which atmospheric fog is fully off. Default 30. */
@@ -1691,14 +2134,20 @@ class HereBeDragonsImpl implements HereBeDragons {
     cancelAnimationFrame(this.rafHandle);
     this.resizeObserver?.disconnect();
     this.dprWatcherCleanup?.();
+    if (this.visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+    }
     if (this.onPointerMove) this.renderer.dom.removeEventListener('pointermove', this.onPointerMove);
     if (this.onPointerLeave) this.renderer.dom.removeEventListener('pointerleave', this.onPointerLeave);
     if (this.onDblClick) this.renderer.dom.removeEventListener('dblclick', this.onDblClick);
     this.tagsManager.dispose();
     this.polygonsManager.dispose();
     this.buildingsManager.dispose();
+    this.parcelsManager?.dispose();
     this.bridgesManager.dispose();
+    this.sporesField.dispose();
     this.compass.destroy();
+    this.scaleBar?.destroy();
     this.tileManager.dispose();
     this.baseTileManager?.dispose();
     this.workerPool.dispose();

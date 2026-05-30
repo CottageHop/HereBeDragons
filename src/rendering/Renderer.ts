@@ -4,6 +4,14 @@ export interface RendererOptions {
   pixelRatio?: number;
   background?: string;
   antialias?: boolean;
+  /**
+   * Fires after the WebGL context has been lost (GPU reset, long tab-background,
+   * power-save) AND restored. The renderer has already opted into restoration
+   * by `preventDefault()`-ing the `webglcontextlost` event; consumers should
+   * use this hook to force a redraw and re-seed any per-frame state they cache.
+   * HereBeDragons wires this to nudge `needsRender` so the next RAF repaints.
+   */
+  onContextRestored?: () => void;
 }
 
 export class Renderer {
@@ -51,6 +59,21 @@ export class Renderer {
     this.dom.addEventListener('pointerup', releaseGrab);
     this.dom.addEventListener('pointercancel', releaseGrab);
     this.dom.addEventListener('pointerleave', releaseGrab);
+
+    // WebGL context-loss survival. Browsers reclaim the GPU context on long
+    // tab-backgrounds, driver crashes, GPU pressure, power-save — and unless
+    // we `preventDefault()` the `webglcontextlost` event, the canvas is dead
+    // forever. With it prevented, the browser fires `webglcontextrestored`
+    // and Three's WebGLRenderer re-uploads its textures/programs/buffers
+    // automatically; we just need to nudge the consumer to redraw.
+    this.dom.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+    }, false);
+    if (options.onContextRestored) {
+      const cb = options.onContextRestored;
+      this.dom.addEventListener('webglcontextrestored', () => { cb(); }, false);
+    }
+
     container.appendChild(this.dom);
 
     this.resize();

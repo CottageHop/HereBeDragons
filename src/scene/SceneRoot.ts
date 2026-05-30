@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { createLights } from './Lights.js';
+import { createLights, type LightPreset } from './Lights.js';
 import { createGround } from './Ground.js';
 import { StylizedMaterials } from '../materials/StylizedMaterials.js';
 import type { TileGroup } from './TileGroup.js';
@@ -9,6 +9,15 @@ export class SceneRoot {
   readonly tilesRoot: THREE.Group;
   readonly materials: StylizedMaterials;
   private ground: THREE.Mesh;
+  private readonly lights: ReturnType<typeof createLights>;
+  /** Authored light defaults, captured at construction so `applyLightPreset`
+   *  can reset before layering a theme's overrides. */
+  private readonly lightDefaults: {
+    sun: number; sunColor: number;
+    fill: number;
+    ambient: number;
+    hemi: number; hemiSky: number; hemiGround: number;
+  };
 
   constructor() {
     this.three = new THREE.Scene();
@@ -29,8 +38,20 @@ export class SceneRoot {
 
     this.materials = new StylizedMaterials();
 
-    const lights = createLights();
-    this.three.add(lights.group);
+    this.lights = createLights();
+    this.three.add(this.lights.group);
+    // Snapshot the authored defaults so applyLightPreset can reset cleanly
+    // before layering a theme's overrides.
+    const { sun, fill, ambient, hemi } = this.lights;
+    this.lightDefaults = {
+      sun: sun.intensity,
+      sunColor: sun.color.getHex(),
+      fill: fill.intensity,
+      ambient: ambient.intensity,
+      hemi: hemi.intensity,
+      hemiSky: hemi.color.getHex(),
+      hemiGround: hemi.groundColor.getHex()
+    };
 
     this.ground = createGround(this.materials);
     this.three.add(this.ground);
@@ -38,6 +59,38 @@ export class SceneRoot {
     this.tilesRoot = new THREE.Group();
     this.tilesRoot.name = 'TilesRoot';
     this.three.add(this.tilesRoot);
+  }
+
+  /**
+   * Apply a theme's lighting look. Resets to the authored defaults first, then
+   * layers the preset's defined fields on top. Pass `null` to restore the
+   * neutral defaults (used when a theme declares no light preset).
+   */
+  applyLightPreset(preset: LightPreset | null): void {
+    const { sun, fill, ambient, hemi } = this.lights;
+    const d = this.lightDefaults;
+    sun.color.set(preset?.sun ?? d.sunColor);
+    sun.intensity = preset?.sunIntensity ?? d.sun;
+    fill.intensity = preset?.fillIntensity ?? d.fill;
+    ambient.intensity = preset?.ambientIntensity ?? d.ambient;
+    hemi.color.set(preset?.hemiSky ?? d.hemiSky);
+    hemi.groundColor.set(preset?.hemiGround ?? d.hemiGround);
+    hemi.intensity = preset?.hemiIntensity ?? d.hemi;
+  }
+
+  /** Read the current lighting as a fully-populated preset (colors as sRGB
+   *  hex). Source of truth for the public getter + studio resync. */
+  getLightPreset(): Required<LightPreset> {
+    const { sun, fill, ambient, hemi } = this.lights;
+    return {
+      sun: '#' + sun.color.getHexString(),
+      sunIntensity: sun.intensity,
+      fillIntensity: fill.intensity,
+      ambientIntensity: ambient.intensity,
+      hemiSky: '#' + hemi.color.getHexString(),
+      hemiGround: '#' + hemi.groundColor.getHexString(),
+      hemiIntensity: hemi.intensity
+    };
   }
 
   addTile(tile: TileGroup): void {

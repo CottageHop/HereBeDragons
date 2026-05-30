@@ -33,6 +33,18 @@ const SRGB_ENCODE_WITH_GRADE = /* glsl */ `
   float _gradeLuma = dot(_fxaa.rgb, vec3(0.2126, 0.7152, 0.0722));
   _fxaa.rgb = mix(vec3(_gradeLuma), _fxaa.rgb, uSaturation);
 
+  // Paper grain: a faint static fibre texture keyed to screen pixels (not the
+  // world) so the frame reads as paint on a fixed sheet — the world slides
+  // under the "paper" as the camera moves, which is exactly the animated-cel
+  // feel. uPaperGrain = 0 is a no-op (multiply by 1.0).
+  if (uPaperGrain > 0.0) {
+    vec2 _fc = gl_FragCoord.xy;
+    float _g = fract(sin(dot(floor(_fc), vec2(127.1, 311.7))) * 43758.5453);
+    float _fib = fract(sin(dot(floor(_fc * 0.5), vec2(269.5, 183.3))) * 43758.5453);
+    float _grain = (_g - 0.5) * 0.06 + (_fib - 0.5) * 0.045;
+    _fxaa.rgb *= 1.0 + _grain * uPaperGrain;
+  }
+
   vec3 _srgb_lo = _fxaa.rgb * 12.92;
   vec3 _srgb_hi = pow(_fxaa.rgb, vec3(1.0 / 2.4)) * 1.055 - 0.055;
   vec3 _srgb = mix(_srgb_hi, _srgb_lo, vec3(lessThanEqual(_fxaa.rgb, vec3(0.0031308))));
@@ -45,7 +57,7 @@ const SRGB_ENCODE_WITH_GRADE = /* glsl */ `
 const fxaaFragmentWithEncode = FXAAShader.fragmentShader
   .replace(
     'void main() {',
-    `uniform float uSaturation;\nvoid main() {`
+    `uniform float uSaturation;\nuniform float uPaperGrain;\nvoid main() {`
   )
   .replace(
     'gl_FragColor = ApplyFXAA( tDiffuse, resolution.xy, vUv );',
@@ -61,6 +73,7 @@ ${SRGB_ENCODE_WITH_GRADE}`
 const passthroughFragment = /* glsl */ `
 uniform sampler2D tDiffuse;
 uniform float uSaturation;
+uniform float uPaperGrain;
 varying vec2 vUv;
 
 void main() {
@@ -86,6 +99,7 @@ export class FxaaPass {
     // setInput/setSize/setSaturation valid regardless of which mode is on.
     const uniforms = THREE.UniformsUtils.clone(FXAAShader.uniforms) as Record<string, THREE.IUniform>;
     uniforms.uSaturation = { value: 1.0 };
+    uniforms.uPaperGrain = { value: 0.0 };
     this.uniforms = uniforms;
 
     this.fxaaMaterial = new THREE.ShaderMaterial({
@@ -131,6 +145,16 @@ export class FxaaPass {
    */
   setSaturation(saturation: number): void {
     this.uniforms.uSaturation.value = Math.max(0, saturation);
+  }
+
+  /**
+   * Strength (0..1) of the screen-space paper grain folded into the final
+   * encode. 0 = off (the look every non-painted theme keeps). The Ghibli theme
+   * drives this so the frame reads as paint on paper. Free — the pass was
+   * already bandwidth-bound and this is a couple of hashes per pixel.
+   */
+  setPaperGrain(strength: number): void {
+    this.uniforms.uPaperGrain.value = Math.max(0, strength);
   }
 
   /**

@@ -53,6 +53,12 @@ export class BuildingsLayer extends Layer {
     if (buildingIndexAttr instanceof Float32Array) {
       bg.setAttribute('buildingIndex', new THREE.BufferAttribute(buildingIndexAttr, 1));
     }
+    // Per-vertex roof flag (1 = roof face, 0 = wall) so the painterly shader
+    // paints pitched roof faces terracotta even though their normals slope.
+    const buildingRoofAttr = geometry.attributes?.buildingRoof;
+    if (buildingRoofAttr instanceof Float32Array) {
+      bg.setAttribute('buildingRoof', new THREE.BufferAttribute(buildingRoofAttr, 1));
+    }
     const mesh = new THREE.Mesh(bg, this.materials.get(Palette.building));
     // Tag onto the dedicated buildings layer so Composer can exclude buildings
     // from the normal pass when they're flattened (no outlines on footprints).
@@ -78,12 +84,19 @@ export class BuildingsLayer extends Layer {
     // the right building. Other meshes (without a selection set) reset to -1
     // before their own draw, so the change is local.
     mesh.onBeforeRender = (_renderer, _scene, _camera, _geometry, material) => {
-      const u = (material as THREE.MeshToonMaterial).userData.uSelectedBuildingIndex as
-        | { value: number }
-        | undefined;
-      if (u) {
+      const ud = (material as THREE.MeshToonMaterial).userData;
+      const sel = ud.uSelectedBuildingIndex as { value: number } | undefined;
+      if (sel) {
         const v = mesh.userData.imSelectedBuildingIndex;
-        u.value = typeof v === 'number' ? v : -1;
+        sel.value = typeof v === 'number' ? v : -1;
+      }
+      // Same pattern for the hover affordance: push this mesh's hovered index
+      // (or -1 to clear) before its draw so the shared material's per-fragment
+      // check can warm-brighten the right building per-tile.
+      const hov = ud.uHoveredBuildingIndex as { value: number } | undefined;
+      if (hov) {
+        const h = mesh.userData.imHoveredBuildingIndex;
+        hov.value = typeof h === 'number' ? h : -1;
       }
     };
 

@@ -12,10 +12,28 @@ export type LayerName =
   | 'fountains'
   | 'beaches'
   | 'waves'
+  | 'signs'
   | 'cars';
 
 export interface LayerConfig {
   enabled?: boolean;
+}
+
+/**
+ * The illustrated outline/ink look + color saturation. Every field optional —
+ * omitted fields are left unchanged. `strength` thickens edges, `darkness`
+ * tunes how dark an edged pixel goes (0 = pure black, 1 = unaltered),
+ * `halftone`/`hatching` add comic-style dot/line shading, and `saturation`
+ * boosts overall vibrancy (the Ghibli theme runs ~1.75).
+ */
+export interface OutlineConfig {
+  strength?: number;
+  darkness?: number;
+  halftone?: number;
+  halftoneScale?: number;
+  hatching?: number;
+  hatchingScale?: number;
+  saturation?: number;
 }
 
 /** Inclusive geographic bounding box. Latitude in [-90, 90], lon in [-180, 180]. */
@@ -92,8 +110,26 @@ export interface HereBeDragonsOptions {
   tags?: import('./tags/types.js').TagsConfig;
   /** Building picker + popup configuration. */
   buildings?: import('./buildings/types.js').BuildingPopupConfig;
+  /**
+   * Optional parcels overlay. Set `parcels.pmtilesUrl` to load county parcel
+   * boundary polygons from a SECOND PMTiles archive (separate from
+   * `pmtiles_url`) and render them as clickable outline "boxes" above the
+   * basemap. Omit entirely to leave the overlay off — existing single-source
+   * maps behave exactly as before. See `ParcelsConfig` for the full shape.
+   */
+  parcels?: import('./parcels/types.js').ParcelsConfig;
   /** Show the compass overlay. Default true. Click resets bearing to north. */
   compass?: boolean;
+  /**
+   * Scale-bar overlay (default `true`). Pass an object to customise units
+   * or target pixel width, or `false` to suppress entirely. Click toggles
+   * units. Most real-estate UIs default to imperial; pass
+   * `{ units: 'metric' }` for international maps.
+   */
+  scaleBar?: boolean | {
+    units?: import('./studio/ScaleBar.js').ScaleBarUnits;
+    targetWidthPx?: number;
+  };
   /**
    * Name of a built-in theme to apply on construction (e.g. `'cottagecore'`,
    * `'concretejungle'`). Equivalent to calling `map.applyTheme(name)` right
@@ -146,6 +182,37 @@ export interface HereBeDragonsOptions {
    *   - `{ enabled, opacity }` → fine-grained control (default opacity 1.0)
    */
   clouds?: boolean | { enabled?: boolean; opacity?: number };
+  /**
+   * Painterly watercolor-wash strength on flat surfaces (ground/water/landuse/
+   * beach), 0..1. Overrides the active theme's value. Omit to inherit it.
+   */
+  surfacePainterly?: number;
+  /** Screen-space paper-grain strength in the final pass, 0..1. Overrides the
+   *  theme (which seeds it from `surfacePainterly`). */
+  paperGrain?: number;
+  /** Procedural road-surfacing strength, 0..1 (cobblestone roads + dirt paths).
+   *  Overrides the active theme's value. */
+  roadTexture?: number;
+  /** Drifting spore/pollen motes in the air. Overrides the theme's value. */
+  spores?: boolean;
+  /** Painterly building treatment (plaster walls, glowing windows, tiled roofs).
+   *  Overrides the active theme's `buildingStyle`. */
+  buildingStyle?: import('./themes.js').ThemeBuildingStyle;
+  /** Volumetric-cloud look (coverage, density, altitude, colors). Overrides the
+   *  active theme's `clouds` preset. Separate from the `clouds` on/off+opacity. */
+  cloudPreset?: import('./themes.js').CloudPreset;
+  /** Lighting look (sun, fill, ambient, hemisphere). Overrides the active
+   *  theme's `light` preset. */
+  lightPreset?: import('./themes.js').LightPreset;
+  /** Global wind-sway multiplier for grass + tree billboards (1 = default). */
+  windStrength?: number;
+  /** Shop-sign banner density 0..1 (default 0.5). Needs the `signs` layer on. */
+  signsDensity?: number;
+  /** Camera zoom at/above which shop-sign banners appear (default 15). */
+  signsMinZoom?: number;
+  /** Outline/ink look + saturation. Overrides the active theme's `outline` /
+   *  `saturation`. */
+  outline?: OutlineConfig;
   /**
    * Allowed range (in degrees) for camera tilt. The initial value still
    * comes from `tilt`; this just clamps how far the user can drag past it.
@@ -308,6 +375,20 @@ export interface NoiseSource {
 
 export type Unsubscribe = () => void;
 
+export interface SnapshotOptions {
+  /**
+   * Override the renderer's pixel ratio for this capture only. Useful for
+   * print/PDF exports — pass `2` (or `3`) to get a HiDPI image without
+   * permanently raising the live-render DPR. Restored when `snapshot()`
+   * returns.
+   */
+  pixelRatio?: number;
+  /** Output MIME type. Defaults to `'image/png'`. */
+  mimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
+  /** JPEG/WebP quality 0..1. Ignored for PNG. */
+  quality?: number;
+}
+
 export interface HereBeDragons {
   setView(lat: number, lon: number, zoom?: number): void;
   /** Absolute bearing (deg from north, +CW). Preserves target + distance. */
@@ -349,6 +430,25 @@ export interface HereBeDragons {
    * streaming and returns to the tier's rest ratio once the view settles.
    */
   getPixelRatio(): number;
+  /** Smoothed RAF-to-RAF frame time in milliseconds (render frames only). */
+  getFrameMs(): number;
+  /** Smoothed frames-per-second derived from {@link getFrameMs}. */
+  getFps(): number;
+  /**
+   * Ground meters per CSS pixel at the camera's current latitude + zoom.
+   * Web Mercator scale — accurate horizontally through the screen centre.
+   * Used by the scale-bar widget; exported so consumers can build their own
+   * distance overlays.
+   */
+  getMetersPerPixel(): number;
+  /**
+   * Capture the current map view as a data URL. Synchronous (the render
+   * and canvas read happen in the same JS tick — that's required for the
+   * default `preserveDrawingBuffer: false` to still produce a readable
+   * frame). DOM overlays (compass, scale-bar, tag popups) are not in
+   * the canvas and so not captured.
+   */
+  snapshot(options?: SnapshotOptions): string;
   /**
    * Toggle dynamic resolution at runtime (see `dynamicResolution` option).
    * No-op when an explicit `pixelRatio` was supplied at construction.
@@ -396,6 +496,18 @@ export interface HereBeDragons {
   clearBuildingSelection(): void;
   /** Subscribe to building click events. */
   onBuildingClick(cb: (info: import('./buildings/types.js').BuildingInfo) => void): Unsubscribe;
+  /**
+   * Subscribe to parcel click events. Fires with the clicked parcel feature's
+   * MVT properties (notably `parcel_id`). No-op when no parcels overlay is
+   * configured. Returns an unsubscribe function.
+   */
+  onParcelClick(
+    cb: (parcel: import('./parcels/types.js').ParcelClickEvent) => void
+  ): Unsubscribe;
+  /** Toggle the parcels overlay on/off (no-op when none is configured). */
+  setParcelsEnabled(on: boolean): void;
+  /** Whether the parcels overlay is currently enabled. */
+  getParcelsEnabled(): boolean;
   /** Enumerate all buildings in currently-loaded tiles. */
   getLoadedBuildings(): import('./buildings/types.js').BuildingInfo[];
   /** Convert scene-world meters (x, z) → geographic (lat, lon). */
@@ -404,6 +516,14 @@ export interface HereBeDragons {
   setCompassVisible(on: boolean): void;
   /** Whether the compass overlay is currently visible. */
   isCompassVisible(): boolean;
+  /** Show/hide the scale-bar overlay. No-op when the bar was disabled at construction. */
+  setScaleBarVisible(on: boolean): void;
+  /** Whether the scale-bar overlay is currently visible. */
+  isScaleBarVisible(): boolean;
+  /** Switch the scale-bar between metric and imperial. No-op when disabled at construction. */
+  setScaleBarUnits(units: import('./studio/ScaleBar.js').ScaleBarUnits): void;
+  /** The scale-bar's current unit system, or `null` when disabled at construction. */
+  getScaleBarUnits(): import('./studio/ScaleBar.js').ScaleBarUnits | null;
   /** Restrict (or release with `null`) camera panning to a geographic box. */
   setBounds(bounds: BoundingBox | null): void;
   /**
@@ -445,6 +565,61 @@ export interface HereBeDragons {
   /** Collapse extruded buildings to the ground plane (or restore them). */
   setBuildingsFlat(flat: boolean): void;
   getBuildingsFlat(): boolean;
+  /**
+   * Painterly watercolor-wash strength on flat surfaces (ground/water/landuse/
+   * beach), 0..1. 0 = flat toon fills; ~0.9 = the Ghibli hand-painted look.
+   */
+  setSurfacePainterly(strength: number): void;
+  getSurfacePainterly(): number;
+  /** Screen-space paper-grain strength in the final pass, 0..1 (0 = off). */
+  setPaperGrain(strength: number): void;
+  getPaperGrain(): number;
+  /** Procedural road surfacing 0..1: cobblestone setts on roads, mottled earth
+   *  on paths (0 = plain ribbons). */
+  setRoadTexture(strength: number): void;
+  getRoadTexture(): number;
+  /** Toggle the drifting spore/pollen motes (atmospheric). */
+  setSporesEnabled(on: boolean): void;
+  getSporesEnabled(): boolean;
+  /**
+   * Painterly storybook building treatment — warm plaster walls, glowing
+   * windows, terracotta/tiled roofs, per-building variety. Pass `null` to
+   * clear it (flat toon buildings).
+   */
+  setBuildingStyle(style: import('./themes.js').ThemeBuildingStyle | null): void;
+  /** The resolved painterly-building look currently in effect. */
+  getBuildingStyle(): import('./themes.js').ThemeBuildingStyle;
+  /**
+   * Set the volumetric-cloud look (coverage, density, altitude band, noise
+   * scale, wind speed, cloud + shadow colors). Pass `null` to restore the
+   * neutral default clouds. Independent of the clouds on/off + opacity.
+   */
+  setCloudPreset(preset: import('./themes.js').CloudPreset | null): void;
+  /** The resolved cloud look currently in effect. */
+  getCloudPreset(): import('./themes.js').CloudPreset;
+  /**
+   * Set the lighting look (sun color/intensity, fill, ambient, hemisphere
+   * sky/ground/intensity). Pass `null` to restore the neutral default rig.
+   */
+  setLightPreset(preset: import('./themes.js').LightPreset | null): void;
+  /** The resolved lighting look currently in effect. */
+  getLightPreset(): import('./themes.js').LightPreset;
+  /** Global wind-sway multiplier for grass + tree billboards. 1 = default,
+   *  0 = still, >1 = breezier. */
+  setWindStrength(multiplier: number): void;
+  getWindStrength(): number;
+  /** Shop-sign banner density 0..1 (0 = none, 1 = all candidates). Only takes
+   *  effect when the `signs` layer is enabled. */
+  setSignsDensity(density: number): void;
+  getSignsDensity(): number;
+  /** Camera zoom at/above which shop-sign banners appear (default 15). */
+  setSignsMinZoom(zoom: number): void;
+  getSignsMinZoom(): number;
+  /** Set the illustrated outline/ink look + saturation. Only provided fields
+   *  change. See {@link OutlineConfig}. */
+  setOutline(config: OutlineConfig): void;
+  /** The resolved outline/ink look currently in effect. */
+  getOutline(): Required<OutlineConfig>;
   /** Override the building / floor highlight colors at runtime. */
   setBuildingHighlightColors(buildingColor: string, floorColor: string): void;
   getBuildingHighlightColor(): string;
