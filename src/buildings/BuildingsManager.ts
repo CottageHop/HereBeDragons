@@ -91,6 +91,19 @@ export class BuildingsManager {
   private static CLICK_PX_THRESHOLD = 5;
   private static CLICK_MS_THRESHOLD = 500;
 
+  // Hover-raycast state (RAF-throttled so a fast-moving pointer can't burn
+  // dozens of raycasts per second). Owns the canvas cursor when hovering a
+  // building — swaps 'grab' for 'pointer' so users get the click affordance.
+  private hoverRafHandle = 0;
+  private pendingHoverClientX = 0;
+  private pendingHoverClientY = 0;
+  private hovering = false;
+  /** Mesh + per-building-index currently hovered. The mesh stores the index in
+   *  `userData.imHoveredBuildingIndex`, which BuildingsLayer's onBeforeRender
+   *  pushes into the shared building shader's `uHoveredBuildingIndex` uniform
+   *  for the per-fragment warm-brighten effect (mirroring the selection path). */
+  private hoveredMesh: THREE.Mesh | null = null;
+
   // Bound handlers (kept as fields so they can be removed cleanly).
   private readonly onPointerDown: (e: PointerEvent) => void;
   private readonly onPopupWheel = (e: WheelEvent): void => {
@@ -112,6 +125,8 @@ export class BuildingsManager {
     }));
   };
   private readonly onPointerUp: (e: PointerEvent) => void;
+  private readonly onPointerMoveHover: (e: PointerEvent) => void;
+  private readonly onPointerLeaveHover: () => void;
   private readonly onDocPointerDown: (e: PointerEvent) => void;
   private readonly onDocKeyDown: (e: KeyboardEvent) => void;
 
@@ -207,6 +222,43 @@ export class BuildingsManager {
     };
     this.renderer.dom.addEventListener('pointerdown', this.onPointerDown);
     this.renderer.dom.addEventListener('pointerup', this.onPointerUp);
+
+    // Hover cursor: swap 'grab' for 'pointer' over a building so users get a
+    // click affordance — the headline RE-shopping UX nicety. Each pointermove
+    // schedules at most one RAF-driven raycast against the live building-mesh
+    // registry, so a fast-moving pointer can't burn dozens of raycasts/sec.
+    // Skipped while dragging (Renderer owns the 'grabbing' cursor then) and
+    // while the building popup is disabled (no click action → no affordance).
+    this.onPointerMoveHover = (e: PointerEvent): void => {
+      if (this.pointerDownActive) return;
+      if (!this.config.enabled) return;
+      this.pendingHoverClientX = e.clientX;
+      this.pendingHoverClientY = e.clientY;
+      if (this.hoverRafHandle !== 0) return;
+      this.hoverRafHandle = requestAnimationFrame(() => {
+        this.hoverRafHandle = 0;
+        this.processHoverRaycast();
+      });
+    };
+    this.onPointerLeaveHover = (): void => {
+      if (this.hoverRafHandle !== 0) {
+        cancelAnimationFrame(this.hoverRafHandle);
+        this.hoverRafHandle = 0;
+      }
+      if (this.hovering) {
+        this.hovering = false;
+        this.renderer.dom.style.cursor = 'grab';
+      }
+      // Clear the per-building highlight on the way out, otherwise the last
+      // hovered building stays warm-tinted until the pointer returns.
+      if (this.hoveredMesh) {
+        this.hoveredMesh.userData.imHoveredBuildingIndex = -1;
+        this.hoveredMesh = null;
+        this.onSceneChange();
+      }
+    };
+    this.renderer.dom.addEventListener('pointermove', this.onPointerMoveHover);
+    this.renderer.dom.addEventListener('pointerleave', this.onPointerLeaveHover);
 
     // Outside-click + Escape close the popup.
     this.onDocPointerDown = (e: PointerEvent): void => {
@@ -377,6 +429,9 @@ export class BuildingsManager {
   dispose(): void {
     this.renderer.dom.removeEventListener('pointerdown', this.onPointerDown);
     this.renderer.dom.removeEventListener('pointerup', this.onPointerUp);
+    this.renderer.dom.removeEventListener('pointermove', this.onPointerMoveHover);
+    this.renderer.dom.removeEventListener('pointerleave', this.onPointerLeaveHover);
+    if (this.hoverRafHandle !== 0) cancelAnimationFrame(this.hoverRafHandle);
     document.removeEventListener('pointerdown', this.onDocPointerDown);
     document.removeEventListener('keydown', this.onDocKeyDown);
     this.disposeHighlight();
@@ -390,6 +445,59 @@ export class BuildingsManager {
   // ---------------------------------------------------------------------
   // Picking
   // ---------------------------------------------------------------------
+
+  /**
+   * Hover affordance — RAF-throttled raycast against the building-mesh
+   * registry. Two outputs:
+   *   1. Cursor swap: 'grab' ↔ 'pointer' when over a building, so users get
+   *      a click affordance. Idempotent (we only touch the cursor on flip).
+   *   2. Per-building highlight: resolve the hit triangle to its
+   *      buildingIndex and write it to the hovered mesh's userData. The
+   *      building shader's `uHoveredBuildingIndex` uniform (pushed in
+   *      BuildingsLayer.onBeforeRender) then warm-brightens that one
+   *      building. When the hovered building changes, we trigger a redraw.
+   */
+  private processHoverRaycast(): void {
+    const rect = this.renderer.dom.getBoundingClientRect();
+    this.ndc.set(
+      ((this.pendingHoverClientX - rect.left) / rect.width) * 2 - 1,
+      -((this.pendingHoverClientY - rect.top) / rect.height) * 2 + 1
+    );
+    this.raycaster.setFromCamera(this.ndc, this.camera.three);
+    const hits = BUILDING_MESHES.size > 0
+      ? this.raycaster.intersectObjects(buildingMeshArray(), false)
+      : [];
+
+    // Resolve the hovered mesh + per-building index, if any.
+    let hitMesh: THREE.Mesh | null = null;
+    let hitBuildingIdx = -1;
+    if (hits.length > 0 && hits[0].face) {
+      const mesh = hits[0].object as THREE.Mesh;
+      const geo = mesh.geometry as THREE.BufferGeometry;
+      const indexAttr = geo.getAttribute('buildingIndex') as THREE.BufferAttribute | undefined;
+      if (indexAttr) {
+        hitMesh = mesh;
+        hitBuildingIdx = Math.round(indexAttr.getX(hits[0].face.a));
+      }
+    }
+    const nowHovering = hitMesh !== null;
+
+    // (1) Cursor — only touch on flip so we don't fight the 'grabbing' cursor.
+    if (nowHovering !== this.hovering) {
+      this.hovering = nowHovering;
+      this.renderer.dom.style.cursor = nowHovering ? 'pointer' : 'grab';
+    }
+
+    // (2) Highlight — only update + redraw when the hovered (mesh, index) flips.
+    const prevMesh = this.hoveredMesh;
+    const prevIdx = (prevMesh?.userData.imHoveredBuildingIndex as number | undefined) ?? -1;
+    if (hitMesh !== prevMesh || hitBuildingIdx !== prevIdx) {
+      if (prevMesh && prevMesh !== hitMesh) prevMesh.userData.imHoveredBuildingIndex = -1;
+      if (hitMesh) hitMesh.userData.imHoveredBuildingIndex = hitBuildingIdx;
+      this.hoveredMesh = hitMesh;
+      this.onSceneChange();
+    }
+  }
 
   private handleClick(e: PointerEvent): void {
     const rect = this.renderer.dom.getBoundingClientRect();

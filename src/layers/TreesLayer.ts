@@ -21,6 +21,8 @@ const TREE_HEIGHT_M = 9;
 /** Default trunk colour before a theme is applied; theme application overrides
  *  it via setColors so the trunk matches each palette (see applyMergedPalette). */
 const TRUNK_COLOR = '#6b4f33';
+/** Base canopy wind-sway strength at multiplier 1.0 (gentler than grass). */
+const TREE_WIND_STRENGTH = 0.12;
 
 export interface TreesLayerOptions {
   /** Current camera zoom, for the LOD gate. */
@@ -49,6 +51,8 @@ export class TreesLayer extends Layer {
   private readonly meshes = new Set<THREE.Mesh>();
   /** Current gate state — whether trees are shown at the latest camera zoom. */
   private shown = true;
+  /** Wind clock — advanced each frame so the canopy sway animates. */
+  private time = 0;
 
   constructor(materials: StylizedMaterials, opts: TreesLayerOptions) {
     super(materials);
@@ -65,7 +69,14 @@ export class TreesLayer extends Layer {
         uCanopy: { value: new THREE.Color(Palette.landuse_wood.color) },
         uTrunk: { value: new THREE.Color(TRUNK_COLOR) },
         uWidth: { value: TREE_WIDTH_M },
-        uHeight: { value: TREE_HEIGHT_M }
+        uHeight: { value: TREE_HEIGHT_M },
+        // Wind sway — the canopy leans in a slow breeze that matches the grass
+        // and cloud drift, so the whole scene moves as one. Trunk stays planted.
+        uTime: { value: 0 },
+        uWindDir: { value: new THREE.Vector2(1, 0.3).normalize() },
+        uWindStrength: { value: TREE_WIND_STRENGTH },
+        uWindFreq: { value: 0.04 },
+        uWindSpeed: { value: 1.1 }
       },
       vertexShader: TREE_VERT,
       fragmentShader: TREE_FRAG,
@@ -90,6 +101,11 @@ export class TreesLayer extends Layer {
   setColors(canopyHex: string, trunkHex: string): void {
     (this.material.uniforms.uCanopy.value as THREE.Color).set(canopyHex);
     (this.material.uniforms.uTrunk.value as THREE.Color).set(trunkHex);
+  }
+
+  /** Scale the canopy wind-sway strength (1 = default; 0 = still). */
+  setWindStrength(mult: number): void {
+    this.material.uniforms.uWindStrength.value = TREE_WIND_STRENGTH * Math.max(0, mult);
   }
 
   build(geometry: LayerGeometry): THREE.Object3D {
@@ -138,12 +154,21 @@ export class TreesLayer extends Layer {
     return mesh;
   }
 
-  /** @returns true if the zoom gate flipped tree visibility this frame. */
-  update(_dt: number): boolean {
+  /**
+   * @returns true if the frame needs a redraw — either the zoom gate flipped
+   *   tree visibility, or trees are showing and the wind sway advanced (so the
+   *   render-on-demand loop keeps the canopy moving).
+   */
+  update(dt: number): boolean {
     const shouldShow = this.getCameraZoom() >= this.minZoom;
-    if (shouldShow === this.shown) return false;
-    this.shown = shouldShow;
-    for (const m of this.meshes) m.visible = shouldShow;
+    const gateFlipped = shouldShow !== this.shown;
+    if (gateFlipped) {
+      this.shown = shouldShow;
+      for (const m of this.meshes) m.visible = shouldShow;
+    }
+    if (!this.shown || this.meshes.size === 0) return gateFlipped;
+    this.time += dt;
+    this.material.uniforms.uTime.value = this.time;
     return true;
   }
 
@@ -159,6 +184,11 @@ attribute vec3 aOffset;
 attribute float aScale;
 uniform float uWidth;
 uniform float uHeight;
+uniform float uTime;
+uniform vec2 uWindDir;
+uniform float uWindStrength;
+uniform float uWindFreq;
+uniform float uWindSpeed;
 varying vec2 vUv;
 #include <fog_pars_vertex>
 void main() {
@@ -182,6 +212,13 @@ void main() {
   float w = uWidth * aScale;
   float h = uHeight * aScale;
   vec3 worldPos = worldBase + right * (position.x * w) + up * (position.y * h);
+  // Wind sway: the canopy leans along the wind in a slow travelling wave that
+  // sweeps across the stand (phase keyed off the tree's world XZ). Linear in
+  // height so the trunk base stays planted and the crown moves most.
+  float p = dot(worldBase.xz, uWindDir) * uWindFreq + uTime * uWindSpeed;
+  float sway = sin(p) * uWindStrength * position.y;
+  worldPos.x += uWindDir.x * sway * h;
+  worldPos.z += uWindDir.y * sway * h;
   // View-space position doubles as the fog depth (consumed by fog_vertex),
   // matching the scene FogExp2 the toon materials fade with.
   vec4 mvPosition = viewMatrix * vec4(worldPos, 1.0);
@@ -219,6 +256,9 @@ void main() {
  * canopy/trunk colours come from theme uniforms at draw time.
  */
 function makeTreeTexture(): THREE.Texture {
+  // Headless (SSR / tests): no canvas — return an empty texture (never sampled
+  // without a renderer anyway).
+  if (typeof document === 'undefined') return new THREE.Texture();
   const w = 128;
   const h = 192;
   const canvas = document.createElement('canvas');
@@ -238,18 +278,21 @@ function makeTreeTexture(): THREE.Texture {
   ctx.fillRect(w / 2 - tw / 2, 118, tw, 74);
 
   // Canopy: overlapping circles sharing one vertical gradient so the whole
-  // crown is lit top → bottom. blue = 0 (canopy region).
-  const cg = ctx.createLinearGradient(0, 6, 0, 135);
+  // crown is lit top → bottom. blue = 0 (canopy region). The blobs all overlap
+  // heavily around the centre so their union is ONE rounded crown (not two
+  // lobes), with a large lower-centre blob that reaches down over the trunk
+  // top so the trunk emerges cleanly from a single bush.
+  const cg = ctx.createLinearGradient(0, 6, 0, 150);
   cg.addColorStop(0, 'rgb(255,255,0)');
-  cg.addColorStop(1, 'rgb(110,110,0)');
+  cg.addColorStop(1, 'rgb(120,120,0)');
   ctx.fillStyle = cg;
   const blobs: Array<[number, number, number]> = [
-    [64, 62, 46],
-    [40, 82, 34],
-    [88, 82, 34],
-    [64, 96, 42],
-    [46, 50, 26],
-    [82, 50, 26]
+    [64, 56, 50], // main crown
+    [40, 74, 34], // left shoulder
+    [88, 74, 34], // right shoulder
+    [64, 102, 48], // large lower-centre — merges down over the trunk as one mass
+    [48, 46, 28], // upper-left round
+    [80, 46, 28] // upper-right round
   ];
   for (const [bx, by, br] of blobs) {
     ctx.beginPath();

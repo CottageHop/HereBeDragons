@@ -13,6 +13,7 @@ const CUSTOM_COLOR_KEYS: ReadonlyArray<ThemeColorKey> = [
   'park',
   'water',
   'road',
+  'beach',
   'sky'
 ];
 
@@ -449,6 +450,389 @@ export class MapStudio implements MapStudioHandle {
     });
     this.body.appendChild(cloudsSection);
 
+    // ----- Cloud Look ----------------------------------------------------
+    // The volumetric-cloud *shape/color* preset (separate from on/off+opacity):
+    // coverage, density, altitude band, noise scale, wind speed, and the cloud
+    // + shadow colours. Each control reads the full current preset, overrides
+    // one field, and re-applies (so nothing resets to the neutral default).
+    this.body.appendChild(makeSectionHeader('Cloud Look'));
+    const cloudLookSection = makeSection();
+    const setCloud = (patch: Record<string, number | string>): void => {
+      this.map.setCloudPreset({ ...this.map.getCloudPreset(), ...patch });
+    };
+    const cp0 = this.map.getCloudPreset();
+
+    const covRow = makeSliderRow('Coverage', 0, 1, 0.02, cp0.coverage ?? 0.5);
+    covRow.value.textContent = (cp0.coverage ?? 0.5).toFixed(2);
+    covRow.input.addEventListener('input', () => {
+      const v = Number(covRow.input.value);
+      covRow.value.textContent = v.toFixed(2);
+      setCloud({ coverage: v });
+    });
+    cloudLookSection.appendChild(covRow.row);
+
+    const denRow = makeSliderRow('Density', 0, 8, 0.1, cp0.densityScale ?? 3.2);
+    denRow.value.textContent = (cp0.densityScale ?? 3.2).toFixed(1);
+    denRow.input.addEventListener('input', () => {
+      const v = Number(denRow.input.value);
+      denRow.value.textContent = v.toFixed(1);
+      setCloud({ densityScale: v });
+    });
+    cloudLookSection.appendChild(denRow.row);
+
+    const altMinRow = makeSliderRow('Altitude min', 0, 2000, 25, cp0.altitudeMin ?? 600, ' m');
+    altMinRow.value.textContent = `${cp0.altitudeMin ?? 600} m`;
+    altMinRow.input.addEventListener('input', () => {
+      const v = Number(altMinRow.input.value);
+      altMinRow.value.textContent = `${v} m`;
+      setCloud({ altitudeMin: v });
+    });
+    cloudLookSection.appendChild(altMinRow.row);
+
+    const altMaxRow = makeSliderRow('Altitude max', 0, 3000, 25, cp0.altitudeMax ?? 1100, ' m');
+    altMaxRow.value.textContent = `${cp0.altitudeMax ?? 1100} m`;
+    altMaxRow.input.addEventListener('input', () => {
+      const v = Number(altMaxRow.input.value);
+      altMaxRow.value.textContent = `${v} m`;
+      setCloud({ altitudeMax: v });
+    });
+    cloudLookSection.appendChild(altMaxRow.row);
+
+    const noiseRow = makeSliderRow('Noise scale', 0.0005, 0.004, 0.0001, cp0.noiseScale ?? 0.0015);
+    noiseRow.value.textContent = (cp0.noiseScale ?? 0.0015).toFixed(4);
+    noiseRow.input.addEventListener('input', () => {
+      const v = Number(noiseRow.input.value);
+      noiseRow.value.textContent = v.toFixed(4);
+      setCloud({ noiseScale: v });
+    });
+    cloudLookSection.appendChild(noiseRow.row);
+
+    const windRow = makeSliderRow('Wind speed', 0, 20, 0.5, cp0.windSpeed ?? 8);
+    windRow.value.textContent = (cp0.windSpeed ?? 8).toFixed(1);
+    windRow.input.addEventListener('input', () => {
+      const v = Number(windRow.input.value);
+      windRow.value.textContent = v.toFixed(1);
+      setCloud({ windSpeed: v });
+    });
+    cloudLookSection.appendChild(windRow.row);
+
+    const makeCloudColorRow = (labelText: string, key: 'cloudColor' | 'shadowColor'): HTMLInputElement => {
+      const row = document.createElement('div');
+      row.className = 'hbd-studio-row';
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.value = this.map.getCloudPreset()[key] ?? '#ffffff';
+      input.addEventListener('input', () => setCloud({ [key]: input.value }));
+      row.appendChild(label);
+      row.appendChild(input);
+      cloudLookSection.appendChild(row);
+      return input;
+    };
+    const cloudColorInput = makeCloudColorRow('Cloud color', 'cloudColor');
+    const shadowColorInput = makeCloudColorRow('Shadow color', 'shadowColor');
+
+    this.body.appendChild(cloudLookSection);
+    this.resyncFns.push(() => {
+      const cp = this.map.getCloudPreset();
+      covRow.input.value = String(cp.coverage ?? 0.5);
+      covRow.value.textContent = (cp.coverage ?? 0.5).toFixed(2);
+      denRow.input.value = String(cp.densityScale ?? 3.2);
+      denRow.value.textContent = (cp.densityScale ?? 3.2).toFixed(1);
+      altMinRow.input.value = String(cp.altitudeMin ?? 600);
+      altMinRow.value.textContent = `${cp.altitudeMin ?? 600} m`;
+      altMaxRow.input.value = String(cp.altitudeMax ?? 1100);
+      altMaxRow.value.textContent = `${cp.altitudeMax ?? 1100} m`;
+      noiseRow.input.value = String(cp.noiseScale ?? 0.0015);
+      noiseRow.value.textContent = (cp.noiseScale ?? 0.0015).toFixed(4);
+      windRow.input.value = String(cp.windSpeed ?? 8);
+      windRow.value.textContent = (cp.windSpeed ?? 8).toFixed(1);
+      if (cp.cloudColor) cloudColorInput.value = cp.cloudColor;
+      if (cp.shadowColor) shadowColorInput.value = cp.shadowColor;
+    });
+
+    // ----- Lighting ------------------------------------------------------
+    // The key/fill/ambient/hemisphere rig — the Ghibli golden-hour glow. Each
+    // control reads the full current preset, overrides one field, re-applies.
+    this.body.appendChild(makeSectionHeader('Lighting'));
+    const lightSection = makeSection();
+    const setLight = (patch: Record<string, number | string>): void => {
+      this.map.setLightPreset({ ...this.map.getLightPreset(), ...patch });
+    };
+    const lp0 = this.map.getLightPreset();
+
+    const makeLightColorRow = (labelText: string, key: 'sun' | 'hemiSky' | 'hemiGround'): HTMLInputElement => {
+      const row = document.createElement('div');
+      row.className = 'hbd-studio-row';
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.value = this.map.getLightPreset()[key] ?? '#ffffff';
+      input.addEventListener('input', () => setLight({ [key]: input.value }));
+      row.appendChild(label);
+      row.appendChild(input);
+      lightSection.appendChild(row);
+      return input;
+    };
+    const sunColorInput = makeLightColorRow('Sun color', 'sun');
+
+    const sunIntRow = makeSliderRow('Sun intensity', 0, 2, 0.05, lp0.sunIntensity ?? 1);
+    sunIntRow.value.textContent = (lp0.sunIntensity ?? 1).toFixed(2);
+    sunIntRow.input.addEventListener('input', () => {
+      const v = Number(sunIntRow.input.value);
+      sunIntRow.value.textContent = v.toFixed(2);
+      setLight({ sunIntensity: v });
+    });
+    lightSection.appendChild(sunIntRow.row);
+
+    const fillRow = makeSliderRow('Fill', 0, 1, 0.02, lp0.fillIntensity ?? 0.1);
+    fillRow.value.textContent = (lp0.fillIntensity ?? 0.1).toFixed(2);
+    fillRow.input.addEventListener('input', () => {
+      const v = Number(fillRow.input.value);
+      fillRow.value.textContent = v.toFixed(2);
+      setLight({ fillIntensity: v });
+    });
+    lightSection.appendChild(fillRow.row);
+
+    const ambRow = makeSliderRow('Ambient', 0, 0.5, 0.01, lp0.ambientIntensity ?? 0.05);
+    ambRow.value.textContent = (lp0.ambientIntensity ?? 0.05).toFixed(2);
+    ambRow.input.addEventListener('input', () => {
+      const v = Number(ambRow.input.value);
+      ambRow.value.textContent = v.toFixed(2);
+      setLight({ ambientIntensity: v });
+    });
+    lightSection.appendChild(ambRow.row);
+
+    const hemiSkyInput = makeLightColorRow('Hemi sky', 'hemiSky');
+    const hemiGroundInput = makeLightColorRow('Hemi ground', 'hemiGround');
+
+    const hemiRow = makeSliderRow('Hemi intensity', 0, 1, 0.02, lp0.hemiIntensity ?? 0.25);
+    hemiRow.value.textContent = (lp0.hemiIntensity ?? 0.25).toFixed(2);
+    hemiRow.input.addEventListener('input', () => {
+      const v = Number(hemiRow.input.value);
+      hemiRow.value.textContent = v.toFixed(2);
+      setLight({ hemiIntensity: v });
+    });
+    lightSection.appendChild(hemiRow.row);
+
+    this.body.appendChild(lightSection);
+    this.resyncFns.push(() => {
+      const lp = this.map.getLightPreset();
+      if (lp.sun) sunColorInput.value = lp.sun;
+      sunIntRow.input.value = String(lp.sunIntensity ?? 1);
+      sunIntRow.value.textContent = (lp.sunIntensity ?? 1).toFixed(2);
+      fillRow.input.value = String(lp.fillIntensity ?? 0.1);
+      fillRow.value.textContent = (lp.fillIntensity ?? 0.1).toFixed(2);
+      ambRow.input.value = String(lp.ambientIntensity ?? 0.05);
+      ambRow.value.textContent = (lp.ambientIntensity ?? 0.05).toFixed(2);
+      if (lp.hemiSky) hemiSkyInput.value = lp.hemiSky;
+      if (lp.hemiGround) hemiGroundInput.value = lp.hemiGround;
+      hemiRow.input.value = String(lp.hemiIntensity ?? 0.25);
+      hemiRow.value.textContent = (lp.hemiIntensity ?? 0.25).toFixed(2);
+    });
+
+    // ----- Painterly FX (Ghibli) ----------------------------------------
+    // Runtime knobs for the hand-painted look: the watercolor surface wash,
+    // the screen-space paper grain, the cobblestone/dirt road surfacing, and
+    // the drifting pollen motes. All theme-seeded but individually tunable.
+    this.body.appendChild(makeSectionHeader('Painterly FX'));
+    const fxSection = makeSection();
+
+    const surfRow = makeSliderRow('Surface wash', 0, 1, 0.05, this.map.getSurfacePainterly());
+    surfRow.value.textContent = this.map.getSurfacePainterly().toFixed(2);
+    surfRow.input.addEventListener('input', () => {
+      const v = Number(surfRow.input.value);
+      surfRow.value.textContent = v.toFixed(2);
+      this.map.setSurfacePainterly(v);
+    });
+    fxSection.appendChild(surfRow.row);
+
+    const grainRow = makeSliderRow('Paper grain', 0, 1, 0.05, this.map.getPaperGrain());
+    grainRow.value.textContent = this.map.getPaperGrain().toFixed(2);
+    grainRow.input.addEventListener('input', () => {
+      const v = Number(grainRow.input.value);
+      grainRow.value.textContent = v.toFixed(2);
+      this.map.setPaperGrain(v);
+    });
+    fxSection.appendChild(grainRow.row);
+
+    const roadRow = makeSliderRow('Road texture', 0, 1, 0.05, this.map.getRoadTexture());
+    roadRow.value.textContent = this.map.getRoadTexture().toFixed(2);
+    roadRow.input.addEventListener('input', () => {
+      const v = Number(roadRow.input.value);
+      roadRow.value.textContent = v.toFixed(2);
+      this.map.setRoadTexture(v);
+    });
+    fxSection.appendChild(roadRow.row);
+
+    const sporesRow = document.createElement('div');
+    sporesRow.className = 'hbd-studio-row';
+    const sporesLabel = document.createElement('label');
+    sporesLabel.textContent = 'Spores';
+    const sporesInput = document.createElement('input');
+    sporesInput.type = 'checkbox';
+    sporesInput.checked = this.map.getSporesEnabled();
+    sporesInput.addEventListener('change', () => {
+      this.map.setSporesEnabled(sporesInput.checked);
+    });
+    sporesRow.appendChild(sporesLabel);
+    sporesRow.appendChild(sporesInput);
+    fxSection.appendChild(sporesRow);
+
+    const windStrengthRow = makeSliderRow('Wind', 0, 3, 0.05, this.map.getWindStrength());
+    windStrengthRow.value.textContent = this.map.getWindStrength().toFixed(2);
+    windStrengthRow.input.addEventListener('input', () => {
+      const v = Number(windStrengthRow.input.value);
+      windStrengthRow.value.textContent = v.toFixed(2);
+      this.map.setWindStrength(v);
+    });
+    fxSection.appendChild(windStrengthRow.row);
+
+    this.body.appendChild(fxSection);
+    this.resyncFns.push(() => {
+      const sp = this.map.getSurfacePainterly();
+      surfRow.input.value = String(sp);
+      surfRow.value.textContent = sp.toFixed(2);
+      const pg = this.map.getPaperGrain();
+      grainRow.input.value = String(pg);
+      grainRow.value.textContent = pg.toFixed(2);
+      const rt = this.map.getRoadTexture();
+      roadRow.input.value = String(rt);
+      roadRow.value.textContent = rt.toFixed(2);
+      sporesInput.checked = this.map.getSporesEnabled();
+      const w = this.map.getWindStrength();
+      windStrengthRow.input.value = String(w);
+      windStrengthRow.value.textContent = w.toFixed(2);
+    });
+
+    // ----- Signs ---------------------------------------------------------
+    // Japanese shop-sign banners (needs the `signs` layer enabled): how many
+    // show (density) and the zoom at which they appear.
+    this.body.appendChild(makeSectionHeader('Signs'));
+    const signsSection = makeSection();
+
+    const signsDensityRow = makeSliderRow('Density', 0, 1, 0.05, this.map.getSignsDensity());
+    signsDensityRow.value.textContent = this.map.getSignsDensity().toFixed(2);
+    signsDensityRow.input.addEventListener('input', () => {
+      const v = Number(signsDensityRow.input.value);
+      signsDensityRow.value.textContent = v.toFixed(2);
+      this.map.setSignsDensity(v);
+    });
+    signsSection.appendChild(signsDensityRow.row);
+
+    const signsZoomRow = makeSliderRow('Min zoom', 10, 20, 0.5, this.map.getSignsMinZoom());
+    signsZoomRow.value.textContent = this.map.getSignsMinZoom().toFixed(1);
+    signsZoomRow.input.addEventListener('input', () => {
+      const v = Number(signsZoomRow.input.value);
+      signsZoomRow.value.textContent = v.toFixed(1);
+      this.map.setSignsMinZoom(v);
+    });
+    signsSection.appendChild(signsZoomRow.row);
+
+    this.body.appendChild(signsSection);
+    this.resyncFns.push(() => {
+      const d = this.map.getSignsDensity();
+      signsDensityRow.input.value = String(d);
+      signsDensityRow.value.textContent = d.toFixed(2);
+      const mz = this.map.getSignsMinZoom();
+      signsZoomRow.input.value = String(mz);
+      signsZoomRow.value.textContent = mz.toFixed(1);
+    });
+
+    // ----- Outline / Ink -------------------------------------------------
+    // The illustrated linework + colour vibrancy: edge strength/darkness,
+    // comic halftone + hatching, and overall saturation.
+    this.body.appendChild(makeSectionHeader('Outline / Ink'));
+    const outlineSection = makeSection();
+    const ol0 = this.map.getOutline();
+
+    const makeOutlineRow = (
+      labelText: string, key: 'saturation' | 'strength' | 'darkness' | 'halftone' | 'hatching',
+      max: number, fmt: (v: number) => string
+    ): { input: HTMLInputElement; value: HTMLElement } => {
+      const row = makeSliderRow(labelText, 0, max, 0.05, ol0[key]);
+      row.value.textContent = fmt(ol0[key]);
+      row.input.addEventListener('input', () => {
+        const v = Number(row.input.value);
+        row.value.textContent = fmt(v);
+        this.map.setOutline({ [key]: v });
+      });
+      outlineSection.appendChild(row.row);
+      return { input: row.input, value: row.value };
+    };
+    const f2 = (v: number): string => v.toFixed(2);
+    const satCtl = makeOutlineRow('Saturation', 'saturation', 3, f2);
+    const strCtl = makeOutlineRow('Edge strength', 'strength', 3, f2);
+    const darkCtl = makeOutlineRow('Edge darkness', 'darkness', 1, f2);
+    const halfCtl = makeOutlineRow('Halftone', 'halftone', 1, f2);
+    const hatchCtl = makeOutlineRow('Hatching', 'hatching', 1, f2);
+
+    this.body.appendChild(outlineSection);
+    this.resyncFns.push(() => {
+      const o = this.map.getOutline();
+      satCtl.input.value = String(o.saturation); satCtl.value.textContent = f2(o.saturation);
+      strCtl.input.value = String(o.strength); strCtl.value.textContent = f2(o.strength);
+      darkCtl.input.value = String(o.darkness); darkCtl.value.textContent = f2(o.darkness);
+      halfCtl.input.value = String(o.halftone); halfCtl.value.textContent = f2(o.halftone);
+      hatchCtl.input.value = String(o.hatching); hatchCtl.value.textContent = f2(o.hatching);
+    });
+
+    // ----- Buildings (painterly) ----------------------------------------
+    // The storybook building look: overall strength, floor height (window-row
+    // spacing), and the roof + lit-window colors.
+    this.body.appendChild(makeSectionHeader('Buildings (painterly)'));
+    const bSection = makeSection();
+
+    const bStrengthRow = makeSliderRow('Strength', 0, 1, 0.05, this.map.getBuildingStyle().strength ?? 0);
+    bStrengthRow.value.textContent = (this.map.getBuildingStyle().strength ?? 0).toFixed(2);
+    bStrengthRow.input.addEventListener('input', () => {
+      const v = Number(bStrengthRow.input.value);
+      bStrengthRow.value.textContent = v.toFixed(2);
+      this.map.setBuildingStyle({ ...this.map.getBuildingStyle(), strength: v });
+    });
+    bSection.appendChild(bStrengthRow.row);
+
+    const bFloorRow = makeSliderRow('Floor height', 1.5, 6, 0.1, this.map.getBuildingStyle().floorHeight ?? 3.5, ' m');
+    bFloorRow.value.textContent = `${(this.map.getBuildingStyle().floorHeight ?? 3.5).toFixed(1)} m`;
+    bFloorRow.input.addEventListener('input', () => {
+      const v = Number(bFloorRow.input.value);
+      bFloorRow.value.textContent = `${v.toFixed(1)} m`;
+      this.map.setBuildingStyle({ ...this.map.getBuildingStyle(), floorHeight: v });
+    });
+    bSection.appendChild(bFloorRow.row);
+
+    const makeBuildingColorRow = (labelText: string, key: 'roof' | 'window'): HTMLInputElement => {
+      const row = document.createElement('div');
+      row.className = 'hbd-studio-row';
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.value = this.map.getBuildingStyle()[key] ?? '#000000';
+      input.addEventListener('input', () => {
+        this.map.setBuildingStyle({ ...this.map.getBuildingStyle(), [key]: input.value });
+      });
+      row.appendChild(label);
+      row.appendChild(input);
+      bSection.appendChild(row);
+      return input;
+    };
+    const roofColorInput = makeBuildingColorRow('Roof color', 'roof');
+    const windowColorInput = makeBuildingColorRow('Window color', 'window');
+
+    this.body.appendChild(bSection);
+    this.resyncFns.push(() => {
+      const s = this.map.getBuildingStyle();
+      bStrengthRow.input.value = String(s.strength ?? 0);
+      bStrengthRow.value.textContent = (s.strength ?? 0).toFixed(2);
+      bFloorRow.input.value = String(s.floorHeight ?? 3.5);
+      bFloorRow.value.textContent = `${(s.floorHeight ?? 3.5).toFixed(1)} m`;
+      if (s.roof) roofColorInput.value = s.roof;
+      if (s.window) windowColorInput.value = s.window;
+    });
+
     // ----- Fog ----------------------------------------------------------
     // Fog density is tilt-gated (no atmospheric fog when looking straight
     // down — there's no horizon to fade into). Studio exposes three knobs:
@@ -641,6 +1025,17 @@ export class MapStudio implements MapStudioHandle {
         enabled: this.map.getCloudsEnabled(),
         opacity: roundTo(this.map.getCloudsOpacity(), 3)
       },
+      surfacePainterly: roundTo(this.map.getSurfacePainterly(), 3),
+      paperGrain: roundTo(this.map.getPaperGrain(), 3),
+      roadTexture: roundTo(this.map.getRoadTexture(), 3),
+      spores: this.map.getSporesEnabled(),
+      buildingStyle: this.map.getBuildingStyle(),
+      cloudPreset: this.map.getCloudPreset(),
+      lightPreset: this.map.getLightPreset(),
+      windStrength: roundTo(this.map.getWindStrength(), 3),
+      signsDensity: roundTo(this.map.getSignsDensity(), 3),
+      signsMinZoom: roundTo(this.map.getSignsMinZoom(), 1),
+      outline: this.map.getOutline(),
       compass: this.map.isCompassVisible()
     };
     // The theme is exported as the base palette and customColors as overrides
@@ -738,6 +1133,25 @@ export class MapStudio implements MapStudioHandle {
       if (isNum(config.fog.tiltEnd)) this.map.setFogTiltEnd(config.fog.tiltEnd);
       if (isNum(config.fog.strength)) this.map.setFogStrength(config.fog.strength);
     }
+
+    // Painterly FX (Ghibli) — applied after the theme so they override it.
+    if (isNum(config.surfacePainterly)) this.map.setSurfacePainterly(config.surfacePainterly);
+    if (isNum(config.paperGrain)) this.map.setPaperGrain(config.paperGrain);
+    if (isNum(config.roadTexture)) this.map.setRoadTexture(config.roadTexture);
+    if (typeof config.spores === 'boolean') this.map.setSporesEnabled(config.spores);
+    if (config.buildingStyle && typeof config.buildingStyle === 'object') {
+      this.map.setBuildingStyle(config.buildingStyle);
+    }
+    if (config.cloudPreset && typeof config.cloudPreset === 'object') {
+      this.map.setCloudPreset(config.cloudPreset);
+    }
+    if (config.lightPreset && typeof config.lightPreset === 'object') {
+      this.map.setLightPreset(config.lightPreset);
+    }
+    if (isNum(config.windStrength)) this.map.setWindStrength(config.windStrength);
+    if (isNum(config.signsDensity)) this.map.setSignsDensity(config.signsDensity);
+    if (isNum(config.signsMinZoom)) this.map.setSignsMinZoom(config.signsMinZoom);
+    if (config.outline && typeof config.outline === 'object') this.map.setOutline(config.outline);
 
     if (isNum(config.labelHeight)) this.map.setLabelHeight(config.labelHeight);
     if (isNum(config.tileSpawnDurationMs)) {

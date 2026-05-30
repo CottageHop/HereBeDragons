@@ -1,5 +1,30 @@
 import * as THREE from 'three';
 
+/**
+ * A theme-supplied lighting look. Every field optional — omitted fields fall
+ * back to the defaults baked into {@link createLights}. Colors are hex strings
+ * so a theme can declare its whole atmosphere (palette + clouds + light) as
+ * plain JSON. Drives the warm golden-hour key + soft sky fill that gives the
+ * Ghibli theme its painted glow. Applied via {@link SceneRoot.applyLightPreset};
+ * passing `null` there restores the neutral defaults.
+ */
+export interface LightPreset {
+  /** Key-light (sun) color. */
+  sun?: string;
+  /** Key-light intensity. Default 1.0. */
+  sunIntensity?: number;
+  /** Back/fill directional intensity. Default 0.10. */
+  fillIntensity?: number;
+  /** Flat ambient intensity. Default 0.05. Keep low or toon shading flattens. */
+  ambientIntensity?: number;
+  /** Hemisphere sky (up) color. */
+  hemiSky?: string;
+  /** Hemisphere ground (down) color. */
+  hemiGround?: string;
+  /** Hemisphere intensity. Default 0.25. Above ~0.4 starts cancelling shading. */
+  hemiIntensity?: number;
+}
+
 export function createLights(): {
   sun: THREE.DirectionalLight;
   fill: THREE.DirectionalLight;

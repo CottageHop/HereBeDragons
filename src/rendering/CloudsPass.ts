@@ -94,14 +94,19 @@ float valueNoise3(vec3 p) {
 }
 
 float fbm(vec3 p) {
+  // 3 octaves (was 4). The dropped highest-frequency octave is barely visible
+  // on soft cumulus — especially after the half-res render + jitter + FXAA —
+  // but it's a ~25% cut in the per-sample noise cost, which dominates the
+  // raymarch. Amplitudes renormalized (0.5/0.25/0.125 → /0.875) so coverage
+  // thresholds keep the same density feel.
   float v = 0.0;
   float a = 0.5;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 3; i++) {
     v += a * valueNoise3(p);
     p *= 2.13;
     a *= 0.5;
   }
-  return v;
+  return v / 0.875;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +159,12 @@ vec2 slabIntersect(vec3 ro, vec3 rd, float yMin, float yMax) {
 }
 
 void main() {
-  vec4 sceneColor = texture2D(uColor, vUv);
+  // This pass renders at HALF resolution into a dedicated cloud target and
+  // outputs the cloud's own color (premultiplied) in .rgb and the remaining
+  // scene transmittance in .a. A later full-res composite does
+  // scene*transmittance + cloudColor, so the scene stays crisp while the
+  // expensive raymarch runs at a quarter of the pixels. A miss outputs
+  // vec4(0,0,0,1): adds no color and lets the scene through unchanged.
 
   // --- Reconstruct world-space view ray --------------------------------
   vec4 clip = vec4(vUv * 2.0 - 1.0, 1.0, 1.0);
@@ -166,7 +176,7 @@ void main() {
   // --- Slab intersection ----------------------------------------------
   vec2 slabT = slabIntersect(rayOrigin, worldDir, uAltitudeMin, uAltitudeMax);
   if (slabT.y <= slabT.x) {
-    gl_FragColor = sceneColor;
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
 
@@ -182,7 +192,7 @@ void main() {
   float tEnter = slabT.x;
   float tExit  = min(slabT.y, tSceneHit);
   if (tEnter >= tExit) {
-    gl_FragColor = sceneColor;
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
 
@@ -248,15 +258,36 @@ void main() {
   float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * fogD * fogD);
   accumColor = mix(accumColor, uFogColor, fogFactor);
 
-  // --- Composite over scene -------------------------------------------
-  // Blend the cloud contribution toward zero by uOpacity so the studio can
-  // dial clouds from invisible (0) to fully opaque (1) without re-toggling
-  // the entire pass. At uOpacity=0 the output matches sceneColor exactly.
-  vec3 cloudOut = sceneColor.rgb * accumTransmittance + accumColor;
-  vec3 outColor = mix(sceneColor.rgb, cloudOut, uOpacity);
-  gl_FragColor = vec4(outColor, 1.0);
+  // --- Output cloud color + transmittance for the composite ------------
+  // uOpacity dials the cloud presence: at 0, transmittance→1 and color→0, so
+  // the downstream composite leaves the scene untouched. The cloud color is
+  // premultiplied (already weighted by its own coverage during accumulation),
+  // so the composite is a straight scene*transmittance + cloudColor.
+  float outT = mix(1.0, accumTransmittance, uOpacity);
+  vec3 outC = accumColor * uOpacity;
+  gl_FragColor = vec4(outC, outT);
 }
 `;
+
+/**
+ * A theme-supplied cloud look. Every field optional — omitted fields fall
+ * back to the {@link CloudsPass} defaults. Colors are hex strings (parsed to
+ * THREE.Color on apply) so themes can declare the whole atmosphere as plain
+ * JSON. Applied via {@link CloudsPass.applyPreset}; passing `null` restores
+ * the defaults so switching off a cloud-styled theme doesn't leak its look.
+ */
+export interface CloudPreset {
+  coverage?: number;
+  densityScale?: number;
+  altitudeMin?: number;
+  altitudeMax?: number;
+  noiseScale?: number;
+  windSpeed?: number;
+  /** Sunlit top-of-cloud color (hex). */
+  cloudColor?: string;
+  /** Deep / underside shadow color (hex). */
+  shadowColor?: string;
+}
 
 export interface CloudSettings {
   /** Lower edge of the cloud-layer slab, in world meters above ground. */
@@ -302,11 +333,32 @@ export class CloudsPass {
     windSpeed: 8,
     cloudColor: new THREE.Color('#ffffff'),
     shadowColor: new THREE.Color('#b8c4d0'),
-    stepCount: 48,
-    lightStepCount: 5
+    // 32 main steps (was 48) + 4 light steps (was 5). With the half-res render,
+    // per-pixel start jitter, and FXAA smoothing the residual banding, 32 reads
+    // as smoothly as 48 did at full res — for ~1/3 fewer samples on top of the
+    // ~4x the half-res resolution already saves.
+    stepCount: 32,
+    lightStepCount: 4
   };
 
+  /**
+   * Snapshot of the authored defaults, captured at construction. `applyPreset`
+   * resets to these before layering a theme's overrides, so switching away
+   * from a cloud-styled theme (e.g. Ghibli's towering gold cumulus) cleanly
+   * restores the neutral look rather than leaking the previous theme's clouds.
+   */
+  private readonly defaults: CloudSettings;
+
   constructor() {
+    // Captured before any preset is applied — clone the color objects so later
+    // mutation of `settings` can't alias back into the stored defaults.
+    this.defaults = {
+      ...this.settings,
+      windDir: this.settings.windDir.clone(),
+      cloudColor: this.settings.cloudColor.clone(),
+      shadowColor: this.settings.shadowColor.clone()
+    };
+
     this.material = new THREE.ShaderMaterial({
       vertexShader: CLOUDS_VERT,
       fragmentShader: CLOUDS_FRAG,
@@ -390,6 +442,40 @@ export class CloudsPass {
 
   setOpacity(opacity: number): void {
     this.material.uniforms.uOpacity.value = Math.max(0, Math.min(1, opacity));
+  }
+
+  /**
+   * Apply a theme's cloud look. Resets to the authored defaults first, then
+   * layers the preset's defined fields on top, then pushes everything to the
+   * GPU uniforms. Pass `null` to restore the plain default clouds (used when a
+   * theme declares no cloud preset, so the previous theme's look can't linger).
+   */
+  applyPreset(preset: CloudPreset | null): void {
+    const d = this.defaults;
+    this.settings.coverage = preset?.coverage ?? d.coverage;
+    this.settings.densityScale = preset?.densityScale ?? d.densityScale;
+    this.settings.altitudeMin = preset?.altitudeMin ?? d.altitudeMin;
+    this.settings.altitudeMax = preset?.altitudeMax ?? d.altitudeMax;
+    this.settings.noiseScale = preset?.noiseScale ?? d.noiseScale;
+    this.settings.windSpeed = preset?.windSpeed ?? d.windSpeed;
+    this.settings.cloudColor.set(preset?.cloudColor ?? d.cloudColor);
+    this.settings.shadowColor.set(preset?.shadowColor ?? d.shadowColor);
+    this.applySettings();
+  }
+
+  /** Read back the current cloud look as a fully-populated preset (colors as
+   *  sRGB hex). Source of truth for the public getter + studio resync. */
+  getPreset(): Required<CloudPreset> {
+    return {
+      coverage: this.settings.coverage,
+      densityScale: this.settings.densityScale,
+      altitudeMin: this.settings.altitudeMin,
+      altitudeMax: this.settings.altitudeMax,
+      noiseScale: this.settings.noiseScale,
+      windSpeed: this.settings.windSpeed,
+      cloudColor: '#' + this.settings.cloudColor.getHexString(),
+      shadowColor: '#' + this.settings.shadowColor.getHexString()
+    };
   }
 
   applySettings(): void {

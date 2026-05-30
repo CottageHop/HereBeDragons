@@ -2,7 +2,7 @@
 
 A 3D vector map for the web. Stylized buildings, drifting volumetric clouds, raymarched lighting. Reads PMTiles vector archives, renders with three.js. Drops into a single `<div>` with one function call.
 
-**[Live demo →](https://cottagehop.github.io/HereBeDragons/)** &nbsp;·&nbsp; [with Studio](https://cottagehop.github.io/HereBeDragons/?studio=1) &nbsp;·&nbsp; [with demo polygons](https://cottagehop.github.io/HereBeDragons/?polygons=1)
+**[Live demo →](https://cottagehop.github.io/HereBeDragons/)** &nbsp;·&nbsp; [with Studio](https://cottagehop.github.io/HereBeDragons/?studio=1) &nbsp;·&nbsp; [real-estate investor view](https://cottagehop.github.io/HereBeDragons/?theme=professional&investor=1) &nbsp;·&nbsp; [with demo polygons](https://cottagehop.github.io/HereBeDragons/?polygons=1)
 
 ```
 npm install github:cottagehop/HereBeDragons three
@@ -69,8 +69,19 @@ The exported JSON is a literal `HereBeDragonsOptions` value `theme`, `customColo
 | `bearing` | `number` | `0` | Camera rotation from north, +CW. |
 | `theme` | `ThemeName \| string` | `undefined` | Apply a named theme on load. Autocompletes the built-ins. |
 | `customColors` | `Partial<ThemeColors>` | `undefined` | Per-color overrides on top of the theme. |
-| `clouds` | `boolean \| { enabled?, opacity? }` | `true` | Volumetric cloud pass settings. |
+| `clouds` | `boolean \| { enabled?, opacity? }` | `false` | Volumetric cloud pass on/off + opacity. Off by default (the raymarch is the heaviest per-frame GPU cost). |
 | `compass` | `boolean` | `true` | Show the compass overlay. Click to reset bearing. |
+| `surfacePainterly` | `number` (0..1) | theme | Watercolor wash on flat surfaces (ground, water, landuse, beach). Overrides the theme. |
+| `paperGrain` | `number` (0..1) | theme | Screen-space paper grain folded into the final pass. |
+| `roadTexture` | `number` (0..1) | theme | Procedural road surfacing: cobblestone setts on roads, mottled earth on paths. |
+| `spores` | `boolean` | theme | Drifting pollen motes in the air. |
+| `buildingStyle` | `ThemeBuildingStyle` | theme | Painterly building treatment: plaster walls, glowing windows, tiled roofs, per-building variety. |
+| `cloudPreset` | `CloudPreset` | theme | Cloud look: coverage, density, altitude band, noise scale, wind speed, cloud + shadow colors. Separate from `clouds` on/off. |
+| `lightPreset` | `LightPreset` | theme | Lighting look: sun color/intensity, fill, ambient, hemisphere sky/ground/intensity. |
+| `windStrength` | `number` | `1` | Wind-sway multiplier for the grass + tree billboards (0 = still). |
+| `signsDensity` | `number` (0..1) | `0.5` | Shop-sign banner density. Needs the `signs` layer enabled. |
+| `signsMinZoom` | `number` | `15` | Camera zoom at/above which shop-sign banners appear. |
+| `outline` | `OutlineConfig` | theme | Illustrated outline/ink look + saturation: edge `strength`/`darkness`, comic `halftone`/`hatching`, `saturation`. |
 | `layers` | `Partial<Record<LayerName, boolean>>` | most on | Per-layer enable/disable. See [Layers](#layers). |
 | `tags` | `TagsConfig` | `{}` | Tag overlay configuration (clustering, default styles). |
 | `buildings` | `BuildingPopupConfig` | `{}` | Building picker + popup settings. |
@@ -86,7 +97,7 @@ The exported JSON is a literal `HereBeDragonsOptions` value `theme`, `customColo
 
 ### Layers
 
-`LayerName` values: `'buildings'`, `'roads'`, `'rails'`, `'water'`, `'waterways'`, `'landuse'`, `'labels'`, `'cars'`. Each defaults to enabled (except `'cars'`, which is opt-in).
+`LayerName` values: `'buildings'`, `'roads'`, `'rails'`, `'water'`, `'waterways'`, `'landuse'`, `'labels'`, `'trees'`, `'grass'`, `'waves'`, `'signs'`, `'cars'`. The base layers default to enabled; `'trees'`, `'grass'`, `'waves'`, `'signs'`, and `'cars'` are opt-in.
 
 ```js
 layers: {
@@ -94,12 +105,21 @@ layers: {
   roads: true,
   rails: false,        // hide subway lines
   cars: true,          // opt into animated traffic
+  trees: true,         // billboard trees (sway in the wind)
+  grass: true,         // wind-blown grass tufts over parks
+  waves: true,         // animated foam along the shoreline
+  signs: true,         // sparse Japanese shop-sign banners
 }
 ```
 
 ### Themes
 
-Built-in `ThemeName` values: `'cottagecore'`, `'cottagecoredark'`, `'modern'`, `'greyscale'`, `'dark'`, `'cyberpunk'`, `'eighties'`, `'seventies'`, `'oldworld'`, `'middleearth'`, `'concretejungle'`, `'comic'`.
+Built-in `ThemeName` values: `'ghibli'`, `'professional'`, `'cottagecore'`, `'cottagecoredark'`, `'modern'`, `'greyscale'`, `'dark'`, `'cyberpunk'`, `'eighties'`, `'seventies'`, `'oldworld'`, `'middleearth'`, `'concretejungle'`, `'comic'`.
+
+Two are worth calling out:
+
+- **`ghibli`** — the showcase stylized look (painterly walls, tiled roofs, kawara texture, wind-blown grass, drifting pollen, lit shopfronts). Toggle every effect individually via the runtime setters above.
+- **`professional`** — a clean, neutral preset for client-facing **real-estate maps**: soft grey buildings, calm blue water, restrained outlines, a strong professional-blue building/floor highlight tuned for picking out listings and comps. Every Ghibli FX is deliberately off, so the map reads as a polished business product.
 
 ```js
 import { createHereBeDragons, THEMES } from '@cottagehop/here-be-dragons';
@@ -157,6 +177,40 @@ map.setCloudsEnabled(false)
 map.setCloudsOpacity(0.6)
 ```
 
+### Ghibli atmosphere + painterly FX
+
+Every stylized feature is runtime-configurable (and round-trips through the Studio export). Each is seeded by the active theme and individually overridable.
+
+```ts
+// Painterly surface FX (all 0..1)
+map.setSurfacePainterly(0.9)    // watercolor wash on ground/water/landuse
+map.setPaperGrain(0.8)          // screen-space paper grain
+map.setRoadTexture(1)           // cobblestone roads + dirt paths
+map.setSporesEnabled(true)      // drifting pollen motes
+
+// Painterly buildings (null clears it back to flat toon buildings)
+map.setBuildingStyle({ strength: 1, roof: '#b5573c', window: '#ffdc8c', floorHeight: 3.6 })
+map.getBuildingStyle()          // resolved { strength, roof, window, floorHeight }
+
+// Cloud look (separate from the on/off + opacity above)
+map.setCloudPreset({ coverage: 0.42, densityScale: 4.6, altitudeMin: 650, altitudeMax: 1600,
+                     cloudColor: '#fff6e6', shadowColor: '#b9c6dc' })
+
+// Lighting rig
+map.setLightPreset({ sun: '#fff0cf', sunIntensity: 1.08, hemiSky: '#bfe2f6', hemiIntensity: 0.34 })
+
+// Wind + signs
+map.setWindStrength(1.5)        // grass + tree sway (0 = still)
+map.setSignsDensity(0.5)        // shop-sign banner density 0..1
+map.setSignsMinZoom(15)         // zoom at/above which banners appear
+
+// Outline / ink look + saturation (only the provided fields change)
+map.setOutline({ strength: 0.85, darkness: 0.72, saturation: 1.75 })
+map.getOutline()                // resolved { strength, darkness, halftone, hatching, saturation, ... }
+```
+
+`setBuildingStyle`/`setCloudPreset`/`setLightPreset` accept `null` to reset to the neutral default. Each setter has a matching getter that reads back the resolved live values (from the shader uniforms / lights), so the Studio can stay in sync.
+
 ### Tags (interactive markers)
 
 ```ts
@@ -183,6 +237,20 @@ map.clearTags();
 
 Tags within `mergeDistancePx` of each other automatically collapse into a count cluster; clicking the cluster zooms toward its centroid.
 
+#### Real-estate listing presets
+
+For client-facing real-estate maps, `REAL_ESTATE_TAG_PRESETS` is an opinionated set of color + icon + badge defaults for the common listing states (`forSale`, `pending`, `sold`, `newListing`, `openHouse`, `comp`, `subject`). Spread one into your `addTag` call to get a polished, consistent marker with one line:
+
+```js
+import { createHereBeDragons, REAL_ESTATE_TAG_PRESETS as RE } from '@cottagehop/here-be-dragons';
+
+map.addTag({ id: 'l1', lat, lon, text: '$1.2M', ...RE.forSale });
+map.addTag({ id: 'l2', lat, lon, text: '$980K',  ...RE.sold });
+map.addTag({ id: 'subject', lat: subLat, lon: subLon, text: 'Subject', ...RE.subject });
+```
+
+The colors are tuned to read cleanly over the `professional` theme but stay legible on every built-in palette. The preset map is frozen, so it's safe to share across instances.
+
 ### Polygons (custom filled regions)
 
 ```ts
@@ -199,6 +267,21 @@ const poly = map.addPolygon({
 map.removePolygon('demo-zone');
 ```
 
+#### Comp-radius helper
+
+`makeRadiusPolygon(lat, lon, radiusMeters, segments?)` returns an array of `PolygonPoint` approximating a geodesic circle (spherical destination-point formula, sub-metre accurate at city scale). Drop it straight into `addPolygon` to visualise a comparables radius, walkability buffer, service area, or flood-plain rim:
+
+```ts
+import { makeRadiusPolygon } from '@cottagehop/here-be-dragons';
+
+map.addPolygon({
+  id: 'comp-radius',
+  color: '#3b82f6',
+  opacity: 0.20,
+  points: makeRadiusPolygon(subject.lat, subject.lon, 800)  // 800 m around the subject
+});
+```
+
 ### Buildings
 
 ```ts
@@ -210,6 +293,43 @@ map.clearBuildingSelection();
 map.setBuildingPopup({ popupEnabled: false });   // disable the auto popup
 map.setBuildingHighlightColors('#ffe600', '#7ec8ff');
 const all = map.getLoadedBuildings();            // BuildingInfo[]
+```
+
+The canvas cursor swaps from `grab` to `pointer` the moment a user hovers a building, signalling clickability for the property-shopping UX. The hovered building itself also gets a subtle warm brighten, so users can see exactly which one is under the cursor. The hover raycast is RAF-throttled internally so a fast-moving pointer can't burn dozens of raycasts per second, and the highlight only triggers a redraw when the hovered building actually changes — a pointer drifting across a single building costs nothing.
+
+### Scale bar
+
+A small `100 ft / 50 m` bar pinned bottom-right of the map. On by default, click to toggle units, defaults to imperial. Snaps to round-number steps so the label always reads like a number on a printed plan.
+
+```ts
+const map = await createHereBeDragons({
+  container: '#app',
+  source: { ... },
+  scaleBar: { units: 'metric', targetWidthPx: 100 },  // or false to suppress
+});
+map.setScaleBarUnits('imperial');                     // runtime swap
+const mpp = map.getMetersPerPixel();                  // build your own overlays
+```
+
+### Snapshot / screenshot export
+
+Synchronous capture of the current view as a data URL. The render and canvas read happen in the same JS tick — no extra render-target plumbing — so it works with the default `preserveDrawingBuffer: false` (which is much faster for the normal render loop). DOM overlays (compass, scale-bar, tag popups) are not in the canvas and so not in the snapshot.
+
+```ts
+// Quick PNG at the current resolution
+const dataUrl = map.snapshot();
+
+// HiDPI for print / property reports
+const hiRes = map.snapshot({ pixelRatio: 2 });
+
+// JPEG with smaller file size
+const jpeg = map.snapshot({ mimeType: 'image/jpeg', quality: 0.85 });
+
+// Trigger a download
+const link = document.createElement('a');
+link.href = map.snapshot({ pixelRatio: 2 });
+link.download = 'property.png';
+link.click();
 ```
 
 ### Events
@@ -227,7 +347,19 @@ off();          // unsubscribe
 ```ts
 map.resize();          // call from your window.resize handler
 map.destroy();         // releases GPU resources + DOM
+
+// Perf introspection — wire these into your own HUD / telemetry without
+// touching internals. Sampled on render frames only (hidden-tab frames don't
+// pollute the EMA); reset on every visibility-resume.
+map.getFrameMs();      // smoothed RAF-to-RAF, e.g. 16.7
+map.getFps();          // derived from getFrameMs(), e.g. 60
+map.getQualityTier();  // 'low' | 'high'
+map.getPixelRatio();   // currently-applied DPR (drops during dynamic-res motion)
 ```
+
+The renderer survives WebGL context loss out of the box: the canvas opts into restoration (`preventDefault` on `webglcontextlost`) and `three`'s `WebGLRenderer` re-uploads its textures, programs, and buffers on the matching `webglcontextrestored` event. The map automatically forces a redraw once the context is back, so a long tab-background or a GPU driver reset doesn't kill the map.
+
+The render loop also **pauses entirely when the tab is hidden** (`document.visibilitychange`), so a map embedded in a backgrounded tab costs zero CPU + GPU until the user returns to it. The first resumed frame uses a fresh delta so damping/clouds don't snap.
 
 ---
 
@@ -259,11 +391,17 @@ createMapStudio(map, {
 ### What the Studio panel exposes
 
 - **Theme picker** visual grid of every registered theme (filterable via the `themes: [...]` option)
-- **Custom colors** `land`, `building`, `park`, `water`, `road` color pickers (applied on top of the active theme)
+- **Custom colors** `land`, `building`, `park`, `water`, `road`, `beach`, `sky` color pickers (applied on top of the active theme)
 - **Selection highlight** popup toggle + building/floor color pickers
 - **Camera** tilt, bearing, zoom sliders, kept in sync as the user drags on the canvas. Each slider has a `↔` toggle that opens a **Min / Max** sub-editor: turn it on to limit how far the camera can move on that axis. The exported JSON includes `tiltRange` / `bearingRange` / `zoomRange` only for axes whose toggle is active.
 - **Layers** per-layer checkboxes + a "flatten buildings" toggle
 - **Clouds** enable/disable + opacity slider
+- **Cloud Look** coverage, density, altitude band, noise scale, wind speed sliders + cloud/shadow color pickers
+- **Lighting** sun color + intensity, fill, ambient, hemisphere sky/ground colors + intensity
+- **Painterly FX** surface wash, paper grain, road texture sliders, spores toggle, and a global wind slider
+- **Buildings (painterly)** strength + floor-height sliders, roof + window color pickers
+- **Signs** banner density + min-zoom sliders
+- **Outline / Ink** edge strength + darkness, halftone, hatching, and saturation sliders
 - **Compass** show/hide overlay toggle
 - **Import JSON** button loads a config file (e.g. a previously exported one) and applies every editable setting to the live map, syncing all panel controls to match
 - **Export JSON** button downloads `here-be-dragons.config.json`

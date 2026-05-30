@@ -2,11 +2,16 @@ import * as THREE from 'three';
 import type { Renderer } from './Renderer.js';
 import { OutlinePass } from './OutlinePass.js';
 import { CloudsPass } from './CloudsPass.js';
+import { CloudCompositePass } from './CloudCompositePass.js';
 import { NoisePass } from './NoisePass.js';
 import { FxaaPass } from './FxaaPass.js';
 import { LABEL_THREE_LAYER } from '../layers/LabelsLayer.js';
 import { BUILDING_THREE_LAYER } from '../layers/BuildingsLayer.js';
 import { TREE_THREE_LAYER } from '../layers/TreesLayer.js';
+import { GRASS_THREE_LAYER } from '../layers/GrassLayer.js';
+import { WAVES_THREE_LAYER } from '../layers/WavesLayer.js';
+import { SPORES_THREE_LAYER } from '../scene/SporesField.js';
+import { SIGNS_THREE_LAYER } from '../layers/SignsLayer.js';
 
 /**
  * Multi-pass renderer:
@@ -35,13 +40,23 @@ export class Composer {
    */
   private noiseTarget: THREE.WebGLRenderTarget | null = null;
   private compositeTarget: THREE.WebGLRenderTarget;
+  /**
+   * Half-resolution target the cloud raymarch renders into. Holds premultiplied
+   * cloud color (.rgb) + scene transmittance (.a); `cloudComposite` folds it
+   * back over the full-res scene. Half-res = ~1/4 the (expensive) march pixels.
+   */
+  private cloudHalfTarget: THREE.WebGLRenderTarget;
+  /** Fraction of full resolution the clouds render at. 0.5 = half each axis. */
+  private static readonly CLOUD_RES_SCALE = 0.5;
   private depthTexture: THREE.DepthTexture;
   private outline: OutlinePass;
   private clouds: CloudsPass;
+  private cloudComposite: CloudCompositePass;
   private noise: NoisePass;
   private fxaa: FxaaPass;
   private normalMaterial: THREE.MeshNormalMaterial;
-  private cloudsEnabled = true;
+  /** Off by default; HereBeDragons opts in via `setCloudsEnabled`. */
+  private cloudsEnabled = false;
   /** Off by default — the heat-map is an opt-in overlay, not a default effect. */
   private noiseEnabled = false;
   private buildingsInNormalPass = true;
@@ -167,6 +182,20 @@ export class Composer {
     this.clouds.setInputs(this.outlineTarget.texture, this.depthTexture);
     this.clouds.setCamera(camera);
 
+    // Half-res cloud target + the pass that composites it over the full-res
+    // scene. Linear filtering (the WebGLRenderTarget default) makes the upscale
+    // smooth; no depth buffer needed (clouds read the shared depth texture).
+    const cw = Math.max(1, Math.round(w * Composer.CLOUD_RES_SCALE));
+    const ch = Math.max(1, Math.round(h * Composer.CLOUD_RES_SCALE));
+    this.cloudHalfTarget = new THREE.WebGLRenderTarget(cw, ch, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      depthBuffer: false,
+      stencilBuffer: false
+    });
+    this.cloudComposite = new CloudCompositePass();
+
     this.noise = new NoisePass();
     this.noise.setInput(this.outlineTarget.texture);
     this.noise.setCamera(camera);
@@ -185,6 +214,10 @@ export class Composer {
     this.outlineTarget.setSize(w, h);
     this.noiseTarget?.setSize(w, h);
     this.compositeTarget.setSize(w, h);
+    this.cloudHalfTarget.setSize(
+      Math.max(1, Math.round(w * Composer.CLOUD_RES_SCALE)),
+      Math.max(1, Math.round(h * Composer.CLOUD_RES_SCALE))
+    );
     // Pass CSS-pixel dimensions so the Sobel kernel stays at ~1 CSS-pixel
     // regardless of DPR — see the constructor-side comment for rationale.
     this.outline.setTexel(width, height);
@@ -234,6 +267,11 @@ export class Composer {
    */
   setSaturation(s: number): void {
     this.fxaa.setSaturation(s);
+  }
+
+  /** Strength (0..1) of the screen-space paper grain in the final pass. */
+  setPaperGrain(strength: number): void {
+    this.fxaa.setPaperGrain(strength);
   }
 
   /**
@@ -291,6 +329,44 @@ export class Composer {
     this.clouds.setOpacity(opacity);
   }
 
+  /** Apply (or reset, with `null`) a theme's cloud look. See CloudsPass.applyPreset. */
+  applyCloudPreset(preset: import('./CloudsPass.js').CloudPreset | null): void {
+    this.clouds.applyPreset(preset);
+  }
+
+  /** Read the current cloud look as a fully-populated preset. */
+  getCloudPreset(): Required<import('./CloudsPass.js').CloudPreset> {
+    return this.clouds.getPreset();
+  }
+
+  /** Apply the outline/ink look (strength, darkness, halftone, hatching) +
+   *  saturation to the OutlinePass. Only the provided fields change. */
+  setOutlineLook(cfg: import('../types.js').OutlineConfig): void {
+    const s = this.outline.settings;
+    if (cfg.strength !== undefined) s.outlineStrength = cfg.strength;
+    if (cfg.darkness !== undefined) s.outlineDarkness = cfg.darkness;
+    if (cfg.halftone !== undefined) s.halftone = cfg.halftone;
+    if (cfg.halftoneScale !== undefined) s.halftoneScale = cfg.halftoneScale;
+    if (cfg.hatching !== undefined) s.hatching = cfg.hatching;
+    if (cfg.hatchingScale !== undefined) s.hatchingScale = cfg.hatchingScale;
+    if (cfg.saturation !== undefined) s.saturation = cfg.saturation;
+    this.outline.applySettings();
+  }
+
+  /** Read the current outline/ink look as a fully-populated config. */
+  getOutlineLook(): Required<import('../types.js').OutlineConfig> {
+    const s = this.outline.settings;
+    return {
+      strength: s.outlineStrength,
+      darkness: s.outlineDarkness,
+      halftone: s.halftone,
+      halftoneScale: s.halftoneScale,
+      hatching: s.hatching,
+      hatchingScale: s.hatchingScale,
+      saturation: s.saturation
+    };
+  }
+
   setCloudTime(t: number): void {
     this.clouds.setTime(t);
   }
@@ -336,12 +412,20 @@ export class Composer {
       r.clear();
       this.scene.overrideMaterial = this.normalMaterial;
       this.camera.layers.disable(LABEL_THREE_LAYER);
-      // Trees are billboards expanded in a custom vertex shader; the normal
-      // override can't reproduce that, so always exclude them here.
+      // Trees + grass are billboards expanded in custom vertex shaders; the
+      // normal override can't reproduce that, so always exclude them here.
       this.camera.layers.disable(TREE_THREE_LAYER);
+      this.camera.layers.disable(GRASS_THREE_LAYER);
+      this.camera.layers.disable(WAVES_THREE_LAYER);
+      this.camera.layers.disable(SPORES_THREE_LAYER);
+      this.camera.layers.disable(SIGNS_THREE_LAYER);
       if (!this.buildingsInNormalPass) this.camera.layers.disable(BUILDING_THREE_LAYER);
       r.render(this.scene, this.camera);
       if (!this.buildingsInNormalPass) this.camera.layers.enable(BUILDING_THREE_LAYER);
+      this.camera.layers.enable(SIGNS_THREE_LAYER);
+      this.camera.layers.enable(SPORES_THREE_LAYER);
+      this.camera.layers.enable(WAVES_THREE_LAYER);
+      this.camera.layers.enable(GRASS_THREE_LAYER);
       this.camera.layers.enable(TREE_THREE_LAYER);
       this.camera.layers.enable(LABEL_THREE_LAYER);
       this.scene.overrideMaterial = null;
@@ -375,13 +459,23 @@ export class Composer {
     }
 
     if (this.cloudsEnabled) {
-      // Pass 4: clouds raymarch — sceneTex + depth → compositeTarget.
+      // Pass 4a: clouds raymarch at HALF resolution → cloudHalfTarget. The pass
+      // now outputs cloud color (.rgb) + scene transmittance (.a) instead of
+      // compositing over the scene itself — the expensive march runs at ~1/4
+      // the pixels. Rendering into the smaller target sets the viewport for us.
       this.clouds.setInputs(sceneTex, this.depthTexture);
-      r.setRenderTarget(this.compositeTarget);
+      r.setRenderTarget(this.cloudHalfTarget);
       r.clear();
       this.camera.updateMatrixWorld();
       this.clouds.setCamera(this.camera);
       r.render(this.clouds.scene, this.clouds.camera);
+
+      // Pass 4b: composite the upscaled half-res clouds over the full-res
+      // scene → compositeTarget. Keeps buildings/roads/labels crisp.
+      this.cloudComposite.setInputs(sceneTex, this.cloudHalfTarget.texture);
+      r.setRenderTarget(this.compositeTarget);
+      r.clear();
+      r.render(this.cloudComposite.scene, this.cloudComposite.camera);
       this.fxaa.setInput(this.compositeTarget.texture);
     } else {
       // No clouds: feed the scene texture straight into FXAA.
@@ -399,10 +493,12 @@ export class Composer {
     this.outlineTarget.dispose();
     this.noiseTarget?.dispose();
     this.compositeTarget.dispose();
+    this.cloudHalfTarget.dispose();
     this.depthTexture.dispose();
     this.normalMaterial.dispose();
     this.outline.dispose();
     this.clouds.dispose();
+    this.cloudComposite.dispose();
     this.noise.dispose();
     this.fxaa.dispose();
   }

@@ -17,6 +17,9 @@ import { extractRails } from './extractors/rails.js';
 import { extractBuildings } from './extractors/buildings.js';
 import { extractLabels } from './extractors/labels.js';
 import { extractTrees } from './extractors/trees.js';
+import { extractGrass } from './extractors/grass.js';
+import { extractWaves } from './extractors/waves.js';
+import { extractSigns } from './extractors/signs.js';
 import { splitByClass } from './shared/splitByClass.js';
 
 /** Layers whose extractors emit a per-vertex `class` attribute. */
@@ -85,6 +88,15 @@ function decodeTile(req: DecodeRequest): void {
   }
   if (wanted.has('trees')) {
     base.trees = extractTrees(req.z, req.x, req.y, layersByName, req.originLat, req.originLon);
+  }
+  if (wanted.has('grass')) {
+    base.grass = extractGrass(req.z, req.x, req.y, layersByName, req.originLat, req.originLon);
+  }
+  if (wanted.has('waves')) {
+    base.waves = extractWaves(req.z, req.x, req.y, layersByName, req.originLat, req.originLon);
+  }
+  if (wanted.has('signs')) {
+    base.signs = extractSigns(req.z, req.x, req.y, layersByName, req.originLat, req.originLon);
   }
   // Pre-split class-keyed layers in the worker so the main thread doesn't
   // have to walk the index buffer + remap vertices during apply.

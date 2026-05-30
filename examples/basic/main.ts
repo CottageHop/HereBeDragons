@@ -1,4 +1,11 @@
-import { createHereBeDragons, createMapStudio, THEMES, THEME_NAMES } from '../../src/index.js';
+import {
+  createHereBeDragons,
+  createMapStudio,
+  THEMES,
+  THEME_NAMES,
+  REAL_ESTATE_TAG_PRESETS,
+  makeRadiusPolygon
+} from '../../src/index.js';
 
 const container = document.getElementById('app');
 if (!container) throw new Error('#app not found');
@@ -14,7 +21,7 @@ const pmtilesUrl =
 const lat = Number(url.searchParams.get('lat') ?? '40.7065');
 const lon = Number(url.searchParams.get('lon') ?? '-74.009');
 const zoom = Number(url.searchParams.get('zoom') ?? '15');
-const initialTheme = url.searchParams.get('theme') ?? 'cottagecore';
+const initialTheme = url.searchParams.get('theme') ?? 'ghibli';
 // `?quality=low|high` forces the render-quality tier; otherwise auto-detect
 // (downgrades to 'low' on Intel integrated graphics + software rasterizers).
 // Use this to A/B-test what tier the slow machine is actually getting.
@@ -55,7 +62,10 @@ const mapOptions = {
     rails: true,
     buildings: true,
     labels: true,
-    trees: true
+    trees: true,
+    grass: true,
+    waves: true,
+    signs: true
   }
 };
 
@@ -65,6 +75,10 @@ const mapOptions = {
 const map = await createHereBeDragons(container, {
   ...mapOptions,
   theme: initialTheme,
+  // Clouds are off by default (the raymarch is the heaviest per-frame GPU
+  // cost). Flip to `true` — or `{ enabled: true, opacity }` — to bring back
+  // the towering gold cumulus of the Ghibli sky; on the auto quality tier
+  // the raymarch self-disables if the GPU can't keep up.
   clouds: false,
   quality,
   pixelRatio,
@@ -229,36 +243,54 @@ function buildThemeMenu(activeName: string): void {
 }
 
 function seedRealEstateTags(): void {
-  // A scatter of fake real-estate listings around Lower Manhattan. Several are
-  // close together so the clustering logic has a chance to show — try zooming
-  // out and the closer ones will absorb into a count bubble.
-  const listings = [
-    { id: 'l1', lat: 40.7080, lon: -74.0119, color: '#10b981', text: '$1.2M', badge: '3 BR',
+  // A scatter of fake real-estate listings around Lower Manhattan. Each listing
+  // is mapped to one of REAL_ESTATE_TAG_PRESETS (forSale / pending / subject)
+  // so the markers get the polished, on-brand styling consumers would get from
+  // the public preset map. The badge stays the bedroom count (more useful for
+  // an investor scanning the map than repeating the preset's "For Sale" badge).
+  type Status = 'forSale' | 'pending' | 'subject';
+  const listings: Array<{
+    id: string; lat: number; lon: number; preset: Status;
+    text: string; badge: string;
+    modal: { title: string; body: string };
+  }> = [
+    { id: 'l1', lat: 40.7080, lon: -74.0119, preset: 'forSale', text: '$1.2M', badge: '3 BR',
       modal: { title: 'Trinity Church Condo', body: '<p>Renovated 3-bedroom condo in the heart of the Financial District. South-facing windows, doorman, gym.</p>' } },
-    { id: 'l2', lat: 40.7065, lon: -74.0094, color: '#10b981', text: '$2.8M', badge: '4 BR',
+    { id: 'l2', lat: 40.7065, lon: -74.0094, preset: 'forSale', text: '$2.8M', badge: '4 BR',
       modal: { title: 'NYSE Loft', body: '<p>Industrial loft conversion with 12-ft ceilings. Steps from Wall Street. Includes one parking spot.</p>' } },
-    { id: 'l3', lat: 40.7064, lon: -74.0090, color: '#f59e0b', text: '$950K', badge: '2 BR',
+    { id: 'l3', lat: 40.7064, lon: -74.0090, preset: 'pending', text: '$950K', badge: '2 BR',
       modal: { title: 'Pine St. Co-op', body: '<p>Charming pre-war co-op with original details. Pet-friendly building. Monthly maintenance $1,840.</p>' } },
-    { id: 'l4', lat: 40.7067, lon: -74.0092, color: '#10b981', text: '$1.5M', badge: '3 BR',
+    { id: 'l4', lat: 40.7067, lon: -74.0092, preset: 'forSale', text: '$1.5M', badge: '3 BR',
       modal: { title: 'Wall St. Apartment', body: '<p>Recently renovated, in-unit washer/dryer, building has rooftop deck and 24-hr concierge.</p>' } },
-    { id: 'l5', lat: 40.7044, lon: -74.0170, color: '#3b82f6', text: '$3.4M', badge: '5 BR',
-      modal: { title: 'Battery Park Penthouse', body: '<p>5-bedroom penthouse with private terrace overlooking the harbor. New construction, smart-home wired.</p>' } },
-    { id: 'l6', lat: 40.7127, lon: -74.0134, color: '#10b981', text: '$1.8M', badge: '3 BR',
+    { id: 'l5', lat: 40.7044, lon: -74.0170, preset: 'subject', text: '$3.4M', badge: '5 BR',
+      modal: { title: 'Battery Park Penthouse (Subject)', body: '<p>5-bedroom penthouse with private terrace overlooking the harbor. Subject of this investor view.</p>' } },
+    { id: 'l6', lat: 40.7127, lon: -74.0134, preset: 'forSale', text: '$1.8M', badge: '3 BR',
       modal: { title: 'WTC Tower Residence', body: '<p>High-floor 3-bedroom in the World Trade Center complex. Spectacular views, full-service building.</p>' } },
-    { id: 'l7', lat: 40.7071, lon: -74.0024, color: '#f59e0b', text: '$720K', badge: '1 BR',
+    { id: 'l7', lat: 40.7071, lon: -74.0024, preset: 'pending', text: '$720K', badge: '1 BR',
       modal: { title: 'Seaport Studio+', body: '<p>Loft-style one-bedroom in the South Street Seaport area. Original tin ceilings. Excellent value for the neighborhood.</p>' } }
   ];
   for (const l of listings) {
+    const style = REAL_ESTATE_TAG_PRESETS[l.preset];
     map.addTag({
-      id: l.id,
-      lat: l.lat,
-      lon: l.lon,
-      icon: '🏠',
-      color: l.color,
-      text: l.text,
-      badge: l.badge,
-      modal: l.modal
+      id: l.id, lat: l.lat, lon: l.lon,
+      color: style.color, icon: style.icon,
+      text: l.text, badge: l.badge, modal: l.modal
     });
+  }
+
+  // Investor mode: `?investor=1` paints a comp-radius circle around the subject
+  // property — a one-URL showcase of the professional theme + tag presets +
+  // makeRadiusPolygon helper together.
+  if (url.searchParams.get('investor') === '1') {
+    const subject = listings.find((l) => l.preset === 'subject');
+    if (subject) {
+      map.addPolygon({
+        id: 'comp-radius',
+        color: '#3b82f6',
+        opacity: 0.18,
+        points: makeRadiusPolygon(subject.lat, subject.lon, 400)
+      });
+    }
   }
 }
 
@@ -320,6 +352,7 @@ function seedFloorDemoTag(): void {
 function formatLabel(key: string): string {
   // "cottagecoredark" → "Cottage Core Dark", "middleearth" → "Middle Earth", etc.
   const SPECIALS: Record<string, string> = {
+    ghibli: 'Ghibli',
     cottagecore: 'Cottage Core',
     cottagecoredark: 'Cottage Core Dark',
     middleearth: 'Middle Earth',

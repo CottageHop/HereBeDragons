@@ -1,4 +1,8 @@
 import { Palette, type PaletteKey } from './materials/Palette.js';
+import type { CloudPreset } from './rendering/CloudsPass.js';
+import type { LightPreset } from './scene/Lights.js';
+
+export type { CloudPreset, LightPreset };
 
 export interface ThemeColors {
   water: string;
@@ -47,6 +51,57 @@ export interface ThemeColors {
     /** Floor band color (lines + translucent fill). Default '#f97316' (orange). */
     floor?: string;
   };
+  /**
+   * Optional volumetric-cloud look for this theme. When present, applying the
+   * theme reshapes the cloud pass (coverage, density, altitude, color) so a
+   * theme can own its whole sky — e.g. the Ghibli theme's towering gold
+   * cumulus. Omit to inherit the neutral default clouds.
+   */
+  clouds?: CloudPreset;
+  /**
+   * Optional lighting look for this theme. When present, applying the theme
+   * retints the key/fill/ambient/hemisphere lights — e.g. the Ghibli theme's
+   * warm golden-hour sun + soft sky fill. Omit to inherit the neutral default
+   * lighting.
+   */
+  light?: LightPreset;
+  /**
+   * Optional painterly building treatment — a per-fragment storybook look
+   * layered on top of the toon shading: warm plaster walls with a sunlit
+   * vertical gradient, glowing window rows, terracotta-tinted roofs, and
+   * per-building hand-painted color variation. Omit (or set `strength: 0`)
+   * to keep flat toon-shaded buildings. See {@link ThemeBuildingStyle}.
+   */
+  buildingStyle?: ThemeBuildingStyle;
+  /**
+   * Strength (0..1) of the painterly watercolor wash applied to flat surfaces
+   * — ground, water, landuse, beach. Turns CG-flat colour fields into uneven,
+   * hand-painted gouache so the map reads like an animated drawing. Omit (or 0)
+   * to keep flat toon fills. The Ghibli theme runs this near full.
+   */
+  surfacePainterly?: number;
+  /**
+   * Strength (0..1) of procedural road surfacing — cobblestone setts on
+   * major/minor roads, mottled earth on paths. Omit (or 0) for plain ribbons.
+   */
+  roadTexture?: number;
+  /**
+   * Drifting spore / pollen motes in the air — soft glowing flecks that give
+   * the scene a living, hand-animated atmosphere. The Ghibli theme enables it.
+   */
+  spores?: boolean;
+}
+
+/** Procedural painterly building look. See {@link ThemeColors.buildingStyle}. */
+export interface ThemeBuildingStyle {
+  /** Overall blend of the painterly look over flat toon shading. 0..1. Default 0. */
+  strength?: number;
+  /** Roof tint (hex) — roofs mix toward this. Defaults to a darkened wall color. */
+  roof?: string;
+  /** Lit-window glow color (hex). Default warm lamplight. */
+  window?: string;
+  /** Approx. floor height in meters that sets the window-row spacing. Default 3.5. */
+  floorHeight?: number;
 }
 
 /**
@@ -54,6 +109,92 @@ export interface ThemeColors {
  * HereBeDragons via derived shades (see `themeToPaletteOverrides`).
  */
 export const THEMES: Record<string, ThemeColors> = {
+  // "Ghibli" — a sunlit storybook valley. Lush technicolor meadows, warm
+  // straw-and-plaster villages with terracotta roofs, luminous cyan water,
+  // and a bright cerulean sky carrying towering gold-lit cumulus. Soft
+  // painterly outlines (not hard ink) + a saturation lift give it the
+  // hand-painted cel look. Buildings get extra warmth from a procedural
+  // painterly shader keyed on this palette (see StylizedMaterials).
+  ghibli: {
+    water: '#5fb3c4',
+    park: '#86c34a',
+    // Soft, light cream plaster — the painterly building shader tints each
+    // building a different cheerful pastel over this airy base.
+    building: '#f0e7d0',
+    road: '#c2a878',
+    land: '#efe7c8',
+    beach: '#ecd9a6',
+    sky: '#aaddf2',
+    outline: {
+      // Gentle, warm-leaning linework rather than the default sketch ink.
+      strength: 0.85,
+      darkness: 0.72
+    },
+    saturation: 1.75,
+    highlight: {
+      building: '#fff4d6',
+      floor: '#ff7a45'
+    },
+    // Castle-in-the-Sky cumulus: big, fluffy, sunlit gold tops with soft
+    // blue-grey undersides, drifting slowly across a tall sky slab.
+    clouds: {
+      coverage: 0.42,
+      densityScale: 4.6,
+      altitudeMin: 650,
+      altitudeMax: 1600,
+      noiseScale: 0.0011,
+      windSpeed: 6,
+      cloudColor: '#fff6e6',
+      shadowColor: '#b9c6dc'
+    },
+    // Golden-hour key light + a soft sky-blue/warm-ground hemisphere for the
+    // painted glow. Sun stays dominant so toon shading still reads on walls.
+    light: {
+      sun: '#fff0cf',
+      sunIntensity: 1.08,
+      fillIntensity: 0.14,
+      ambientIntensity: 0.07,
+      hemiSky: '#bfe2f6',
+      hemiGround: '#e6d4a6',
+      hemiIntensity: 0.34
+    },
+    // Storybook village: warm plaster walls, glowing lamplit windows, and
+    // weathered terracotta roofs — each house painted a slightly different
+    // shade so a block reads as hand-illustrated rather than CAD-extruded.
+    buildingStyle: {
+      strength: 1.0,
+      // Warm terracotta tile (the shader adds tile-row grooves + per-building
+      // colour variety) — the red roofs sit warmly over the pastel walls.
+      roof: '#b5573c',
+      window: '#ffdc8c',
+      floorHeight: 3.6
+    },
+    // Hand-painted gouache washes on the ground, meadows, and water so every
+    // flat fill reads as a cel rather than a CG plane.
+    surfacePainterly: 0.9,
+    // Cobblestone streets + mottled dirt lanes.
+    roadTexture: 1.0,
+    // Drifting pollen motes in the air.
+    spores: true
+  },
+  // "Professional" — a clean, neutral palette for client-facing real-estate
+  // maps. Light off-white land, soft grey buildings, calm blue water, restrained
+  // outlines, and a strong professional-blue highlight tuned for picking out
+  // listings + comps. Deliberately omits every Ghibli FX (no painterly wash,
+  // no road texture, no spores, no cloud preset, no light preset) so the map
+  // reads as a polished business product rather than a stylized illustration.
+  professional: {
+    water: '#aac4d6',
+    park: '#a4c19a',
+    building: '#dde0e3',
+    road: '#c0c2c4',
+    land: '#eef0f1',
+    beach: '#e0d8c4',
+    sky: '#d6e2ec',
+    saturation: 1.0,
+    outline: { strength: 0.6, darkness: 0.5 },
+    highlight: { building: '#2563eb', floor: '#3b82f6' }
+  },
   cottagecore: {
     water: '#99b3a6',
     park: '#8c9959',

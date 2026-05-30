@@ -13,6 +13,12 @@ const DEFAULT_HEIGHT = 6;
  * extrudes a triangle several km tall that visually dominates the scene.
  */
 const MAX_HEIGHT_M = 1000;
+/** Buildings at or below this height get a peaked (tented) Ghibli roof; taller
+ *  towers keep a flat cap so they don't sprout absurd pyramids. */
+const ROOF_TENT_MAX_HEIGHT = 28;
+/** ...and only when the footprint's larger dimension is at most this (m), so
+ *  big blocks / warehouses stay flat-roofed too. */
+const ROOF_TENT_MAX_DIM = 65;
 
 /** Per-building summary emitted alongside the merged tile mesh. Indexed by
  *  the per-vertex `buildingIndex` attribute so the picker can look up the
@@ -76,6 +82,10 @@ export function extractBuildings(
   /** Per-vertex group index (NOT per-feature) — clicking any building:part
    *  selects the whole physical building it belongs to. */
   const buildingIndex: number[] = [];
+  /** Per-vertex roof flag: 1 for any roof surface (flat cap OR pitched face),
+   *  0 for walls. Lets the painterly shader tint sloped roofs terracotta even
+   *  though a pitched face's normal isn't straight up. */
+  const roofFlags: number[] = [];
   /** Per-group data, indexed by `buildingIndex`. */
   const buildings: BuildingMeta[] = [];
   let totalVolume = 0;
@@ -297,9 +307,26 @@ export function extractBuildings(
         groupOuterHeights[gIdx].push(fr.height);
       }
       if (skipFeature[fi]) continue;
-      buildRoof(polygon, fr.height, positions, normals, indices, buildingIndex, gIdx);
+      const outer = polygon[0];
+      const dims = outer ? footprintDims(outer) : null;
+      // Low/mid-rise buildings with a single, not-too-large footprint get a
+      // peaked roof; everything else keeps the flat cap.
+      const tentable =
+        polygon.length === 1 &&
+        dims !== null &&
+        dims.maxDim > 0 &&
+        dims.maxDim <= ROOF_TENT_MAX_DIM &&
+        fr.height <= ROOF_TENT_MAX_HEIGHT;
+      if (tentable && dims) {
+        // Ridge height scales with the narrower footprint dimension (so a slim
+        // house gets a proportionate peak), clamped to a sane range.
+        const pitch = Math.max(2.5, Math.min(9, dims.minDim * 0.45));
+        buildTentRoof(outer, fr.height, pitch, positions, normals, indices, buildingIndex, roofFlags, gIdx);
+      } else {
+        buildRoof(polygon, fr.height, positions, normals, indices, buildingIndex, roofFlags, gIdx);
+      }
       for (const ring of polygon) {
-        buildWalls(ring, fr.height, positions, normals, indices, buildingIndex, gIdx);
+        buildWalls(ring, fr.height, positions, normals, indices, buildingIndex, roofFlags, gIdx);
       }
     }
   }
@@ -330,7 +357,10 @@ export function extractBuildings(
     // Float32 matches the shader's `attribute float buildingIndex` exactly,
     // so the main thread can wrap this in a BufferAttribute with zero copy.
     // Building indices fit well within Float32's 24-bit mantissa precision.
-    attributes: { buildingIndex: new Float32Array(buildingIndex) },
+    attributes: {
+      buildingIndex: new Float32Array(buildingIndex),
+      buildingRoof: new Float32Array(roofFlags)
+    },
     metadata: { totalVolume, buildings }
   };
 }
@@ -508,6 +538,7 @@ function buildRoof(
   normals: number[],
   indices: number[],
   buildingIndex: number[],
+  roofFlags: number[],
   myIndex: number
 ): void {
   const flat: number[] = [];
@@ -528,6 +559,7 @@ function buildRoof(
       positions.push(p.x, height, p.z);
       normals.push(0, 1, 0);
       buildingIndex.push(myIndex);
+      roofFlags.push(1);
       if (p.x < minX) minX = p.x;
       if (p.x > maxX) maxX = p.x;
       if (p.z < minZ) minZ = p.z;
@@ -560,6 +592,7 @@ function buildWalls(
   normals: number[],
   indices: number[],
   buildingIndex: number[],
+  roofFlags: number[],
   myIndex: number
 ): void {
   if (ring.length < 2) return;
@@ -586,7 +619,134 @@ function buildWalls(
     positions.push(a.x, 0, a.z, b.x, 0, b.z, b.x, height, b.z, a.x, height, a.z);
     normals.push(nx, 0, nz, nx, 0, nz, nx, 0, nz, nx, 0, nz);
     buildingIndex.push(myIndex, myIndex, myIndex, myIndex);
+    roofFlags.push(0, 0, 0, 0);
     // Wind so geometric normal matches the assigned shading normal: outward.
     indices.push(baseVertex, baseVertex + 2, baseVertex + 1, baseVertex, baseVertex + 3, baseVertex + 2);
   }
+}
+
+/** Larger / smaller footprint dimension (m) from a ring's axis-aligned bbox. */
+function footprintDims(ring: { x: number; z: number }[]): { minDim: number; maxDim: number } {
+  let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+  for (const p of ring) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.z < minZ) minZ = p.z;
+    if (p.z > maxZ) maxZ = p.z;
+  }
+  const w = maxX - minX;
+  const h = maxZ - minZ;
+  return { minDim: Math.min(w, h), maxDim: Math.max(w, h) };
+}
+
+/**
+ * Peaked (hip/tent) roof for a small building: a fan of triangles from each
+ * outer-ring edge up to a single apex at the footprint centroid, raised
+ * `pitch` metres above the eave. Gives the Ghibli cottage silhouette. The
+ * building material is DoubleSide so winding is irrelevant; the per-face
+ * normal (forced to point up-and-out) drives the toon shading and the outline
+ * pass, which draws crisp ridge lines between facets.
+ */
+function buildTentRoof(
+  outer: { x: number; z: number }[],
+  height: number,
+  pitch: number,
+  positions: number[],
+  normals: number[],
+  indices: number[],
+  buildingIndex: number[],
+  roofFlags: number[],
+  myIndex: number
+): void {
+  if (outer.length < 3) return;
+  const last = outer.length - 1;
+  const closed = outer[0].x === outer[last].x && outer[0].z === outer[last].z;
+  const n = closed ? last : outer.length;
+  if (n < 3) return;
+
+  let cx = 0, cz = 0;
+  for (let i = 0; i < n; i++) { cx += outer[i].x; cz += outer[i].z; }
+  cx /= n;
+  cz /= n;
+  const apexY = height + pitch;
+
+  for (let i = 0; i < n; i++) {
+    const a = outer[i];
+    const b = outer[(i + 1) % n];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    if (Math.hypot(dx, dz) < 1e-6) continue;
+
+    const baseVertex = positions.length / 3;
+    positions.push(a.x, height, a.z, b.x, height, b.z, cx, apexY, cz);
+
+    // Face normal = (b_top - a_top) × (apex - a_top), forced to face upward.
+    const vx = cx - a.x, vy = pitch, vz = cz - a.z;
+    let nx = 0 * vz - dz * vy;
+    let ny = dz * vx - dx * vz;
+    let nz = dx * vy - 0 * vx;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    nx /= nl; ny /= nl; nz /= nl;
+    if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; }
+    normals.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
+    buildingIndex.push(myIndex, myIndex, myIndex);
+    roofFlags.push(1, 1, 1);
+    indices.push(baseVertex, baseVertex + 1, baseVertex + 2);
+  }
+
+  // A small chimney near the ridge on ~45% of pitched-roof buildings — extra
+  // rooftop silhouette, like the reference. Placed partway from the centroid
+  // toward an outer vertex so it isn't dead-centre. Flagged as roof so it
+  // takes the (red, tiled) roof shading — reads as a brick chimney.
+  if (hashCoord(cx, cz) > 0.55) {
+    const v = outer[Math.floor(hashCoord(cz, cx) * n) % n];
+    const px = cx + (v.x - cx) * 0.4;
+    const pz = cz + (v.z - cz) * 0.4;
+    buildChimney(px, pz, height, apexY + 1.4, 0.7, positions, normals, indices, buildingIndex, roofFlags, myIndex);
+  }
+}
+
+/** Deterministic [0,1) hash of two world coords — stable per building location. */
+function hashCoord(x: number, z: number): number {
+  const h = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
+  return h - Math.floor(h);
+}
+
+/** A small square chimney box (4 walls + a top cap) from `baseY` to `topY`. */
+function buildChimney(
+  px: number,
+  pz: number,
+  baseY: number,
+  topY: number,
+  s: number,
+  positions: number[],
+  normals: number[],
+  indices: number[],
+  buildingIndex: number[],
+  roofFlags: number[],
+  myIndex: number
+): void {
+  const corners: Array<[number, number]> = [
+    [px - s, pz - s], [px + s, pz - s], [px + s, pz + s], [px - s, pz + s]
+  ];
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i];
+    const b = corners[(i + 1) % 4];
+    const dx = b[0] - a[0], dz = b[1] - a[1];
+    const len = Math.hypot(dx, dz) || 1;
+    const nx = dz / len, nz = -dx / len;
+    const base = positions.length / 3;
+    positions.push(a[0], baseY, a[1], b[0], baseY, b[1], b[0], topY, b[1], a[0], topY, a[1]);
+    normals.push(nx, 0, nz, nx, 0, nz, nx, 0, nz, nx, 0, nz);
+    buildingIndex.push(myIndex, myIndex, myIndex, myIndex);
+    roofFlags.push(1, 1, 1, 1);
+    indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+  }
+  // Top cap.
+  const base = positions.length / 3;
+  positions.push(px - s, topY, pz - s, px + s, topY, pz - s, px + s, topY, pz + s, px - s, topY, pz + s);
+  normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0);
+  buildingIndex.push(myIndex, myIndex, myIndex, myIndex);
+  roofFlags.push(1, 1, 1, 1);
+  indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
 }

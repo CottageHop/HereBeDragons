@@ -1,6 +1,6 @@
 export { createHereBeDragons } from './HereBeDragons.js';
 export { THEMES, THEME_NAMES } from './themes.js';
-export type { ThemeColors, ThemeName } from './themes.js';
+export type { ThemeColors, ThemeName, CloudPreset, LightPreset, ThemeBuildingStyle } from './themes.js';
 export type {
   HereBeDragonsOptions,
   HereBeDragons,
@@ -13,7 +13,8 @@ export type {
   TileErrorEvent,
   NoiseSource,
   Unsubscribe,
-  BoundingBox
+  BoundingBox,
+  OutlineConfig
 } from './types.js';
 export { COMMON_BOUNDS } from './bounds.js';
 export type { CommonBoundsKey } from './bounds.js';
@@ -29,9 +30,12 @@ export type {
   ClusterOptions,
   TagsConfig
 } from './tags/types.js';
+export { REAL_ESTATE_TAG_PRESETS } from './tags/realEstatePresets.js';
+export type { RealEstateMarker, RealEstateTagPreset } from './tags/realEstatePresets.js';
 export { createMapStudio, MapStudio } from './studio/MapStudio.js';
 export type { StudioOptions, StudioConfig, MapStudio as MapStudioHandle } from './studio/types.js';
 export type { PolygonOptions, PolygonHandle, PolygonPoint } from './polygons/types.js';
+export { makeRadiusPolygon } from './polygons/radius.js';
 export type { ParcelsConfig, ParcelClickEvent, ParcelClickListener } from './parcels/types.js';
 export type {
   BuildingInfo,

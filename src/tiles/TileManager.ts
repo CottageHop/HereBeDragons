@@ -11,7 +11,7 @@ import { lonLatToTile, lonLatToTileFractional, tileKey } from '../core/TileId.js
 import type { LayerName } from '../types.js';
 import { logger } from '../util/log.js';
 
-const DEFAULT_ACTIVE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads', 'rails', 'buildings', 'labels', 'trees'];
+const DEFAULT_ACTIVE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads', 'rails', 'buildings', 'labels', 'trees', 'grass', 'waves', 'signs'];
 /**
  * Safety cap (Chebyshev distance) on tiles loaded around the camera target,
  * regardless of frustum size. Acts as a fallback for near-horizon views
