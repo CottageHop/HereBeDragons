@@ -21,7 +21,7 @@ const pmtilesUrl =
 const lat = Number(url.searchParams.get('lat') ?? '40.7065');
 const lon = Number(url.searchParams.get('lon') ?? '-74.009');
 const zoom = Number(url.searchParams.get('zoom') ?? '15');
-const initialTheme = url.searchParams.get('theme') ?? 'ghibli';
+const initialTheme = url.searchParams.get('theme') ?? 'concretejungle';
 // `?quality=low|high` forces the render-quality tier; otherwise auto-detect
 // (downgrades to 'low' on Intel integrated graphics + software rasterizers).
 // Use this to A/B-test what tier the slow machine is actually getting.
