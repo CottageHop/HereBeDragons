@@ -31,6 +31,7 @@ describe('professional theme', () => {
     expect(t.surfacePainterly).toBeUndefined();
     expect(t.roadTexture).toBeUndefined();
     expect(t.spores).toBeUndefined();
+    expect(t.pitchedRoofs).toBeUndefined();
     expect(t.buildingStyle).toBeUndefined();
     expect(t.clouds).toBeUndefined();
     expect(t.light).toBeUndefined();

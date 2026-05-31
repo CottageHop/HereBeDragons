@@ -90,6 +90,9 @@ export interface DecodeRequest {
   originLat: number;
   originLon: number;
   layers: LayerName[];
+  /** When true, low/mid-rise buildings get peaked (tented) roofs; otherwise
+   *  every building keeps a flat cap. Defaults to false when omitted. */
+  pitchedRoofs?: boolean;
 }
 
 /**

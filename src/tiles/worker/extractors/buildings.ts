@@ -68,14 +68,22 @@ interface FeatureRecord {
 }
 
 
+/** Per-tile geometry options forwarded from the main thread. */
+export interface BuildingExtractOptions {
+  /** Give low/mid-rise buildings peaked roofs instead of flat caps. Default false. */
+  pitchedRoofs?: boolean;
+}
+
 export function extractBuildings(
   z: number,
   tx: number,
   ty: number,
   layersByName: Record<string, VectorTileLayer>,
   originLat: number,
-  originLon: number
+  originLon: number,
+  options?: BuildingExtractOptions
 ): LayerGeometry | null {
+  const pitchedRoofs = options?.pitchedRoofs === true;
   const positions: number[] = [];
   const normals: number[] = [];
   const indices: number[] = [];
@@ -310,8 +318,10 @@ export function extractBuildings(
       const outer = polygon[0];
       const dims = outer ? footprintDims(outer) : null;
       // Low/mid-rise buildings with a single, not-too-large footprint get a
-      // peaked roof; everything else keeps the flat cap.
+      // peaked roof; everything else keeps the flat cap. Gated on the theme's
+      // pitched-roofs option — most themes keep every building flat.
       const tentable =
+        pitchedRoofs &&
         polygon.length === 1 &&
         dims !== null &&
         dims.maxDim > 0 &&

@@ -76,6 +76,7 @@ export class TileWorkerPool {
     originLat: number,
     originLon: number,
     layers: LayerName[],
+    pitchedRoofs: boolean,
     onPhase: (response: DecodeResponse) => void
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -89,7 +90,8 @@ export class TileWorkerPool {
         data,
         originLat,
         originLon,
-        layers
+        layers,
+        pitchedRoofs
       };
       this.pending.set(requestId, { onPhase, resolve, reject });
       const worker = this.workers[this.next];

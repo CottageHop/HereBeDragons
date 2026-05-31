@@ -75,6 +75,7 @@ The exported JSON is a literal `HereBeDragonsOptions` value `theme`, `customColo
 | `paperGrain` | `number` (0..1) | theme | Screen-space paper grain folded into the final pass. |
 | `roadTexture` | `number` (0..1) | theme | Procedural road surfacing: cobblestone setts on roads, mottled earth on paths. |
 | `spores` | `boolean` | theme | Drifting pollen motes in the air. |
+| `pitchedRoofs` | `boolean` | theme | Peaked roofs on low/mid-rise buildings instead of flat caps. Only the Ghibli theme enables it by default. |
 | `buildingStyle` | `ThemeBuildingStyle` | theme | Painterly building treatment: plaster walls, glowing windows, tiled roofs, per-building variety. |
 | `cloudPreset` | `CloudPreset` | theme | Cloud look: coverage, density, altitude band, noise scale, wind speed, cloud + shadow colors. Separate from `clouds` on/off. |
 | `lightPreset` | `LightPreset` | theme | Lighting look: sun color/intensity, fill, ambient, hemisphere sky/ground/intensity. |
@@ -187,6 +188,7 @@ map.setSurfacePainterly(0.9)    // watercolor wash on ground/water/landuse
 map.setPaperGrain(0.8)          // screen-space paper grain
 map.setRoadTexture(1)           // cobblestone roads + dirt paths
 map.setSporesEnabled(true)      // drifting pollen motes
+map.setPitchedRoofsEnabled(true) // peaked roofs on low/mid-rise buildings
 
 // Painterly buildings (null clears it back to flat toon buildings)
 map.setBuildingStyle({ strength: 1, roof: '#b5573c', window: '#ffdc8c', floorHeight: 3.6 })
@@ -399,7 +401,7 @@ createMapStudio(map, {
 - **Cloud Look** coverage, density, altitude band, noise scale, wind speed sliders + cloud/shadow color pickers
 - **Lighting** sun color + intensity, fill, ambient, hemisphere sky/ground colors + intensity
 - **Painterly FX** surface wash, paper grain, road texture sliders, spores toggle, and a global wind slider
-- **Buildings (painterly)** strength + floor-height sliders, roof + window color pickers
+- **Buildings (painterly)** strength + floor-height sliders, roof + window color pickers, and a pitched-roofs toggle
 - **Signs** banner density + min-zoom sliders
 - **Outline / Ink** edge strength + darkness, halftone, hatching, and saturation sliders
 - **Compass** show/hide overlay toggle

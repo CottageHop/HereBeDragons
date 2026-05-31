@@ -191,6 +191,9 @@ class HereBeDragonsImpl implements HereBeDragons {
   private roadTextureValue = 0;
   /** Whether drifting spore/pollen motes are enabled. */
   private sporesEnabledValue = false;
+  /** Whether low/mid-rise buildings get peaked roofs. Theme-seeded (only Ghibli
+   *  enables it), runtime-tunable via setPitchedRoofsEnabled. */
+  private pitchedRoofsEnabledValue = false;
   /** Global wind-sway multiplier for grass + tree billboards (1 = default). */
   private windStrengthValue = 1;
   /** Most-recently-applied theme name (via applyTheme). Empty if never set. */
@@ -897,6 +900,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     if (options.paperGrain !== undefined) this.setPaperGrain(options.paperGrain);
     if (options.roadTexture !== undefined) this.setRoadTexture(options.roadTexture);
     if (options.spores !== undefined) this.setSporesEnabled(options.spores);
+    if (options.pitchedRoofs !== undefined) this.setPitchedRoofsEnabled(options.pitchedRoofs);
     if (options.buildingStyle !== undefined) this.setBuildingStyle(options.buildingStyle);
     if (options.cloudPreset !== undefined) this.setCloudPreset(options.cloudPreset);
     if (options.lightPreset !== undefined) this.setLightPreset(options.lightPreset);
@@ -1720,6 +1724,11 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.composer.setPaperGrain(this.paperGrainValue);
     this.scene.materials.setRoadTexture(this.roadTextureValue);
     this.sporesField.setEnabled(this.sporesEnabledValue);
+    // Peaked roofs are a building-geometry choice baked in the tile worker, so
+    // a change re-decodes the visible tiles. Only themes that opt in (Ghibli)
+    // turn it on; everything else gets flat-capped buildings.
+    this.pitchedRoofsEnabledValue = theme.pitchedRoofs === true;
+    this.tileManager.setPitchedRoofs(this.pitchedRoofsEnabledValue);
 
     // Theme/colour/sky/fog/outline/atmosphere all just changed — repaint.
     this.needsRender = true;
@@ -1945,6 +1954,18 @@ class HereBeDragonsImpl implements HereBeDragons {
 
   getSporesEnabled(): boolean {
     return this.sporesEnabledValue;
+  }
+
+  /** Toggle peaked (tented) roofs on low/mid-rise buildings. Re-decodes the
+   *  visible tiles, since the roof shape is baked into the mesh in the worker. */
+  setPitchedRoofsEnabled(on: boolean): void {
+    this.pitchedRoofsEnabledValue = on;
+    this.tileManager.setPitchedRoofs(on);
+    this.needsRender = true;
+  }
+
+  getPitchedRoofsEnabled(): boolean {
+    return this.pitchedRoofsEnabledValue;
   }
 
   /** Global wind-sway multiplier for the grass + tree billboards. 1 = default,

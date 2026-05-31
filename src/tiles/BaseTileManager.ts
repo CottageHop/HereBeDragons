@@ -185,7 +185,7 @@ export class BaseTileManager {
       this.retryAfter.delete(key);
       const { lat: originLat, lon: originLon } = this.deps.projection.origin;
       await this.deps.workerPool.decode(
-        z, x, y, data, originLat, originLon, BASE_LAYERS,
+        z, x, y, data, originLat, originLon, BASE_LAYERS, false,
         (response) => {
           if (this.disposed) return;
           this.applyPhase(response.z, response.x, response.y, response.geometries);
