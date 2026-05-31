@@ -4,7 +4,7 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased — v0.6.0 ship-to-clients
+## 0.6.1 — ship-to-clients
 
 ### Added
 
