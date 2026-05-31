@@ -260,6 +260,14 @@ export class TileManager {
    */
   private generation = 0;
 
+  /**
+   * Whether low/mid-rise buildings get peaked roofs. Forwarded into every
+   * decode request; changing it re-decodes the visible set (the flat-vs-peaked
+   * choice happens in the worker, so cached meshes can't be re-shaped in place).
+   * Defaults off — only themes that opt in (Ghibli) turn it on.
+   */
+  private pitchedRoofs = false;
+
   constructor(private deps: TileManagerDeps) {
     this.cache = new TileCache(1024, (tile) => deps.scene.removeTile(tile));
     this.tileWindowRadius = Math.max(0, deps.tileWindowRadius ?? DEFAULT_TILE_WINDOW_RADIUS);
@@ -539,7 +547,7 @@ export class TileManager {
       // for the whole burst. Instead, every phase enqueues onto applyQueue
       // and `update()` drains a bounded number per RAF tick.
       await this.deps.workerPool.decode(
-        z, x, y, data, originLat, originLon, wantedLayers,
+        z, x, y, data, originLat, originLon, wantedLayers, this.pitchedRoofs,
         (response) => {
           if (this.disposed) return;
           // A reload happened after this decode was dispatched — its layer set
@@ -688,6 +696,17 @@ export class TileManager {
     if (enabled && !present && DEFAULT_ACTIVE_LAYERS.includes(layerName)) {
       this.reload();
     }
+  }
+
+  /**
+   * Toggle peaked roofs on low/mid-rise buildings. Re-decodes the visible set
+   * when the value changes — the flat-vs-peaked choice is baked into the mesh
+   * in the worker, so cached tiles must be rebuilt to reflect the new look.
+   */
+  setPitchedRoofs(enabled: boolean): void {
+    if (enabled === this.pitchedRoofs) return;
+    this.pitchedRoofs = enabled;
+    this.reload();
   }
 
   /**

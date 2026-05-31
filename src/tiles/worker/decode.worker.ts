@@ -111,7 +111,10 @@ function decodeTile(req: DecodeRequest): void {
   // ----- Phase 2: buildings (the O(n²) one) -----
   if (wantsBuildings) {
     const buildings: Partial<Record<LayerName, LayerGeometry | null>> = {
-      buildings: extractBuildings(req.z, req.x, req.y, layersByName, req.originLat, req.originLon)
+      buildings: extractBuildings(
+        req.z, req.x, req.y, layersByName, req.originLat, req.originLon,
+        { pitchedRoofs: req.pitchedRoofs === true }
+      )
     };
     postPhase(req, buildings, 'buildings', true);
   }

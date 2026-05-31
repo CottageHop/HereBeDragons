@@ -90,6 +90,13 @@ export interface ThemeColors {
    * the scene a living, hand-animated atmosphere. The Ghibli theme enables it.
    */
   spores?: boolean;
+  /**
+   * Give low/mid-rise buildings peaked (tented) roofs instead of flat caps —
+   * the storybook-village silhouette. Omit (or false) to keep every building
+   * flat-roofed. Only the Ghibli theme enables it by default; most vector-map
+   * looks want crisp flat extrusions.
+   */
+  pitchedRoofs?: boolean;
 }
 
 /** Procedural painterly building look. See {@link ThemeColors.buildingStyle}. */
@@ -175,7 +182,9 @@ export const THEMES: Record<string, ThemeColors> = {
     // Cobblestone streets + mottled dirt lanes.
     roadTexture: 1.0,
     // Drifting pollen motes in the air.
-    spores: true
+    spores: true,
+    // Peaked terracotta roofs — the storybook-village silhouette.
+    pitchedRoofs: true
   },
   // "Professional" — a clean, neutral palette for client-facing real-estate
   // maps. Light off-white land, soft grey buildings, calm blue water, restrained

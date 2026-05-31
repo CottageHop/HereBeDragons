@@ -195,6 +195,9 @@ export interface HereBeDragonsOptions {
   roadTexture?: number;
   /** Drifting spore/pollen motes in the air. Overrides the theme's value. */
   spores?: boolean;
+  /** Peaked (tented) roofs on low/mid-rise buildings instead of flat caps.
+   *  Overrides the active theme's value (only Ghibli enables it by default). */
+  pitchedRoofs?: boolean;
   /** Painterly building treatment (plaster walls, glowing windows, tiled roofs).
    *  Overrides the active theme's `buildingStyle`. */
   buildingStyle?: import('./themes.js').ThemeBuildingStyle;
@@ -581,6 +584,10 @@ export interface HereBeDragons {
   /** Toggle the drifting spore/pollen motes (atmospheric). */
   setSporesEnabled(on: boolean): void;
   getSporesEnabled(): boolean;
+  /** Toggle peaked (tented) roofs on low/mid-rise buildings (re-decodes the
+   *  visible tiles). Only Ghibli enables it by default. */
+  setPitchedRoofsEnabled(on: boolean): void;
+  getPitchedRoofsEnabled(): boolean;
   /**
    * Painterly storybook building treatment — warm plaster walls, glowing
    * windows, terracotta/tiled roofs, per-building variety. Pass `null` to

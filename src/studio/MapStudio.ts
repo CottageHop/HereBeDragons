@@ -822,6 +822,20 @@ export class MapStudio implements MapStudioHandle {
     const roofColorInput = makeBuildingColorRow('Roof color', 'roof');
     const windowColorInput = makeBuildingColorRow('Window color', 'window');
 
+    const pitchedRow = document.createElement('div');
+    pitchedRow.className = 'hbd-studio-row';
+    const pitchedLabel = document.createElement('label');
+    pitchedLabel.textContent = 'Pitched roofs';
+    const pitchedInput = document.createElement('input');
+    pitchedInput.type = 'checkbox';
+    pitchedInput.checked = this.map.getPitchedRoofsEnabled();
+    pitchedInput.addEventListener('change', () => {
+      this.map.setPitchedRoofsEnabled(pitchedInput.checked);
+    });
+    pitchedRow.appendChild(pitchedLabel);
+    pitchedRow.appendChild(pitchedInput);
+    bSection.appendChild(pitchedRow);
+
     this.body.appendChild(bSection);
     this.resyncFns.push(() => {
       const s = this.map.getBuildingStyle();
@@ -831,6 +845,7 @@ export class MapStudio implements MapStudioHandle {
       bFloorRow.value.textContent = `${(s.floorHeight ?? 3.5).toFixed(1)} m`;
       if (s.roof) roofColorInput.value = s.roof;
       if (s.window) windowColorInput.value = s.window;
+      pitchedInput.checked = this.map.getPitchedRoofsEnabled();
     });
 
     // ----- Fog ----------------------------------------------------------
@@ -1029,6 +1044,7 @@ export class MapStudio implements MapStudioHandle {
       paperGrain: roundTo(this.map.getPaperGrain(), 3),
       roadTexture: roundTo(this.map.getRoadTexture(), 3),
       spores: this.map.getSporesEnabled(),
+      pitchedRoofs: this.map.getPitchedRoofsEnabled(),
       buildingStyle: this.map.getBuildingStyle(),
       cloudPreset: this.map.getCloudPreset(),
       lightPreset: this.map.getLightPreset(),
@@ -1139,6 +1155,7 @@ export class MapStudio implements MapStudioHandle {
     if (isNum(config.paperGrain)) this.map.setPaperGrain(config.paperGrain);
     if (isNum(config.roadTexture)) this.map.setRoadTexture(config.roadTexture);
     if (typeof config.spores === 'boolean') this.map.setSporesEnabled(config.spores);
+    if (typeof config.pitchedRoofs === 'boolean') this.map.setPitchedRoofsEnabled(config.pitchedRoofs);
     if (config.buildingStyle && typeof config.buildingStyle === 'object') {
       this.map.setBuildingStyle(config.buildingStyle);
     }
