@@ -23,6 +23,8 @@ const LAYER_KEYS: ReadonlyArray<LayerName> = [
   'roads',
   'buildings',
   'trees',
+  'grass',
+  'waves',
   'labels',
   'cars'
 ];
@@ -1052,7 +1054,16 @@ export class MapStudio implements MapStudioHandle {
       signsDensity: roundTo(this.map.getSignsDensity(), 3),
       signsMinZoom: roundTo(this.map.getSignsMinZoom(), 1),
       outline: this.map.getOutline(),
-      compass: this.map.isCompassVisible()
+      compass: this.map.isCompassVisible(),
+      // These are all accepted by setConfig on import, so they must be exported
+      // too — otherwise they'd silently reset to defaults on a config round-trip.
+      fog: {
+        tiltStart: roundTo(this.map.getFogTiltStart(), 1),
+        tiltEnd: roundTo(this.map.getFogTiltEnd(), 1),
+        strength: roundTo(this.map.getFogStrength(), 3)
+      },
+      labelHeight: roundTo(this.map.getLabelHeight(), 1),
+      tileSpawnDurationMs: Math.round(this.map.getTileSpawnDurationMs())
     };
     // The theme is exported as the base palette and customColors as overrides
     // layered on top — customColors only covers a subset of the theme's keys,

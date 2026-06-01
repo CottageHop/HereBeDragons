@@ -87,18 +87,25 @@ interface StreetStyle {
   letterSpacingWorld: number;
 }
 
+// Street labels are painted flat on the ground plane (world-space quads), so
+// they live or die by texel density and halo contrast. `fontSize` here is ONLY
+// the atlas bake resolution — physical on-road size is driven by `worldHeight`
+// (worldScale = worldHeight / pixelHeight), so we bake LARGE for crisp glyphs
+// and size them independently. Halo is thick + warm-white and the fill is
+// near-black, giving a "carved" mark that reads against the dark roads at the
+// small on-screen sizes these reach when they first appear (min_zoom).
 const STREET_STYLES: StreetStyle[] = [
   // weight 0: major/highway — big, bold
   {
-    fontSize: 40, fontWeight: '700', fontFamily: 'system-ui, sans-serif',
-    color: '#1c1812', strokeColor: '#ffffff', strokeWidth: 4,
-    worldHeight: 11, letterSpacingWorld: 0
+    fontSize: 56, fontWeight: '700', fontFamily: 'system-ui, sans-serif',
+    color: '#14110b', strokeColor: '#faf3e6', strokeWidth: 7,
+    worldHeight: 12, letterSpacingWorld: 0.4
   },
   // weight 1: minor / residential — smaller
   {
-    fontSize: 28, fontWeight: '600', fontFamily: 'system-ui, sans-serif',
-    color: '#2a2620', strokeColor: '#ffffff', strokeWidth: 3,
-    worldHeight: 7, letterSpacingWorld: 0
+    fontSize: 44, fontWeight: '600', fontFamily: 'system-ui, sans-serif',
+    color: '#241f17', strokeColor: '#faf3e6', strokeWidth: 5.5,
+    worldHeight: 8, letterSpacingWorld: 0.3
   }
 ];
 
@@ -861,9 +868,14 @@ function buildFontAtlas(
   }
 
   const texture = new THREE.CanvasTexture(canvas);
+  // No mipmaps: this is a tightly shelf-packed atlas, so mip levels would bleed
+  // neighbouring glyphs into each other. Lean on a high bake resolution (above)
+  // plus max anisotropy instead — anisotropy is what keeps the FLAT, ground-
+  // plane street labels sharp when the camera tilts and the text is sampled at
+  // a grazing angle. three.js clamps 16 down to the GPU's real max at upload.
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
-  texture.anisotropy = 4;
+  texture.anisotropy = 16;
   texture.flipY = true;
   texture.needsUpdate = true;
 

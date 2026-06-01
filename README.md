@@ -396,7 +396,7 @@ createMapStudio(map, {
 - **Custom colors** `land`, `building`, `park`, `water`, `road`, `beach`, `sky` color pickers (applied on top of the active theme)
 - **Selection highlight** popup toggle + building/floor color pickers
 - **Camera** tilt, bearing, zoom sliders, kept in sync as the user drags on the canvas. Each slider has a `↔` toggle that opens a **Min / Max** sub-editor: turn it on to limit how far the camera can move on that axis. The exported JSON includes `tiltRange` / `bearingRange` / `zoomRange` only for axes whose toggle is active.
-- **Layers** per-layer checkboxes + a "flatten buildings" toggle
+- **Layers** per-layer checkboxes — `water`, `landuse`, `roads`, `buildings`, `trees`, `grass`, `waves`, `labels`, `cars` — plus a "flatten buildings" toggle. `grass` (wind-blown meadow tufts) and `waves` (animated shoreline foam) are off by default; toggling them on re-decodes the visible tiles to build their geometry. Each checkbox round-trips through the exported JSON `layers` map.
 - **Clouds** enable/disable + opacity slider
 - **Cloud Look** coverage, density, altitude band, noise scale, wind speed sliders + cloud/shadow color pickers
 - **Lighting** sun color + intensity, fill, ambient, hemisphere sky/ground colors + intensity
@@ -474,7 +474,10 @@ If you need a control to round-trip through the exported JSON, write it into the
   "customColors": { "water": "#0a2030" },
   "clouds": { "enabled": true, "opacity": 0.7 },
   "compass": true,
-  "layers": { "water": true, "buildings": true, "rails": false, "cars": false }
+  "fog": { "tiltStart": 30, "tiltEnd": 40, "strength": 1 },
+  "labelHeight": 75,
+  "tileSpawnDurationMs": 450,
+  "layers": { "water": true, "buildings": true, "trees": true, "grass": false, "waves": false, "cars": false }
 }
 
 // 2. Save that file alongside your site assets (e.g. /public/map-config.json).
