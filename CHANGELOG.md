@@ -4,6 +4,24 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.7.0 — studio toggles + config round-trip
+
+### Added
+
+- **Grass and Waves Studio toggles** — the **Layers** section now exposes `grass` (wind-blown meadow tufts) and `waves` (animated shoreline foam) as on/off checkboxes. Both are off by default; flipping one on re-decodes the visible tiles to build its geometry, then round-trips through the exported JSON `layers` map like every other layer.
+
+### Fixed
+
+- **Config export was lossy** — `fog`, `labelHeight`, and `tileSpawnDurationMs` were applied on `setConfig` (import) but never written by `getConfig` (export), so they silently reset to defaults on an export → import round-trip. They are now exported, making the Studio JSON a faithful, complete snapshot of the live map.
+
+### Changed
+
+- **Street labels are far more legible** — road-name labels (painted flat on the ground plane) now bake at higher resolution, render with max anisotropic filtering, and carry a bolder near-black fill with a thicker warm-white halo, so they read against dark roads at the zoom levels where they first appear.
+
+### Notes
+
+- `quality` is still intentionally **not** exported: `getQualityTier()` returns the resolved tier, and pinning it into a config would disable per-device auto-downgrade for anyone importing it. `setConfig` still honors an explicit `quality` in hand-authored configs.
+
 ## 0.6.1 — ship-to-clients
 
 ### Added
