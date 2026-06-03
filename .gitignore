@@ -8,3 +8,4 @@ coverage
 .vite
 .claude
 *.tgz
+vite.config.ts.timestamp-*.mjs

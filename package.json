@@ -20,6 +20,7 @@
   ],
   "scripts": {
     "dev": "vite",
+    "bench": "vite --open /bench.html",
     "build": "vite build --mode lib && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "build:demo": "vite build",
     "prepare": "npm run build",
