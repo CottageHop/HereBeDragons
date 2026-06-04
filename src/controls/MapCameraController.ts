@@ -39,6 +39,20 @@ export class MapCameraController {
   readonly three: THREE.PerspectiveCamera;
   readonly controls: MapControls;
   onChange?: () => void;
+  /**
+   * Fired the instant the user grabs the map — pointer-drag, pinch, or wheel
+   * (MapControls dispatches its `start` event for all three). The map uses
+   * this to proactively suspend tile-mesh construction so the gesture owns the
+   * main thread from frame one. Paired with `onInteractionEnd`.
+   */
+  onInteractionStart?: () => void;
+  /**
+   * Fired when the gesture's MapControls drag/pinch/wheel ends. Note the
+   * damping inertia tail keeps the camera (and `onChange`) moving for a beat
+   * after this — the map keeps the gate closed for a short settle window past
+   * this event rather than resuming builds immediately.
+   */
+  onInteractionEnd?: () => void;
 
   private projection: Projection;
   private bounds: BoundingBox | null = null;
@@ -96,6 +110,16 @@ export class MapCameraController {
     this.controls.target.set(0, 0, 0);
     this.controls.addEventListener('change', () => {
       this.onChange?.();
+    });
+    // MapControls dispatches `start`/`end` around every drag, pinch, and wheel
+    // gesture. These are the proactive gesture signal the tile-priority gate
+    // rides on — fired before the camera has even moved, so the first frame of
+    // a fling is already build-free.
+    this.controls.addEventListener('start', () => {
+      this.onInteractionStart?.();
+    });
+    this.controls.addEventListener('end', () => {
+      this.onInteractionEnd?.();
     });
 
     // MapControls reads panSpeed fresh on every move, so switching it on

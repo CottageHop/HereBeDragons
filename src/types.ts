@@ -102,6 +102,21 @@ export interface HereBeDragonsOptions {
    */
   dynamicResolution?: boolean;
   /**
+   * Prioritize scroll/zoom smoothness over tile loading. Default `true`.
+   *
+   * Building a decoded tile into a mesh forces a synchronous GPU buffer upload
+   * on the next render — a few-millisecond main-thread spike. When enabled, the
+   * map suspends all tile-mesh construction for as long as a gesture is live
+   * (drag, pinch, wheel, and the inertia glide that follows), so a pan or zoom
+   * never competes with an upload and stays glass-smooth. Tiles keep fetching
+   * and decoding in the background the whole time, then build in a quick burst
+   * the instant motion settles. The trade-off: when panning into never-loaded
+   * territory, fresh tiles appear a beat after you stop rather than streaming in
+   * mid-drag. Disable to build tiles continuously during motion (the pre-0.8
+   * behavior, gated only by the reactive frame budget).
+   */
+  interactionTilePriority?: boolean;
+  /**
    * Restrict camera panning to this geographic box. The camera target's
    * lat/lon is clamped on every frame; the user can still zoom freely.
    * Combine with `COMMON_BOUNDS` for country/state presets.
@@ -480,6 +495,14 @@ export interface HereBeDragons {
   setDynamicResolution(on: boolean): void;
   /** Whether dynamic resolution is currently active. */
   getDynamicResolution(): boolean;
+  /**
+   * Toggle prioritizing scroll/zoom smoothness over tile loading at runtime
+   * (see the `interactionTilePriority` option). Turning it off immediately
+   * flushes any builds that were suspended.
+   */
+  setInteractionTilePriority(on: boolean): void;
+  /** Whether scroll/zoom is currently prioritized over tile loading. */
+  getInteractionTilePriority(): boolean;
   /**
    * Switch render-quality tier at runtime. Applies the profile's
    * runtime-safe levers: pixelRatio, the cloud pass, the outline pipeline,

@@ -129,6 +129,7 @@ Only three fields are required (`center`, `zoom`, `pmtiles_url`); everything els
 | `pixelRatio` | `number` | quality-capped `devicePixelRatio` | Override render resolution. Always wins over the `quality` tier's cap. |
 | `msaa` | `number` | tier (4 high / 0 low) | MSAA sample count on the color/normal targets. 0 = FXAA-only. Fixed at construction. |
 | `dynamicResolution` | `boolean` | `true` | Render at a cheaper `pixelRatio` while the camera moves, snap back to full resolution at rest. No effect on 1× displays or when `pixelRatio` is pinned. |
+| `interactionTilePriority` | `boolean` | `true` | Prioritize scroll/zoom smoothness over tile loading: suspend tile-mesh construction (and its synchronous GPU upload) while a gesture is live, then burst-build the backlog the instant motion settles. Keeps pans/zooms glass-smooth; fresh tiles appear a beat after you stop instead of mid-drag. |
 | `lowResUnderlay` | `boolean \| { enabled?, zoom? }` | `true` (z11) | Low-zoom underlay beneath the z14 plane so the screen is never blank while tiles stream in. `false` to disable. |
 | `tileSpawnDurationMs` | `number` | `3000` | Duration of the per-tile "rise from below ground" load animation. 0 = snap in instantly. |
 | `performance` | `{ workerPoolSize?, visibleRadius?, tileWindowRadius?, tileWindowRadiusFar?, maxTileApplyMsPerFrame?, dispatchInterval?, frameBudgetMs?, autoUpgradeFrameMs?, autoDowngradeFrameMs? }` | auto | Tile-pipeline + auto-tier tuning. |

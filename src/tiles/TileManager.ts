@@ -107,6 +107,17 @@ const BUDGET_THROTTLE_INTERVAL = 6;
 const ZOOM_HYSTERESIS = 0.4;
 
 /**
+ * Hard cap on tile meshes built per frame, independent of the time budget.
+ * The time budget bounds CPU build cost, but each built mesh also forces a
+ * GPU buffer upload on the *next* render — a cost the build-time budget can't
+ * see. Without a count cap, a frame that builds several tiles within budget
+ * still queues several large uploads into one render, producing a multi-
+ * hundred-millisecond spike (the "drops to 2 fps when tiles pop in" stutter).
+ * Capping the count spreads uploads across frames so no single render stalls.
+ */
+const MAX_BUILDS_PER_FRAME = 2;
+
+/**
  * Default camera zoom below which the main z14 grid is SUSPENDED — its tiles
  * are ejected and no new ones load until the camera zooms back in. Disabled
  * (left at this default's effect) unless the host opts in by passing a real
@@ -348,6 +359,13 @@ export class TileManager {
    *   in the workers and pile up in `applyQueue`; they get built the moment
    *   frames recover (typically the instant the camera goes idle and the
    *   scene stops changing). Framerate is prioritized over loading.
+   * @param suspendBuilds true while a gesture (drag / pinch / wheel / inertia
+   *   glide) is in flight. This is the *proactive* counterpart to
+   *   `frameBudgetOk`'s reactive gate: rather than waiting for the smoothed
+   *   frame time to already be blown, it hard-stops mesh construction the
+   *   instant the user touches the map, so the very first frame of a fling
+   *   never competes with a synchronous GPU upload. Decode + dispatch still
+   *   run, so the backlog is ready to burst-drain the moment motion settles.
    */
   /**
    * @returns true if anything that affects the rendered scene changed this
@@ -356,25 +374,34 @@ export class TileManager {
    *   the camera is idle, the loop skips `composer.render()` entirely so the
    *   GPU isn't pegged on a static scene.
    */
-  update(forced = false, frameBudgetOk = true): boolean {
+  update(forced = false, frameBudgetOk = true, suspendBuilds = false): boolean {
     if (this.disposed) return false;
 
     // Spawn animations are cheap (a few position writes) and matter for
     // visual smoothness, so they advance every frame. The apply-queue drain
-    // builds meshes (expensive: GPU upload next render), so it's gated on the
-    // frame budget: under load it pauses so panning doesn't stutter. The
-    // exception is a slow guaranteed trickle (BUDGET_THROTTLE_INTERVAL) so a
-    // machine that's over budget even at idle still fills the map instead of
-    // staying blank forever.
-    // Both are skipped entirely while the main grid is suspended (camera
+    // builds meshes (expensive: GPU upload next render), so it's gated two
+    // ways: proactively on `suspendBuilds` (a gesture is live — prioritize
+    // the scroll/zoom above all else), and reactively on the frame budget
+    // (the machine is already saturated). The exception is a slow guaranteed
+    // trickle (BUDGET_THROTTLE_INTERVAL) so a machine that's over budget even
+    // at idle still fills the map instead of staying blank forever — but a
+    // live gesture overrides even that, so a fling is never interrupted by a
+    // build.
+    // All are skipped entirely while the main grid is suspended (camera
     // zoomed out past the cutoff) — there are no main tiles to build or
     // animate. The dispatch sweep below owns the suspend/resume transition
     // (it's the only place with the camera view).
     let dirty = false;
     if (!this.mainSuspended) {
-      if (frameBudgetOk || this.frameCount % BUDGET_THROTTLE_INTERVAL === 0) {
+      // Mesh construction is the only gesture-gated work: skip it entirely
+      // while a gesture is live (suspendBuilds), otherwise drain on the frame
+      // budget plus the guaranteed over-budget trickle.
+      if (!suspendBuilds && (frameBudgetOk || this.frameCount % BUDGET_THROTTLE_INTERVAL === 0)) {
         if (this.drainApplyQueue()) dirty = true;
       }
+      // Spawn drop-in animations are cheap position writes for already-built
+      // tiles — keep them advancing even mid-gesture so in-flight reveals
+      // don't freeze.
       if (this.advanceSpawnAnimations()) dirty = true;
     }
 
@@ -539,6 +566,15 @@ export class TileManager {
    */
   isStreaming(): boolean {
     return this.inFlightFetches > 0 || this.applyQueue.length > 0 || this.pending.size > 0;
+  }
+
+  /**
+   * Number of decoded phases waiting to be built into meshes. Non-zero while
+   * the gesture gate is holding back a backlog; the apply queue drains it a
+   * couple of tiles per frame once motion settles.
+   */
+  pendingBuildCount(): number {
+    return this.applyQueue.length;
   }
 
   private chooseZoom(_cameraZoom: number): number {
@@ -966,7 +1002,10 @@ export class TileManager {
     const start = performance.now();
     const budget = this.applyBudgetMs;
     while (this.applyQueue.length > 0) {
-      if (processed > 0 && performance.now() - start >= budget) break;
+      // Stop on EITHER the time budget (CPU build cost) or the per-frame count
+      // cap (bounds GPU uploads next render) — whichever hits first. At least
+      // one tile always builds so the queue can't stall.
+      if (processed > 0 && (processed >= MAX_BUILDS_PER_FRAME || performance.now() - start >= budget)) break;
       // Pick the item whose tile is closest to the camera target, instead
       // of the front of the queue. `lastCenterX/Y` is the screen-center
       // tile coord (refreshed by the dispatch sweep ≥ once every

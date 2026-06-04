@@ -4,6 +4,20 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Performance
+
+- **Bounded the tile-upload spike that caused scroll/zoom stutter.** Building a decoded tile into a mesh forces a synchronous GPU buffer upload on the *next* render, a cost the existing per-frame build-time budget can't see (it only bounds CPU build time). Building several tiles in one frame queued several large uploads into a single render, producing multi-hundred-millisecond spikes when a fresh row of tiles popped in. The apply queue now also caps the *number* of tiles built per frame, spreading uploads across frames so no single render stalls. Visual-neutral; the map fills over a few extra frames instead of one janky one.
+
+### Added
+
+- **`interactionTilePriority` option (default on): scroll/zoom smoothness over tile loading.** On top of the upload cap, the map suspends tile-mesh construction entirely for as long as a gesture is live (drag, pinch, wheel, and the damping inertia glide that trails it), so a pan or zoom never competes with a build at all. Tiles keep fetching and decoding in the background the whole time, then drain a couple per frame once motion settles. Wired off MapControls `start`/`end` events plus a short post-motion settle window, so the gate closes on the first frame of a gesture and reopens promptly at rest. The decision logic is a framework-free, unit-tested module (`src/controls/interactionGate.ts`). Exposed as `getInteractionTilePriority()` / `setInteractionTilePriority()`. The trade-off: when panning into never-loaded territory, fresh tiles appear a beat after you stop rather than streaming in mid-drag. Disable to restore the previous behavior (builds gated only by the reactive frame budget).
+
+### Changed
+
+- **Benchmark harness (`npm run bench`) gained motion modes + jank metrics.** New `?mode=pan|orbit|fling|zoom` drives panning across new territory (the case that actually exposes scroll jank, which the in-place orbit never triggered), and the report now includes p99 / max frame time, dropped-frame count, and hitch count rather than median fps alone. `?gate=0|1` toggles the interaction gate and `?dynres=1` mirrors the real-app render path, for clean A/B runs.
+
 ## 0.8.0 — mobile quality tier + GPU-memory wins
 
 ### Added

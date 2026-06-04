@@ -15,6 +15,7 @@ import { Projection } from './core/Projection.js';
 import { Renderer } from './rendering/Renderer.js';
 import { SceneRoot } from './scene/SceneRoot.js';
 import { MapCameraController } from './controls/MapCameraController.js';
+import { shouldSuspendBuilds } from './controls/interactionGate.js';
 import { Composer } from './rendering/Composer.js';
 import { resolveQualityProfile, isMobileDevice } from './rendering/quality.js';
 import type { QualityLevel } from './rendering/quality.js';
@@ -269,6 +270,24 @@ class HereBeDragonsImpl implements HereBeDragons {
    * re-allocation to full res mid-interaction.
    */
   private static readonly DYNAMIC_RES_SETTLE_MS = 180;
+  /**
+   * Whether scroll/zoom smoothness is prioritized over tile loading by
+   * suspending mesh construction during a gesture. See the
+   * `interactionTilePriority` option.
+   */
+  private interactionTilePriorityEnabled: boolean;
+  /**
+   * True between a MapControls `start` and `end` — the user has the map
+   * physically grabbed (drag / pinch / wheel). Set even before the camera has
+   * moved, so the gate closes on frame one of a gesture.
+   */
+  private gesturePressed = false;
+  /**
+   * `performance.now()` of the last frame the camera actually moved. Combined
+   * with `gesturePressed` and a settle window this keeps the tile-build gate
+   * closed through the damping inertia glide after the user lets go.
+   */
+  private lastCameraMotionMs = 0;
   /** Unregister hook for the `matchMedia` DPR-change listener. */
   private dprWatcherCleanup?: () => void;
   /** Tab-visibility listener — re-kicks the RAF loop when the tab returns
@@ -372,6 +391,10 @@ class HereBeDragonsImpl implements HereBeDragons {
     // this, always" — so it disables the motion downscale.
     this.dynamicResolutionEnabled =
       (options.dynamicResolution ?? true) && options.pixelRatio === undefined;
+    // Scroll/zoom smoothness over tile loading — on by default. The gesture
+    // gate works at any pixel ratio (unlike dynamic res), so a pinned
+    // pixelRatio doesn't disable it.
+    this.interactionTilePriorityEnabled = options.interactionTilePriority ?? true;
     this.renderer = new Renderer(container, {
       pixelRatio: effectivePixelRatio,
       background: options.background,
@@ -650,8 +673,20 @@ class HereBeDragonsImpl implements HereBeDragons {
       // Separate signal for dynamic resolution: this fires only on real camera
       // motion, never on the synthetic full-res redraw we trigger on settle.
       this.cameraDirty = true;
+      // Timestamp real motion so the build gate stays closed through the
+      // damping inertia glide after the user lets go (read in the RAF tick).
+      this.lastCameraMotionMs = performance.now();
       const view = this.getView();
       this.bus.emit('viewchange', { type: 'viewchange', ...view });
+    };
+    // Proactive gesture signal: close the build gate the instant the user
+    // grabs the map (before the camera even moves), reopen it a settle window
+    // after they release and the inertia glide stops.
+    this.camera.onInteractionStart = () => {
+      this.gesturePressed = true;
+    };
+    this.camera.onInteractionEnd = () => {
+      this.gesturePressed = false;
     };
 
     // Push pointer position into the clouds pass — clouds dissipate in a
@@ -1146,8 +1181,23 @@ class HereBeDragonsImpl implements HereBeDragons {
       // a dedicated flag so the synthetic settle redraw isn't read as motion.
       const cameraMoved = this.cameraDirty;
       this.cameraDirty = false;
+      // --- gesture tile-priority gate -----------------------------------
+      // Suspend mesh construction while a gesture is live so scroll/zoom owns
+      // the main thread. "Live" = the map is physically grabbed (gesturePressed,
+      // set on MapControls start/end) OR the camera moved within the last
+      // GESTURE_SETTLE_MS (covers the inertia glide after release). When the
+      // gate falls open (motion just settled), kick a burst flush so the
+      // backlog that piled up snaps in while the camera is at rest.
+      // When the gate opens after a gesture, the suspended backlog drains a
+      // couple of tiles per frame (TileManager's per-frame build cap), so
+      // uploads spread across frames instead of spiking the settle render.
+      const suspendBuilds = shouldSuspendBuilds({
+        enabled: this.interactionTilePriorityEnabled,
+        gesturePressed: this.gesturePressed,
+        msSinceMotion: now - this.lastCameraMotionMs
+      });
       // tileManager / layers report whether they changed the rendered scene.
-      const tileDirty = this.tileManager.update(false, frameBudgetOk);
+      const tileDirty = this.tileManager.update(false, frameBudgetOk, suspendBuilds);
       this.baseTileManager?.update(false);
       const layersDirty = this.layers.update(dt);
       // Recompute the parcels overlay's visible tile window + kick loads.
@@ -1506,6 +1556,17 @@ class HereBeDragonsImpl implements HereBeDragons {
 
   getDynamicResolution(): boolean {
     return this.dynamicResolutionEnabled;
+  }
+
+  setInteractionTilePriority(on: boolean): void {
+    if (on === this.interactionTilePriorityEnabled) return;
+    this.interactionTilePriorityEnabled = on;
+    // Turning it off reopens the gate on the next tick; any backlog drains at
+    // the normal per-frame build cap. Nothing else to do.
+  }
+
+  getInteractionTilePriority(): boolean {
+    return this.interactionTilePriorityEnabled;
   }
 
   /**
