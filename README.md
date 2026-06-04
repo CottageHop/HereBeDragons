@@ -60,41 +60,78 @@ The exported JSON is a literal `HereBeDragonsOptions` value `theme`, `customColo
 
 ## Options reference (`HereBeDragonsOptions`)
 
+Only three fields are required (`center`, `zoom`, `pmtiles_url`); everything else has a sensible default. The table is grouped so you can jump to the part you care about.
+
+**Required**
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `center` | `{ lat, lon }` | required | Initial geographic center. |
 | `zoom` | `number` | required | Initial zoom (sane range 4–20). |
-| `pmtiles_url` | `string` | required | PMTiles archive URL (or local path). |
+| `pmtiles_url` | `string` | required | PMTiles archive URL (or local path). See [Hosting your tiles](#hosting-your-tiles). |
+
+**Camera**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
 | `tilt` | `number` | `55` | Camera pitch in degrees (0 = top-down). |
 | `bearing` | `number` | `0` | Camera rotation from north, +CW. |
+| `tiltRange` | `{ min, max }` | `0–75°` | Clamp the allowed tilt range. Initial value still comes from `tilt`. |
+| `bearingRange` | `{ min, max }` | full 360° | Clamp the allowed bearing range. Initial value still comes from `bearing`. |
+| `zoomRange` | `{ min, max }` | `~4–22` | Clamp the allowed zoom range. Initial value still comes from `zoom`. |
+| `bounds` | `BoundingBox` | `undefined` | Geographic box that clamps camera panning. Use `COMMON_BOUNDS` for presets. |
+| `useUserLocation` | `boolean` | `false` | Request `navigator.geolocation` and fly there on resolve. |
+
+**Theme & color**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
 | `theme` | `ThemeName \| string` | `undefined` | Apply a named theme on load. Autocompletes the built-ins. |
 | `customColors` | `Partial<ThemeColors>` | `undefined` | Per-color overrides on top of the theme. |
+| `background` | `string` | theme sky | Canvas background color. |
+
+**Atmosphere & painterly effects** (each overrides the active theme's value)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
 | `clouds` | `boolean \| { enabled?, opacity? }` | `false` | Volumetric cloud pass on/off + opacity. Off by default (the raymarch is the heaviest per-frame GPU cost). |
-| `compass` | `boolean` | `true` | Show the compass overlay. Click to reset bearing. |
-| `surfacePainterly` | `number` (0..1) | theme | Watercolor wash on flat surfaces (ground, water, landuse, beach). Overrides the theme. |
+| `cloudPreset` | `CloudPreset` | theme | Cloud look: coverage, density, altitude band, noise scale, wind speed, cloud + shadow colors. Separate from `clouds` on/off. |
+| `lightPreset` | `LightPreset` | theme | Lighting look: sun color/intensity, fill, ambient, hemisphere sky/ground/intensity. |
+| `fog` | `{ tiltStart?, tiltEnd?, strength? }` | theme | Atmospheric fog that ramps in as the camera tilts toward the horizon (`tiltStart`→`tiltEnd` degrees, scaled by `strength`). |
+| `surfacePainterly` | `number` (0..1) | theme | Watercolor wash on flat surfaces (ground, water, landuse, beach). |
 | `paperGrain` | `number` (0..1) | theme | Screen-space paper grain folded into the final pass. |
 | `roadTexture` | `number` (0..1) | theme | Procedural road surfacing: cobblestone setts on roads, mottled earth on paths. |
 | `spores` | `boolean` | theme | Drifting pollen motes in the air. |
 | `pitchedRoofs` | `boolean` | theme | Peaked roofs on low/mid-rise buildings instead of flat caps. Only the Ghibli theme enables it by default. |
 | `buildingStyle` | `ThemeBuildingStyle` | theme | Painterly building treatment: plaster walls, glowing windows, tiled roofs, per-building variety. |
-| `cloudPreset` | `CloudPreset` | theme | Cloud look: coverage, density, altitude band, noise scale, wind speed, cloud + shadow colors. Separate from `clouds` on/off. |
-| `lightPreset` | `LightPreset` | theme | Lighting look: sun color/intensity, fill, ambient, hemisphere sky/ground/intensity. |
+| `outline` | `OutlineConfig` | theme | Illustrated outline/ink look + saturation: edge `strength`/`darkness`, comic `halftone`/`hatching`, `saturation`. |
 | `windStrength` | `number` | `1` | Wind-sway multiplier for the grass + tree billboards (0 = still). |
+
+**Layers, overlays & markers**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `layers` | `Partial<Record<LayerName, boolean>>` | most on | Per-layer enable/disable. See [Layers](#layers). |
+| `tags` | `TagsConfig` | `{}` | Tag overlay configuration (clustering, default styles). See [Tags](#tags-interactive-markers). |
+| `buildings` | `BuildingPopupConfig` | `{}` | Building picker + popup settings. See [Buildings](#buildings). |
+| `parcels` | `ParcelsConfig` | `undefined` | Load county parcel-boundary polygons from a **second** PMTiles archive and render them as clickable outlines above the basemap. |
+| `compass` | `boolean` | `true` | Show the compass overlay. Click to reset bearing. |
+| `scaleBar` | `boolean \| { units?, targetWidthPx? }` | `true` | Scale-bar overlay. Click toggles units (defaults to imperial). `false` to hide. See [Scale bar](#scale-bar). |
 | `signsDensity` | `number` (0..1) | `0.5` | Shop-sign banner density. Needs the `signs` layer enabled. |
 | `signsMinZoom` | `number` | `15` | Camera zoom at/above which shop-sign banners appear. |
-| `outline` | `OutlineConfig` | theme | Illustrated outline/ink look + saturation: edge `strength`/`darkness`, comic `halftone`/`hatching`, `saturation`. |
-| `layers` | `Partial<Record<LayerName, boolean>>` | most on | Per-layer enable/disable. See [Layers](#layers). |
-| `tags` | `TagsConfig` | `{}` | Tag overlay configuration (clustering, default styles). |
-| `buildings` | `BuildingPopupConfig` | `{}` | Building picker + popup settings. |
-| `bounds` | `BoundingBox` | `undefined` | Geographic box that clamps camera panning. Use `COMMON_BOUNDS` for presets. |
-| `tiltRange` | `{ min, max }` | `0–75°` | Clamp the allowed tilt range. Initial value still comes from `tilt`. |
-| `bearingRange` | `{ min, max }` | full 360° | Clamp the allowed bearing range. Initial value still comes from `bearing`. |
-| `zoomRange` | `{ min, max }` | `~4–22` | Clamp the allowed zoom range. Initial value still comes from `zoom`. |
-| `useUserLocation` | `boolean` | `false` | Request `navigator.geolocation` and fly there on resolve. |
-| `quality` | `'low' \| 'high' \| 'auto'` | `'auto'` | Render-quality tier. `'auto'` detects the GPU and downgrades integrated graphics to `'low'`. See [Performance](#performance-tuning). |
+| `labelHeight` | `number` (m) | `0` | Lift place-name labels above the skyline at tilted views (0 pins them to the actual coords). |
+
+**Performance & quality** (see [Performance tuning](#performance-tuning))
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `quality` | `'low' \| 'mobile' \| 'high' \| 'auto'` | `'auto'` | Render-quality tier. `'auto'` serves `'mobile'` to phones/tablets, detects the GPU on desktop, and downgrades integrated graphics to `'low'`. |
 | `pixelRatio` | `number` | quality-capped `devicePixelRatio` | Override render resolution. Always wins over the `quality` tier's cap. |
-| `background` | `string` | theme sky | Canvas background color. |
-| `performance` | `{ workerPoolSize?, visibleRadius?, tileWindowRadius?, tileWindowRadiusFar?, maxTileApplyMsPerFrame? }` | auto | Tile-pipeline tuning. See [Performance](#performance-tuning). |
+| `msaa` | `number` | tier (4 high / 0 low) | MSAA sample count on the color/normal targets. 0 = FXAA-only. Fixed at construction. |
+| `dynamicResolution` | `boolean` | `true` | Render at a cheaper `pixelRatio` while the camera moves, snap back to full resolution at rest. No effect on 1× displays or when `pixelRatio` is pinned. |
+| `lowResUnderlay` | `boolean \| { enabled?, zoom? }` | `true` (z11) | Low-zoom underlay beneath the z14 plane so the screen is never blank while tiles stream in. `false` to disable. |
+| `tileSpawnDurationMs` | `number` | `3000` | Duration of the per-tile "rise from below ground" load animation. 0 = snap in instantly. |
+| `performance` | `{ workerPoolSize?, visibleRadius?, tileWindowRadius?, tileWindowRadiusFar?, maxTileApplyMsPerFrame?, dispatchInterval?, frameBudgetMs?, autoUpgradeFrameMs?, autoDowngradeFrameMs? }` | auto | Tile-pipeline + auto-tier tuning. |
 
 ### Layers
 
@@ -115,12 +152,12 @@ layers: {
 
 ### Themes
 
-Built-in `ThemeName` values: `'ghibli'`, `'professional'`, `'cottagecore'`, `'cottagecoredark'`, `'modern'`, `'greyscale'`, `'dark'`, `'cyberpunk'`, `'eighties'`, `'seventies'`, `'oldworld'`, `'middleearth'`, `'concretejungle'`, `'comic'`.
+Built-in `ThemeName` values: `'ghibli'`, `'professional'`, `'cottagecore'`, `'cottagecoredark'`, `'cyberpunk'`, `'modern'`, `'greyscale'`, `'greyscaledark'`, `'dark'`, `'eighties'`, `'seventies'`, `'oldworld'`, `'middleearth'`, `'concretejungle'`, `'comic'`.
 
 Two are worth calling out:
 
-- **`ghibli`** — the showcase stylized look (painterly walls, tiled roofs, kawara texture, wind-blown grass, drifting pollen, lit shopfronts). Toggle every effect individually via the runtime setters above.
-- **`professional`** — a clean, neutral preset for client-facing **real-estate maps**: soft grey buildings, calm blue water, restrained outlines, a strong professional-blue building/floor highlight tuned for picking out listings and comps. Every Ghibli FX is deliberately off, so the map reads as a polished business product.
+- **`ghibli`** the showcase stylized look (painterly walls, tiled roofs, kawara texture, wind-blown grass, drifting pollen, lit shopfronts). Toggle every effect individually via the runtime setters above.
+- **`professional`** a clean, neutral preset for client-facing **real-estate maps**: soft grey buildings, calm blue water, restrained outlines, a strong professional-blue building/floor highlight tuned for picking out listings and comps. Every Ghibli FX is deliberately off, so the map reads as a polished business product.
 
 ```js
 import { createHereBeDragons, THEMES } from '@cottagehop/here-be-dragons';
@@ -297,7 +334,7 @@ map.setBuildingHighlightColors('#ffe600', '#7ec8ff');
 const all = map.getLoadedBuildings();            // BuildingInfo[]
 ```
 
-The canvas cursor swaps from `grab` to `pointer` the moment a user hovers a building, signalling clickability for the property-shopping UX. The hovered building itself also gets a subtle warm brighten, so users can see exactly which one is under the cursor. The hover raycast is RAF-throttled internally so a fast-moving pointer can't burn dozens of raycasts per second, and the highlight only triggers a redraw when the hovered building actually changes — a pointer drifting across a single building costs nothing.
+The canvas cursor swaps from `grab` to `pointer` the moment a user hovers a building, signalling clickability for the property-shopping UX. The hovered building itself also gets a subtle warm brighten, so users can see exactly which one is under the cursor. The hover raycast is RAF-throttled internally so a fast-moving pointer can't burn dozens of raycasts per second, and the highlight only triggers a redraw when the hovered building actually changes, so a pointer drifting across a single building costs nothing.
 
 ### Scale bar
 
@@ -315,7 +352,7 @@ const mpp = map.getMetersPerPixel();                  // build your own overlays
 
 ### Snapshot / screenshot export
 
-Synchronous capture of the current view as a data URL. The render and canvas read happen in the same JS tick — no extra render-target plumbing — so it works with the default `preserveDrawingBuffer: false` (which is much faster for the normal render loop). DOM overlays (compass, scale-bar, tag popups) are not in the canvas and so not in the snapshot.
+Synchronous capture of the current view as a data URL. The render and canvas read happen in the same JS tick (no extra render-target plumbing), so it works with the default `preserveDrawingBuffer: false` (which is much faster for the normal render loop). DOM overlays (compass, scale-bar, tag popups) are not in the canvas and so not in the snapshot.
 
 ```ts
 // Quick PNG at the current resolution
@@ -350,12 +387,12 @@ off();          // unsubscribe
 map.resize();          // call from your window.resize handler
 map.destroy();         // releases GPU resources + DOM
 
-// Perf introspection — wire these into your own HUD / telemetry without
+// Perf introspection: wire these into your own HUD / telemetry without
 // touching internals. Sampled on render frames only (hidden-tab frames don't
 // pollute the EMA); reset on every visibility-resume.
 map.getFrameMs();      // smoothed RAF-to-RAF, e.g. 16.7
 map.getFps();          // derived from getFrameMs(), e.g. 60
-map.getQualityTier();  // 'low' | 'high'
+map.getQualityTier();  // 'low' | 'mobile' | 'high'
 map.getPixelRatio();   // currently-applied DPR (drops during dynamic-res motion)
 ```
 
@@ -396,7 +433,8 @@ createMapStudio(map, {
 - **Custom colors** `land`, `building`, `park`, `water`, `road`, `beach`, `sky` color pickers (applied on top of the active theme)
 - **Selection highlight** popup toggle + building/floor color pickers
 - **Camera** tilt, bearing, zoom sliders, kept in sync as the user drags on the canvas. Each slider has a `↔` toggle that opens a **Min / Max** sub-editor: turn it on to limit how far the camera can move on that axis. The exported JSON includes `tiltRange` / `bearingRange` / `zoomRange` only for axes whose toggle is active.
-- **Layers** per-layer checkboxes — `water`, `landuse`, `roads`, `buildings`, `trees`, `grass`, `waves`, `labels`, `cars` — plus a "flatten buildings" toggle. `grass` (wind-blown meadow tufts) and `waves` (animated shoreline foam) are off by default; toggling them on re-decodes the visible tiles to build their geometry. Each checkbox round-trips through the exported JSON `layers` map.
+- **Layers** per-layer checkboxes (`water`, `landuse`, `roads`, `buildings`, `trees`, `grass`, `waves`, `labels`, `cars`) plus a "flatten buildings" toggle. `grass` (wind-blown meadow tufts) and `waves` (animated shoreline foam) are off by default; toggling them on re-decodes the visible tiles to build their geometry. Each checkbox round-trips through the exported JSON `layers` map.
+- **Quality** live `Low` / `Mobile` / `High` tier switch with a read-only pixel-ratio readout. Flipping to `Mobile` forces the ambient FX off and caps the pixel ratio; `Low` drops to a top-down flat view. The chosen tier round-trips through the exported JSON `quality` field (an untouched `'auto'` map stays `'auto'`).
 - **Clouds** enable/disable + opacity slider
 - **Cloud Look** coverage, density, altitude band, noise scale, wind speed sliders + cloud/shadow color pickers
 - **Lighting** sun color + intensity, fill, ambient, hemisphere sky/ground colors + intensity
@@ -573,11 +611,14 @@ await createHereBeDragons(el, {
 });
 ```
 
-- **`'auto'`** (default) probes the GPU via `WEBGL_debug_renderer_info`. Intel integrated graphics (e.g. the Iris Plus in a 2019 MacBook Pro 13"), software rasterizers, and "no WebGL" all resolve to `'low'`; discrete GPUs, Apple Silicon, and privacy-redacted renderers stay `'high'`. It only ever *downgrades* on a confident match, so a capable machine is never blurred by mistake.
-- **`'low'`** `pixelRatio` capped to 1 (no Retina super-sampling the single biggest fill-rate win, ~4× fewer pixels), MSAA off (FXAA alone handles AA), and a tighter tile-load window (`visibleRadius` 2, `tileWindowRadius`/`Far` 4, `dispatchInterval` 6).
-- **`'high'`** full desktop quality: `pixelRatio` up to 2, 4× MSAA, default tile window.
+- **`'auto'`** (default) first checks whether it's running on a phone/tablet (by platform, since iOS Safari redacts the GPU string so a probe can't help). If so it starts on **`'mobile'`**. Otherwise it probes the GPU via `WEBGL_debug_renderer_info`: Intel integrated graphics (e.g. the Iris Plus in a 2019 MacBook Pro 13"), software rasterizers, and "no WebGL" all resolve to `'low'`; discrete GPUs, Apple Silicon, and privacy-redacted renderers stay `'high'`. It only ever *downgrades* on a confident match, so a capable machine is never blurred by mistake.
+- **`'mobile'`** the most capable map a phone-class GPU (e.g. an **iPhone 8**, 2 GB RAM) can sustain. Keeps the realty essentials (**3D buildings, labels, tags/markers, parcels, comp radius, tap-select + hover popups**) and drops only the cinematic dressing: clouds, sketch outlines, and the ambient layers (trees, grass, waves, signs, cars, spores, painterly wash) are forced off regardless of theme. Caps `pixelRatio` to 1.5, disables the low-res underlay to save GPU memory, tightens the tile window, and caps tilt at 60°. Detected automatically under `'auto'`; a phone too weak even for this auto-downgrades to `'low'`.
+- **`'low'`** a top-down 2D fallback for the weakest devices: `pixelRatio` capped to 1 (no Retina super-sampling the single biggest fill-rate win, ~4× fewer pixels), MSAA off (FXAA alone handles AA), flat building footprints (no extrusion), labels off, and a tighter tile-load window.
+- **`'high'`** full desktop quality: `pixelRatio` up to 2, clouds + outlines available per theme, default tile window.
 
-An explicit `pixelRatio` or any `performance.*` field always overrides what the tier would have set so you can force `quality: 'low'` but keep `pixelRatio: 1.5`, or stay on `'high'` but tighten the tile window.
+An explicit `pixelRatio` or any `performance.*` field always overrides what the tier would have set so you can force `quality: 'mobile'` but keep `pixelRatio: 2`, or stay on `'high'` but tighten the tile window.
+
+> **Building a real-estate app for phones?** You don't need to do anything: `quality: 'auto'` already serves the `'mobile'` tier to handset visitors. To preview it on desktop, pass `quality: 'mobile'` explicitly (pair it with the `professional` theme and the [real-estate listing presets](#real-estate-listing-presets) for the full client-facing listing map).
 
 If you want to go further than `'low'`, the individual knobs are still there:
 
@@ -647,10 +688,13 @@ import type {
 - **Waterways** rivers/canals as continuous channels
 - **Interactive building selection** click to highlight, optional floor band, blueprint mode
 - **Tag overlay** with automatic clustering at distance
-- **Custom polygons** with translucent fills
-- **12 built-in themes** + custom theme support
-- **Studio** for live editing + JSON export
-- **Compass overlay** + camera flyTo + bounded panning
+- **Custom polygons** with translucent fills + a geodesic comp-radius helper
+- **Parcels overlay** clickable county parcel boundaries from a second PMTiles archive
+- **15 built-in themes** + custom theme support
+- **Studio** for live editing + JSON export (full config round-trip)
+- **Scale bar** + **compass overlay** + camera flyTo + bounded panning
+- **Snapshot / screenshot export** (HiDPI PNG/JPEG)
+- **Quality tiers** (`auto` / `mobile` / `low` / `high`) with phone auto-detection
 - **Optional Geolocation** integration
 
 ---

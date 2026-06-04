@@ -19,8 +19,10 @@ export type {
 export { COMMON_BOUNDS } from './bounds.js';
 export type { CommonBoundsKey } from './bounds.js';
 // Quality tiers — `detectGpuTier()` is exposed so apps can show the resolved
-// tier in a settings UI or make their own downgrade decision.
-export { detectGpuTier, resolveQualityProfile } from './rendering/quality.js';
+// tier in a settings UI or make their own downgrade decision. `isMobileDevice()`
+// is the same phone/tablet check `quality: 'auto'` uses to pick the 'mobile'
+// tier, exported so apps can branch their own UI on it.
+export { detectGpuTier, resolveQualityProfile, isMobileDevice } from './rendering/quality.js';
 export type { QualityOption, QualityLevel, QualityProfile } from './rendering/quality.js';
 export type {
   TagOptions,

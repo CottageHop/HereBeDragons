@@ -29,12 +29,34 @@ export class Renderer {
   constructor(container: HTMLElement, options: RendererOptions = {}) {
     this.container = container;
     this.three = new THREE.WebGLRenderer({
-      antialias: options.antialias ?? true,
+      // No MSAA on the DEFAULT framebuffer. The whole map is a multi-pass
+      // pipeline: every bit of 3D geometry is rendered into offscreen render
+      // targets (colorTarget, normalTarget, …) and the canvas only ever
+      // receives the final FULL-SCREEN FXAA blit (a single quad covering the
+      // viewport). MSAA only anti-aliases primitive *edges*, and a fullscreen
+      // quad has none inside the frame — so a multisampled backbuffer does
+      // nothing visible here while costing a multisampled allocation plus an
+      // MSAA resolve on every single presented frame. All scene anti-aliasing
+      // is handled by FxaaPass (and, on tiers that use it, the color/normal
+      // targets' own `samples`). Defaulting this off is a pure, free FPS win
+      // with zero change to the rendered image. An explicit `antialias` option
+      // still wins if a caller really wants it.
+      antialias: options.antialias ?? false,
       alpha: false,
       powerPreference: 'high-performance'
     });
     this.three.setPixelRatio(options.pixelRatio ?? Math.min(window.devicePixelRatio, 2));
     this.three.outputColorSpace = THREE.SRGBColorSpace;
+    // The Composer drives clears explicitly: every pass that needs a fresh
+    // target calls `renderer.clear()` itself right after `setRenderTarget()`.
+    // Three's default `autoClear = true` then clears the SAME target a second
+    // time at the top of each `render()` — a redundant full-target clear per
+    // pass (and a wholly redundant canvas clear before the fullscreen blit
+    // that overwrites every pixel anyway). Turning autoClear off removes that
+    // duplicate clear across the entire multi-pass chain. Visual-neutral: the
+    // passes that must clear still do so explicitly; fullscreen passes cover
+    // 100% of their target so they never needed a clear in the first place.
+    this.three.autoClear = false;
     // Linear tone mapping at exposure 1.0 — pure identity for values ≤ 1.0.
     // With lights summed to exactly 1.0× diffuse this means a lit surface
     // displays the exact authored hex color (the swatch). No curve, no

@@ -62,23 +62,31 @@ export interface HereBeDragonsOptions {
   background?: string;
   /**
    * Render-quality tier.
-   *   - `'auto'` (default): start on `'high'` (the cheap FXAA-only 3D
-   *     path that suits almost every device) and let the runtime watcher
-   *     drop to `'low'` if frame time stays bad (default ≥ 67 ms ≈ 15
-   *     FPS sustained). Downgrade is one-shot so the map can't oscillate.
-   *     More reliable than keyword-matching the GPU renderer string,
-   *     which Safari and other browsers redact for privacy.
+   *   - `'auto'` (default): detect the device. Phones/tablets start on
+   *     `'mobile'`; everything else starts on `'high'` (the cheap FXAA-only
+   *     3D path that suits almost every desktop) and lets the runtime watcher
+   *     drop to `'low'` if frame time stays bad (default ≥ 67 ms ≈ 15 FPS
+   *     sustained). Downgrade is one-shot so the map can't oscillate. More
+   *     reliable than keyword-matching the GPU renderer string, which Safari
+   *     and other browsers redact for privacy.
+   *   - `'mobile'`: the most capable map a phone-class GPU (e.g. an iPhone 8)
+   *     can sustain. Keeps 3D buildings, labels, tags, parcels, comp radius,
+   *     and tap-select/hover; caps `pixelRatio` to 1.5, drops the low-res
+   *     underlay (saves GPU memory), tightens the tile window, and forces off
+   *     the ambient decoration (trees, grass, waves, signs, cars, spores,
+   *     painterly wash) regardless of theme. A phone too weak even for this
+   *     auto-downgrades to `'low'`.
    *   - `'low'`: cap `pixelRatio` to 1, disable MSAA (FXAA-only AA), skip
-   *     the volumetric clouds and sketch-outline passes, and tighten the
-   *     tile-load window. Makes the map playable on integrated GPUs /
-   *     Retina laptops like a 2019 MacBook Pro 13".
-   *   - `'high'`: full desktop quality — `pixelRatio` up to 2, 4× MSAA,
-   *     clouds + outlines on.
+   *     the volumetric clouds and sketch-outline passes, flatten buildings to
+   *     a top-down 2D view, and tighten the tile-load window. Makes the map
+   *     playable on integrated GPUs / Retina laptops like a 2019 MacBook Pro.
+   *   - `'high'`: full desktop quality — `pixelRatio` up to 2, clouds +
+   *     outlines available per theme.
    *
    * An explicit `pixelRatio` or `performance.*` option always overrides the
    * value the profile would have set.
    */
-  quality?: 'low' | 'high' | 'auto';
+  quality?: 'low' | 'mobile' | 'high' | 'auto';
   /**
    * Dynamic resolution. Default `true`. The renderer is render-on-demand, so
    * the only times it draws are while the camera moves and while tiles stream
@@ -282,6 +290,19 @@ export interface HereBeDragonsOptions {
      */
     dispatchInterval?: number;
     /**
+     * Camera zoom below which the main (z14) tile grid is suspended: its
+     * tiles are ejected and no new ones load until the camera zooms back in.
+     * Below this the viewport is so wide that the z14 grid is a tiny island
+     * of detail and the low-res underlay already covers the ground, so
+     * loading 100+ tiny tiles is wasted work. Default ≈ 9.5 (the zoom at
+     * which the loaded ring stops filling the screen).
+     *
+     * Only takes effect when the low-res underlay is enabled (otherwise the
+     * map would go blank when zoomed out). Pass `-Infinity` to force the
+     * feature off even with an underlay present.
+     */
+    mainTileMinZoom?: number;
+    /**
      * Smoothed frame-time threshold (ms) above which the tile manager
      * stops building new tile meshes — framerate is prioritized over
      * loading. Default 22 ms (≈ a 45 FPS floor). Building a mesh triggers
@@ -425,8 +446,8 @@ export interface HereBeDragons {
    * 128 closest to the camera on the CPU before calling.
    */
   setNoiseSources(sources: ReadonlyArray<NoiseSource>): void;
-  /** The render-quality tier currently in effect ('low' or 'high'). */
-  getQualityTier(): 'low' | 'high';
+  /** The render-quality tier currently in effect ('low', 'mobile', or 'high'). */
+  getQualityTier(): 'low' | 'mobile' | 'high';
   /**
    * The device-pixel-ratio the WebGL renderer is using *right now*. With
    * dynamic resolution on this drops to the motion ratio (≤1) while panning /
@@ -461,10 +482,11 @@ export interface HereBeDragons {
   getDynamicResolution(): boolean;
   /**
    * Switch render-quality tier at runtime. Applies the profile's
-   * runtime-safe levers: pixelRatio, the cloud pass, and the outline
-   * pipeline. MSAA + tile-window radii are fixed at construction.
+   * runtime-safe levers: pixelRatio, the cloud pass, the outline pipeline,
+   * flat-building / tilt / label / ambient-FX structure, and the tile zoom
+   * offset. MSAA + tile-window radii are fixed at construction.
    */
-  setQualityTier(tier: 'low' | 'high'): void;
+  setQualityTier(tier: 'low' | 'mobile' | 'high'): void;
   /**
    * Apply a named theme. The TS shape is `ThemeName | (string & {})` so
    * VSCode autocompletes the built-in theme names while still permitting

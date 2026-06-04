@@ -16,10 +16,11 @@ import { Renderer } from './rendering/Renderer.js';
 import { SceneRoot } from './scene/SceneRoot.js';
 import { MapCameraController } from './controls/MapCameraController.js';
 import { Composer } from './rendering/Composer.js';
-import { resolveQualityProfile } from './rendering/quality.js';
+import { resolveQualityProfile, isMobileDevice } from './rendering/quality.js';
+import type { QualityLevel } from './rendering/quality.js';
 import { PMTilesSource } from './tiles/PMTilesSource.js';
 import { TileWorkerPool } from './tiles/TileWorkerPool.js';
-import { TileManager } from './tiles/TileManager.js';
+import { TileManager, DEFAULT_MAIN_TILE_MIN_ZOOM } from './tiles/TileManager.js';
 import { BaseTileManager } from './tiles/BaseTileManager.js';
 import { LayerRegistry } from './scene/LayerRegistry.js';
 import { WaterLayer } from './layers/WaterLayer.js';
@@ -214,9 +215,9 @@ class HereBeDragonsImpl implements HereBeDragons {
    */
   private readonly frameBudgetMs: number;
   /** Resolved render-quality tier — exposed via `getQualityTier()` so apps
-   *  (and the demo HUD) can see whether auto-detect picked 'low' or 'high'.
-   *  Mutable: `setQualityTier()` flips it at runtime. */
-  private qualityTier: 'low' | 'high';
+   *  (and the demo HUD) can see whether auto-detect picked 'low', 'mobile',
+   *  or 'high'. Mutable: `setQualityTier()` flips it at runtime. */
+  private qualityTier: QualityLevel;
   /** Effective device-pixel-ratio actually handed to the renderer. */
   private effectivePixelRatio: number;
   /**
@@ -349,9 +350,16 @@ class HereBeDragonsImpl implements HereBeDragons {
     // (what was previously labeled `'low'`); only devices that genuinely
     // struggle with it should fall back to the new top-down `'low'` tier.
     const isAuto = options.quality === undefined || options.quality === 'auto';
-    const initialQualityOption: 'low' | 'high' = isAuto
-      ? 'high'
-      : (options.quality as 'low' | 'high');
+    // Auto mode: phones/tablets start on the 'mobile' ceiling (detected from
+    // the platform — Safari redacts the GPU string on iOS, so we can't probe
+    // it). Detecting at CONSTRUCTION (not via the runtime frame watcher) is
+    // deliberate: starting a 2 GB iPhone on the full 'high' retina chain can
+    // exhaust the WebGL memory budget and lose the context before any
+    // downgrade could fire. Desktops still start on 'high' and rely on the
+    // watcher to drop to 'low' if needed. An explicit `quality` always wins.
+    const initialQualityOption: QualityLevel = isAuto
+      ? (isMobileDevice() ? 'mobile' : 'high')
+      : (options.quality as QualityLevel);
     const quality = resolveQualityProfile(initialQualityOption);
     const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1;
     const effectivePixelRatio = options.pixelRatio ?? Math.min(dpr, quality.pixelRatioCap);
@@ -593,7 +601,9 @@ class HereBeDragonsImpl implements HereBeDragons {
     // Low-res underlay. Enabled by default — opt out via
     // `lowResUnderlay: false`. When on, a small set of coarse tiles paints
     // the ground beneath the z14 grid so panning / first-paint never shows
-    // blank canvas. Cost is minimal (4-9 z11 tiles loaded, base layers only,
+    // blank canvas. It also becomes the ONLY content once the main z14 grid
+    // is suspended at far zoom (see TileManager's far-zoom cutoff below).
+    // Cost is modest (a 5×5 z12 working set, ground + road layers only,
     // shares the worker pool); UX win is significant.
     const underlayCfg = options.lowResUnderlay;
     const underlayEnabledByOption =
@@ -620,6 +630,17 @@ class HereBeDragonsImpl implements HereBeDragons {
       });
     } else {
       this.baseTileManager = null;
+    }
+
+    // Far-zoom cutoff for the main z14 grid. Only enabled when the underlay is
+    // present — suspending the main grid swaps the wide-view content over to
+    // the underlay, so without one the map would go blank when zoomed out. An
+    // explicit `performance.mainTileMinZoom` overrides the default threshold;
+    // pass it as `-Infinity` to force the feature off even with an underlay.
+    if (underlayEnabled) {
+      this.tileManager.setMainTileMinZoom(
+        options.performance?.mainTileMinZoom ?? DEFAULT_MAIN_TILE_MIN_ZOOM
+      );
     }
 
     this.camera.onChange = () => {
@@ -1381,8 +1402,8 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.needsRender = true;
   }
 
-  /** The render-quality tier currently in effect ('low' or 'high'). */
-  getQualityTier(): 'low' | 'high' {
+  /** The render-quality tier currently in effect ('low', 'mobile', or 'high'). */
+  getQualityTier(): QualityLevel {
     return this.qualityTier;
   }
 
@@ -1498,7 +1519,7 @@ class HereBeDragonsImpl implements HereBeDragons {
    * the purpose of "make this machine playable" the three live levers here
    * are the ones that matter.
    */
-  setQualityTier(tier: 'low' | 'high'): void {
+  setQualityTier(tier: QualityLevel): void {
     if (tier === this.qualityTier) return;
     const profile = resolveQualityProfile(tier);
     this.qualityTier = tier;
@@ -1545,6 +1566,36 @@ class HereBeDragonsImpl implements HereBeDragons {
     // Tile request zoom offset (-1 on `'low'` = z13 from a z14 archive;
     // ~3× less total geometry across the viewport).
     this.tileManager.setRequestedZoomOffset(profile.tileZoomOffset);
+    // Ambient decoration suppression (`'mobile'` sets ambientFX:false). Force
+    // the billboard/animation layers off and zero the painterly surface FX so
+    // a phone-class GPU isn't paying for trees, grass, waves, signs, traffic,
+    // spores, or a watercolor wash. `undefined`/`true` leaves everything as the
+    // developer configured it, so 'low'/'high' are unaffected. The surface-FX
+    // zeroing is re-asserted after every theme swap in applyMergedPalette so a
+    // runtime `applyTheme` on mobile can't re-introduce the wash.
+    if (profile.ambientFX === false) {
+      this.suppressAmbientFX();
+    }
+  }
+
+  /**
+   * Force off all ambient decoration — the billboard/animated layers (trees,
+   * grass, shoreline waves, shop signs, traffic cars), the drifting-spore
+   * field, and the painterly surface wash / paper grain / road texturing.
+   * Driven by the `'mobile'` tier (profile.ambientFX === false). Idempotent:
+   * safe to call repeatedly (e.g. on each theme swap). Building extrusions,
+   * labels, roads, water, tags, parcels — the realty essentials — are left on.
+   */
+  private suppressAmbientFX(): void {
+    for (const name of ['trees', 'grass', 'waves', 'signs', 'cars'] as const) {
+      if (this.layers.isEnabled(name)) this.setLayerEnabled(name, false);
+    }
+    // Zero the theme-seeded surface FX (these are tracked values + uniforms,
+    // not layers — a theme re-seeds them, so this also runs post-applyTheme).
+    if (this.surfacePainterlyValue !== 0) this.setSurfacePainterly(0);
+    if (this.paperGrainValue !== 0) this.setPaperGrain(0);
+    if (this.roadTextureValue !== 0) this.setRoadTexture(0);
+    if (this.sporesEnabledValue) this.setSporesEnabled(false);
   }
 
   /**
@@ -1729,6 +1780,14 @@ class HereBeDragonsImpl implements HereBeDragons {
     // turn it on; everything else gets flat-capped buildings.
     this.pitchedRoofsEnabledValue = theme.pitchedRoofs === true;
     this.tileManager.setPitchedRoofs(this.pitchedRoofsEnabledValue);
+
+    // On the 'mobile' tier, the theme may have just re-seeded the painterly
+    // wash / spores / road texturing that the tier suppresses. Re-assert the
+    // suppression so a runtime `applyTheme()` on a phone can't quietly bring
+    // the ambient FX (and their per-frame GPU cost) back. No-op on other tiers.
+    if (this.qualityTier === 'mobile') {
+      this.suppressAmbientFX();
+    }
 
     // Theme/colour/sky/fog/outline/atmosphere all just changed — repaint.
     this.needsRender = true;

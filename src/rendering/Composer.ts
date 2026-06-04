@@ -30,8 +30,17 @@ export class Composer {
   private camera: THREE.PerspectiveCamera;
 
   private colorTarget: THREE.WebGLRenderTarget;
-  private normalTarget: THREE.WebGLRenderTarget;
-  private outlineTarget: THREE.WebGLRenderTarget;
+  /**
+   * Normal + outline targets for the sketch-outline pipeline. Lazy-allocated
+   * by `ensureOutlineTargets()` the first time the outline pass actually runs
+   * — they're two FULL-resolution HalfFloat RGBA targets (~130 MB combined at
+   * 4K × DPR 2) and the outline pipeline is OFF on every default quality tier
+   * (`'high'`, `'mobile'`, and `'low'` all set outlines:false). Allocating
+   * them eagerly burned that memory on every map. Materialized + resized on
+   * demand; `null` until the outline pass is enabled.
+   */
+  private normalTarget: THREE.WebGLRenderTarget | null = null;
+  private outlineTarget: THREE.WebGLRenderTarget | null = null;
   /**
    * Output of the optional noise heat-map pass. Lazy-allocated on first
    * enable — a HalfFloat RGBA target at canvas resolution costs ~130 MB of
@@ -44,10 +53,16 @@ export class Composer {
    * Half-resolution target the cloud raymarch renders into. Holds premultiplied
    * cloud color (.rgb) + scene transmittance (.a); `cloudComposite` folds it
    * back over the full-res scene. Half-res = ~1/4 the (expensive) march pixels.
+   * Lazy-allocated by `ensureCloudTarget()` — clouds are off by default (the
+   * raymarch is the heaviest per-frame cost), so phones and most desktops
+   * never pay for this target. `null` until clouds are enabled.
    */
-  private cloudHalfTarget: THREE.WebGLRenderTarget;
+  private cloudHalfTarget: THREE.WebGLRenderTarget | null = null;
   /** Fraction of full resolution the clouds render at. 0.5 = half each axis. */
   private static readonly CLOUD_RES_SCALE = 0.5;
+  /** MSAA sample count for the lazily-allocated normal target (matches the
+   *  color target). Captured from the constructor arg. */
+  private readonly msaaSamples: number;
   private depthTexture: THREE.DepthTexture;
   private outline: OutlinePass;
   private clouds: CloudsPass;
@@ -82,6 +97,9 @@ export class Composer {
     this.renderer = renderer;
     this.scene = scene;
     this.camera = camera;
+    // Stored so the lazy outline/normal targets can be allocated with the same
+    // sample count outside the constructor (see ensureOutlineTargets).
+    this.msaaSamples = msaaSamples;
 
     // Match the canvas's drawing-buffer resolution (CSS px × pixel ratio).
     // If targets are sized to CSS px only, the final FXAA blit upsamples a
@@ -136,23 +154,11 @@ export class Composer {
     // GPU cost: an extra ~3× write bandwidth on the normal pass. Worth it
     // for the visual stability on tilted, panned, urban scenes — the
     // ‘low’ quality tier still passes `samples: 0` here.
-    this.normalTarget = new THREE.WebGLRenderTarget(w, h, {
-      type: THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.LinearSRGBColorSpace,
-      depthBuffer: true,
-      stencilBuffer: false,
-      samples: msaaSamples
-    });
-
-    this.outlineTarget = new THREE.WebGLRenderTarget(w, h, {
-      type: THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.LinearSRGBColorSpace,
-      depthBuffer: false,
-      stencilBuffer: false
-    });
-
+    // normalTarget + outlineTarget are lazy-allocated by `ensureOutlineTargets`
+    // the first time the outline pass actually runs — see field comment. The
+    // outline pipeline is off on every default tier, so most maps never pay
+    // for these two full-res HalfFloat targets.
+    //
     // noiseTarget is lazy-allocated by `ensureNoiseTarget` the first time the
     // noise pass is actually used — see field comment.
 
@@ -167,7 +173,9 @@ export class Composer {
     this.normalMaterial = new THREE.MeshNormalMaterial();
 
     this.outline = new OutlinePass();
-    this.outline.setInputs(this.colorTarget.texture, this.normalTarget.texture, this.depthTexture);
+    // Outline inputs (which include the lazily-allocated normalTarget) are
+    // wired in `ensureOutlineTargets()` the first time the pass runs — not
+    // here, so we don't force the normal target to exist.
     // Pass CSS-pixel dimensions (not physical) so the Sobel kernel samples at
     // ~1 CSS-pixel offsets regardless of DPR. With physical-pixel offsets,
     // outlines on a DPR=2 display were 0.5 CSS-px wide → right at the
@@ -179,25 +187,17 @@ export class Composer {
     this.outline.setCamera(camera.near, camera.far);
 
     this.clouds = new CloudsPass();
-    this.clouds.setInputs(this.outlineTarget.texture, this.depthTexture);
+    // Placeholder input; `render()` re-points clouds at the live scene texture
+    // every frame before the raymarch. The half-res cloud target itself is
+    // lazy-allocated by `ensureCloudTarget()` on first cloud render.
+    this.clouds.setInputs(this.colorTarget.texture, this.depthTexture);
     this.clouds.setCamera(camera);
-
-    // Half-res cloud target + the pass that composites it over the full-res
-    // scene. Linear filtering (the WebGLRenderTarget default) makes the upscale
-    // smooth; no depth buffer needed (clouds read the shared depth texture).
-    const cw = Math.max(1, Math.round(w * Composer.CLOUD_RES_SCALE));
-    const ch = Math.max(1, Math.round(h * Composer.CLOUD_RES_SCALE));
-    this.cloudHalfTarget = new THREE.WebGLRenderTarget(cw, ch, {
-      type: THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.LinearSRGBColorSpace,
-      depthBuffer: false,
-      stencilBuffer: false
-    });
     this.cloudComposite = new CloudCompositePass();
 
     this.noise = new NoisePass();
-    this.noise.setInput(this.outlineTarget.texture);
+    // Placeholder input; `render()` re-points the noise pass at the live scene
+    // texture before it runs.
+    this.noise.setInput(this.colorTarget.texture);
     this.noise.setCamera(camera);
 
     this.fxaa = new FxaaPass();
@@ -210,11 +210,12 @@ export class Composer {
     const w = Math.max(1, Math.round(width * pr));
     const h = Math.max(1, Math.round(height * pr));
     this.colorTarget.setSize(w, h);
-    this.normalTarget.setSize(w, h);
-    this.outlineTarget.setSize(w, h);
+    // Lazily-allocated targets resize only if they've been materialized.
+    this.normalTarget?.setSize(w, h);
+    this.outlineTarget?.setSize(w, h);
     this.noiseTarget?.setSize(w, h);
     this.compositeTarget.setSize(w, h);
-    this.cloudHalfTarget.setSize(
+    this.cloudHalfTarget?.setSize(
       Math.max(1, Math.round(w * Composer.CLOUD_RES_SCALE)),
       Math.max(1, Math.round(h * Composer.CLOUD_RES_SCALE))
     );
@@ -303,6 +304,66 @@ export class Composer {
       stencilBuffer: false
     });
     return this.noiseTarget;
+  }
+
+  /**
+   * Materialize the normal + outline targets (and wire the OutlinePass inputs)
+   * the first time the outline pipeline renders. Sized to the current canvas
+   * resolution; `resize()` keeps them in sync afterwards. Returns the pair so
+   * the caller has non-null references for the rest of the frame.
+   */
+  private ensureOutlineTargets(): {
+    normal: THREE.WebGLRenderTarget;
+    outline: THREE.WebGLRenderTarget;
+  } {
+    if (this.normalTarget && this.outlineTarget) {
+      return { normal: this.normalTarget, outline: this.outlineTarget };
+    }
+    const pr = this.renderer.three.getPixelRatio();
+    const w = Math.max(1, Math.round(this.renderer.width * pr));
+    const h = Math.max(1, Math.round(this.renderer.height * pr));
+    // MSAA on the normal target matches the color target (resolved to a plain
+    // texture for the Sobel pass) — see the original constructor rationale.
+    this.normalTarget = new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      depthBuffer: true,
+      stencilBuffer: false,
+      samples: this.msaaSamples
+    });
+    this.outlineTarget = new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      depthBuffer: false,
+      stencilBuffer: false
+    });
+    // Now that the normal target exists, wire the OutlinePass to read color +
+    // normal + depth (deferred from the constructor).
+    this.outline.setInputs(this.colorTarget.texture, this.normalTarget.texture, this.depthTexture);
+    return { normal: this.normalTarget, outline: this.outlineTarget };
+  }
+
+  /**
+   * Materialize the half-resolution cloud target on first cloud render. Sized
+   * to CLOUD_RES_SCALE of the canvas resolution; `resize()` keeps it in sync.
+   */
+  private ensureCloudTarget(): THREE.WebGLRenderTarget {
+    if (this.cloudHalfTarget) return this.cloudHalfTarget;
+    const pr = this.renderer.three.getPixelRatio();
+    const w = Math.max(1, Math.round(this.renderer.width * pr));
+    const h = Math.max(1, Math.round(this.renderer.height * pr));
+    const cw = Math.max(1, Math.round(w * Composer.CLOUD_RES_SCALE));
+    const ch = Math.max(1, Math.round(h * Composer.CLOUD_RES_SCALE));
+    this.cloudHalfTarget = new THREE.WebGLRenderTarget(cw, ch, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      depthBuffer: false,
+      stencilBuffer: false
+    });
+    return this.cloudHalfTarget;
   }
 
   /**
@@ -403,12 +464,15 @@ export class Composer {
     let sceneTex: THREE.Texture = this.colorTarget.texture;
 
     if (this.outlineEnabled) {
+      // Materialize the normal + outline targets on first use (off on every
+      // default tier, so most maps never allocate them).
+      const { normal: normalTarget, outline: outlineTarget } = this.ensureOutlineTargets();
       // Pass 2: normals. Labels are excluded — rendering them with the normal
       // override would produce a flat-normal quad whose silhouette becomes a
       // rectangular outline around each label in the next pass. Buildings are
       // also excluded when `buildingsInNormalPass` is false (i.e. flat mode)
       // so flat building footprints don't get ringed by outlines.
-      r.setRenderTarget(this.normalTarget);
+      r.setRenderTarget(normalTarget);
       r.clear();
       this.scene.overrideMaterial = this.normalMaterial;
       this.camera.layers.disable(LABEL_THREE_LAYER);
@@ -431,14 +495,14 @@ export class Composer {
       this.scene.overrideMaterial = null;
 
       // Pass 3: outline composite → outlineTarget.
-      r.setRenderTarget(this.outlineTarget);
+      r.setRenderTarget(outlineTarget);
       r.clear();
       this.camera.updateMatrixWorld();
       this.outline.setCamera(this.camera.near, this.camera.far);
       this.outline.setCameraWorldMatrix(this.camera.matrixWorld);
       this.outline.setInverseProjection(this.camera.projectionMatrixInverse);
       r.render(this.outline.scene, this.outline.camera);
-      sceneTex = this.outlineTarget.texture;
+      sceneTex = outlineTarget.texture;
     }
 
     if (this.noiseEnabled && this.noise.getSourceCount() > 0) {
@@ -463,8 +527,9 @@ export class Composer {
       // now outputs cloud color (.rgb) + scene transmittance (.a) instead of
       // compositing over the scene itself — the expensive march runs at ~1/4
       // the pixels. Rendering into the smaller target sets the viewport for us.
+      const cloudHalfTarget = this.ensureCloudTarget();
       this.clouds.setInputs(sceneTex, this.depthTexture);
-      r.setRenderTarget(this.cloudHalfTarget);
+      r.setRenderTarget(cloudHalfTarget);
       r.clear();
       this.camera.updateMatrixWorld();
       this.clouds.setCamera(this.camera);
@@ -472,7 +537,7 @@ export class Composer {
 
       // Pass 4b: composite the upscaled half-res clouds over the full-res
       // scene → compositeTarget. Keeps buildings/roads/labels crisp.
-      this.cloudComposite.setInputs(sceneTex, this.cloudHalfTarget.texture);
+      this.cloudComposite.setInputs(sceneTex, cloudHalfTarget.texture);
       r.setRenderTarget(this.compositeTarget);
       r.clear();
       r.render(this.cloudComposite.scene, this.cloudComposite.camera);
@@ -489,11 +554,11 @@ export class Composer {
 
   dispose(): void {
     this.colorTarget.dispose();
-    this.normalTarget.dispose();
-    this.outlineTarget.dispose();
+    this.normalTarget?.dispose();
+    this.outlineTarget?.dispose();
     this.noiseTarget?.dispose();
     this.compositeTarget.dispose();
-    this.cloudHalfTarget.dispose();
+    this.cloudHalfTarget?.dispose();
     this.depthTexture.dispose();
     this.normalMaterial.dispose();
     this.outline.dispose();

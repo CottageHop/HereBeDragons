@@ -107,6 +107,27 @@ const BUDGET_THROTTLE_INTERVAL = 6;
 const ZOOM_HYSTERESIS = 0.4;
 
 /**
+ * Default camera zoom below which the main z14 grid is SUSPENDED — its tiles
+ * are ejected and no new ones load until the camera zooms back in. Disabled
+ * (left at this default's effect) unless the host opts in by passing a real
+ * `mainTileMinZoom`; HereBeDragons only does so when the coarse underlay is
+ * enabled, since suspending the main grid without an underlay would leave a
+ * blank viewport.
+ *
+ * The chosen value (9.5) is where the loaded ring stops filling the screen:
+ * the safety-cap radius of 5 z14 tiles spans ~24 km, and a top-down camera at
+ * zoom 9.5 sees ~21 km of ground (≈ 23 km from target at fov 50°). Below that
+ * the z14 grid is a shrinking island of detail inside a much larger viewport
+ * — pointless to keep loading 100+ tiny tiles — and the z12 underlay already
+ * paints the ground. Resuming uses a +hysteresis margin so a camera hovering
+ * at the boundary doesn't thrash the whole grid in and out.
+ */
+export const DEFAULT_MAIN_TILE_MIN_ZOOM = 9.5;
+/** Camera must climb this far ABOVE `mainMinCameraZoom` before the suspended
+ *  main grid resumes loading — anti-thrash margin at the cutoff boundary. */
+const MAIN_ZOOM_CUTOFF_HYSTERESIS = 0.75;
+
+/**
  * Tile spawn animation — how far below ground each tile/mesh starts (m).
  * 30 m is comfortably visible at typical map zooms (camera at 500–2000 m
  * altitude). Was 8 — almost imperceptible, which made the duration slider
@@ -168,6 +189,19 @@ export interface TileManagerDeps {
    * higher = more main-thread time for input + render.
    */
   dispatchInterval?: number;
+  /**
+   * Camera zoom below which the main z14 grid is suspended: cached tiles are
+   * ejected and the dispatch loop stops loading new ones until the camera
+   * zooms back in (with a hysteresis margin). Below this the viewport is so
+   * wide that the z14 grid is a tiny island inside it and the coarse underlay
+   * already covers the ground — loading 100+ tiny tiles is wasted work.
+   *
+   * Only meaningful when an underlay is present; otherwise the map goes blank
+   * when zoomed out. When omitted the feature is effectively OFF (threshold
+   * set to -Infinity). HereBeDragons wires a real value only when the
+   * low-res underlay is enabled.
+   */
+  mainTileMinZoom?: number;
 }
 
 interface PendingState {
@@ -246,6 +280,20 @@ export class TileManager {
   private frameCount = 0;
 
   /**
+   * Camera zoom below which the main grid is suspended (see deps.mainTileMinZoom).
+   * -Infinity disables the feature entirely (the default when the host opts out).
+   */
+  private mainMinCameraZoom: number;
+  /**
+   * True while the main z14 grid is suspended for a too-far-out camera. In
+   * this state the apply-queue drain, spawn animations, and dispatch sweep
+   * are all skipped, and any in-flight decode that resolves is dropped. Flips
+   * back to false (and the grid reloads) once the camera climbs back above
+   * `mainMinCameraZoom + MAIN_ZOOM_CUTOFF_HYSTERESIS`.
+   */
+  private mainSuspended = false;
+
+  /**
    * Phase responses awaiting mesh construction. The decode worker may finish
    * several phases in the same JS task — adding all of them to the scene
    * synchronously stalls input. Instead `onPhase` enqueues here, and
@@ -281,6 +329,7 @@ export class TileManager {
     );
     this.applyBudgetMs = Math.max(0, deps.maxTileApplyMsPerFrame ?? DEFAULT_APPLY_BUDGET_MS);
     this.dispatchInterval = Math.max(1, deps.dispatchInterval ?? DEFAULT_DISPATCH_INTERVAL);
+    this.mainMinCameraZoom = deps.mainTileMinZoom ?? -Infinity;
   }
 
   async start(): Promise<void> {
@@ -311,17 +360,23 @@ export class TileManager {
     if (this.disposed) return false;
 
     // Spawn animations are cheap (a few position writes) and matter for
-    // visual smoothness — always advance them. The apply-queue drain builds
-    // meshes (expensive: GPU upload next render), so it's gated on the frame
-    // budget: under load it pauses so panning doesn't stutter. The exception
-    // is a slow guaranteed trickle (BUDGET_THROTTLE_INTERVAL) so a machine
-    // that's over budget even at idle still fills the map instead of
+    // visual smoothness, so they advance every frame. The apply-queue drain
+    // builds meshes (expensive: GPU upload next render), so it's gated on the
+    // frame budget: under load it pauses so panning doesn't stutter. The
+    // exception is a slow guaranteed trickle (BUDGET_THROTTLE_INTERVAL) so a
+    // machine that's over budget even at idle still fills the map instead of
     // staying blank forever.
+    // Both are skipped entirely while the main grid is suspended (camera
+    // zoomed out past the cutoff) — there are no main tiles to build or
+    // animate. The dispatch sweep below owns the suspend/resume transition
+    // (it's the only place with the camera view).
     let dirty = false;
-    if (frameBudgetOk || this.frameCount % BUDGET_THROTTLE_INTERVAL === 0) {
-      if (this.drainApplyQueue()) dirty = true;
+    if (!this.mainSuspended) {
+      if (frameBudgetOk || this.frameCount % BUDGET_THROTTLE_INTERVAL === 0) {
+        if (this.drainApplyQueue()) dirty = true;
+      }
+      if (this.advanceSpawnAnimations()) dirty = true;
     }
-    if (this.advanceSpawnAnimations()) dirty = true;
 
     // PolyMap pattern: the heavy visibility recompute + dispatch + evict
     // doesn't need to run at 60 Hz. Tile fetches are network-bound and
@@ -333,6 +388,25 @@ export class TileManager {
     if (!forced && this.frameCount % this.dispatchInterval !== 0) return dirty;
 
     const view = this.deps.camera.getView();
+
+    // Far-zoom cutoff. When the camera is zoomed out past the threshold the
+    // z14 grid is a tiny island of detail inside a huge viewport and the
+    // coarse underlay already covers the ground — so eject the grid and stop
+    // loading. Resume only once the camera climbs back above the threshold by
+    // the hysteresis margin, so a camera parked on the boundary can't thrash
+    // the whole grid in and out every dispatch tick.
+    if (this.mainSuspended) {
+      if (view.zoom > this.mainMinCameraZoom + MAIN_ZOOM_CUTOFF_HYSTERESIS) {
+        this.mainSuspended = false; // resume — fall through and re-dispatch
+      } else {
+        return dirty; // stay suspended: nothing to load, nothing to evict
+      }
+    } else if (view.zoom < this.mainMinCameraZoom) {
+      this.mainSuspended = true;
+      this.ejectMainTiles();
+      return true; // ejecting tiles is a visible scene change
+    }
+
     const centerLat = view.lat;
     const centerLon = view.lon;
 
@@ -550,6 +624,10 @@ export class TileManager {
         z, x, y, data, originLat, originLon, wantedLayers, this.pitchedRoofs,
         (response) => {
           if (this.disposed) return;
+          // The grid was suspended (camera zoomed out past the cutoff) while
+          // this decode was in flight — drop it so it doesn't queue a build
+          // for a tile that's no longer wanted.
+          if (this.mainSuspended) return;
           // A reload happened after this decode was dispatched — its layer set
           // is stale; drop it (the tile has been re-requested under the new gen).
           if (gen !== this.generation) return;
@@ -720,6 +798,36 @@ export class TileManager {
     this.cache.clear();
     this.pending.clear();
     this.applyQueue.length = 0;
+  }
+
+  /**
+   * Eject the entire main grid: clear cached tiles (the cache's evict callback
+   * removes each from the scene), drop queued builds, and clear the missing /
+   * retry bookkeeping so a clean re-fetch happens on resume. In-flight fetches
+   * are left to drain — their decode results are dropped by the `mainSuspended`
+   * guard in the decode callback rather than aborted mid-flight.
+   *
+   * `hasCenter` is intentionally NOT reset: the recorded camera-target tile
+   * stays valid (the camera only zoomed, it didn't teleport), so eviction
+   * math is correct the instant we resume.
+   */
+  private ejectMainTiles(): void {
+    this.cache.clear();
+    this.pending.clear();
+    this.applyQueue.length = 0;
+    this.missing.clear();
+    this.failCounts.clear();
+    this.retryAfter.clear();
+  }
+
+  /**
+   * Set the camera zoom below which the main grid is suspended (ejected + no
+   * loading) — see `TileManagerDeps.mainTileMinZoom`. Pass `-Infinity` (or any
+   * value below the camera's min zoom) to disable. If the new threshold no
+   * longer covers the current view, the next `update()` resolves the transition.
+   */
+  setMainTileMinZoom(zoom: number): void {
+    this.mainMinCameraZoom = zoom;
   }
 
   /**

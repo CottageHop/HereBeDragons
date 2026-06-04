@@ -43,6 +43,13 @@ export class MapStudio implements MapStudioHandle {
   private readonly map: HereBeDragons;
   private readonly container: HTMLElement;
   private readonly initialConfig: Partial<HereBeDragonsOptions>;
+  /**
+   * Set true once the user flips the quality tier in the panel. Gates whether
+   * `getConfig()` writes `quality` into the export: an untouched 'auto' map
+   * should stay 'auto' on round-trip (so a phone re-resolves to 'mobile')
+   * rather than baking in whatever tier auto-detect happened to pick here.
+   */
+  private qualityTouched = false;
   private readonly onExport?: StudioOptions['onExport'];
   private readonly onImport?: StudioOptions['onImport'];
   private readonly themeNames: string[];
@@ -354,11 +361,17 @@ export class MapStudio implements MapStudioHandle {
     this.body.appendChild(layerSection);
 
     // ----- Quality --------------------------------------------------------
-    // Live tier switch. Headline performance control: flipping to 'low'
-    // caps pixelRatio to 1, kills the cloud raymarch, and skips the whole
-    // outline pipeline (a full second scene render + a screen-space Sobel
-    // shader). Big GPU wins on integrated graphics. MSAA + tile radii are
-    // fixed at construction — those need a reload via the `quality` option.
+    // Live tier switch. Headline performance control:
+    //   • 'low'    — caps pixelRatio to 1, top-down flat buildings, no clouds
+    //                or outlines, tighter tile window. The weak-device floor.
+    //   • 'mobile' — the phone ceiling: keeps 3D buildings + labels but forces
+    //                off the ambient dressing (trees/grass/waves/signs/cars/
+    //                spores/painterly wash) and caps pixelRatio to 1.5.
+    //   • 'high'   — full desktop quality.
+    // flipping to 'low' kills the cloud raymarch and skips the whole outline
+    // pipeline (a full second scene render + a screen-space Sobel shader). Big
+    // GPU wins on integrated graphics. MSAA + tile radii are fixed at
+    // construction — those need a reload via the `quality` option.
     this.body.appendChild(makeSectionHeader('Quality'));
     const qualitySection = makeSection();
     const qualityRow = document.createElement('div');
@@ -369,6 +382,10 @@ export class MapStudio implements MapStudioHandle {
     lowBtn.type = 'button';
     lowBtn.className = 'hbd-studio-btn';
     lowBtn.textContent = 'Low';
+    const mobileBtn = document.createElement('button');
+    mobileBtn.type = 'button';
+    mobileBtn.className = 'hbd-studio-btn';
+    mobileBtn.textContent = 'Mobile';
     const highBtn = document.createElement('button');
     highBtn.type = 'button';
     highBtn.className = 'hbd-studio-btn';
@@ -379,6 +396,7 @@ export class MapStudio implements MapStudioHandle {
     tierGroup.style.gap = '6px';
     tierGroup.style.margin = '0';
     tierGroup.appendChild(lowBtn);
+    tierGroup.appendChild(mobileBtn);
     tierGroup.appendChild(highBtn);
     qualityRow.appendChild(qualityLabel);
     qualityRow.appendChild(tierGroup);
@@ -401,19 +419,22 @@ export class MapStudio implements MapStudioHandle {
     const syncQualityUi = (): void => {
       const tier = this.map.getQualityTier();
       lowBtn.classList.toggle('primary', tier === 'low');
+      mobileBtn.classList.toggle('primary', tier === 'mobile');
       highBtn.classList.toggle('primary', tier === 'high');
       prValue.textContent = this.map.getPixelRatio().toFixed(2) + '×';
       // Cloud checkbox state is driven by the tier too — keep it in sync.
       if (this.cloudsInput) this.cloudsInput.checked = this.map.getCloudsEnabled();
     };
-    lowBtn.addEventListener('click', () => {
-      this.map.setQualityTier('low');
-      syncQualityUi();
-    });
-    highBtn.addEventListener('click', () => {
-      this.map.setQualityTier('high');
-      syncQualityUi();
-    });
+    const setTier = (tier: 'low' | 'mobile' | 'high'): void => {
+      this.qualityTouched = true;
+      this.map.setQualityTier(tier);
+      // 'mobile' / 'low' flip ambient-FX + building toggles that other panel
+      // controls mirror, so resync the whole panel, not just this section.
+      for (const fn of this.resyncFns) fn();
+    };
+    lowBtn.addEventListener('click', () => setTier('low'));
+    mobileBtn.addEventListener('click', () => setTier('mobile'));
+    highBtn.addEventListener('click', () => setTier('high'));
     syncQualityUi();
     this.resyncFns.push(syncQualityUi);
 
@@ -1071,6 +1092,20 @@ export class MapStudio implements MapStudioHandle {
     const theme = this.map.getCurrentTheme();
     if (theme) cfg.theme = theme;
     if (Object.keys(customColors).length > 0) cfg.customColors = customColors;
+    // Quality: export the live tier only if the user actively switched it, or
+    // if the map was bootstrapped with an explicit (non-'auto') tier. An
+    // untouched 'auto' map omits `quality` so it re-detects on import — a phone
+    // reloading the config still resolves to 'mobile' rather than a baked tier.
+    const initialQuality = this.initialConfig.quality;
+    if (this.qualityTouched) {
+      cfg.quality = this.map.getQualityTier();
+    } else if (
+      initialQuality === 'low' ||
+      initialQuality === 'mobile' ||
+      initialQuality === 'high'
+    ) {
+      cfg.quality = initialQuality;
+    }
     if (this.initialConfig.pixelRatio !== undefined) cfg.pixelRatio = this.initialConfig.pixelRatio;
     if (this.initialConfig.background !== undefined) cfg.background = this.initialConfig.background;
     // Camera ranges — only included when the user has explicitly toggled the
@@ -1140,7 +1175,12 @@ export class MapStudio implements MapStudioHandle {
     }
 
     // Quality: only the runtime-switchable tiers ('auto' is construction-only).
-    if (config.quality === 'low' || config.quality === 'high') {
+    if (
+      config.quality === 'low' ||
+      config.quality === 'mobile' ||
+      config.quality === 'high'
+    ) {
+      this.qualityTouched = true;
       this.map.setQualityTier(config.quality);
     }
 

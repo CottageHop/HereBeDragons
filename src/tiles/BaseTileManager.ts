@@ -19,18 +19,26 @@ import { logger } from '../util/log.js';
  *
  * Mirrors PolyMap's `BaseTileManager` (src/tiles.rs). Differences from the
  * main TileManager:
- *   - Fixed zoom (default 11) rather than zoom-tracking.
- *   - Only ground layers (water / waterways / landuse) are requested from the
- *     worker — buildings, rails, labels AND roads are skipped. Decode is
- *     ~5–15 ms per tile vs. ~50–200 ms for a full z14 tile.
- *   - Roads are deliberately excluded: the archive only tags `is_bridge` at
- *     z12+, so at the underlay's coarse zoom every bridge looks like a normal
- *     road and would render flat (with the road material's polygon-offset
- *     poking it through water) beneath the elevated decks the BridgesManager
- *     builds from the main tiles. The underlay's job is blank-canvas fill, not
- *     the road network — which streams in fast from the main z14/z15 tiles.
- *   - Far smaller cache (16 tiles) — a z11 tile covers ~25× the area of a
- *     z14, so a 3×3 working set already covers a tilted viewport with pad.
+ *   - Fixed zoom (default 12) rather than zoom-tracking.
+ *   - Only ground + road layers (water / waterways / landuse / roads) are
+ *     requested from the worker — buildings, rails, labels are skipped.
+ *     Decode is ~10–25 ms per tile vs. ~50–200 ms for a full z14 tile.
+ *   - Roads ARE included now (they used to be skipped). The road network is
+ *     the single biggest readability win when the underlay is the only thing
+ *     on screen — which happens when the main z14 grid is suspended at far
+ *     zoom (see TileManager's far-zoom cutoff). The historical objection to
+ *     base roads was z11-specific: the archive only tags `is_bridge` at z12+,
+ *     so at z11 every bridge looked like a normal road and rendered flat
+ *     (the road material's polygon-offset poking it through water) under the
+ *     elevated decks the BridgesManager builds. At the z12 base zoom the
+ *     roads extractor pulls every `is_bridge` segment OUT of the flat ribbons
+ *     and hands it to the BridgesManager as a centerline (which the underlay
+ *     ignores), so base roads leave a clean gap where a bridge would be
+ *     instead of a flat ribbon under the deck — the objection no longer holds.
+ *   - Small cache (32 tiles) — a z12 tile covers ~6× the area of a z14, so a
+ *     5×5 working set covers a generously padded tilted viewport, and enough
+ *     ground to back the main grid's far-zoom cutoff (when the z14 grid is
+ *     ejected the underlay is all that fills the wide viewport).
  *   - Concurrent fetch cap of 2, so the underlay never starves the main
  *     z14 fetch budget.
  *   - No per-tile spawn animation. The underlay should appear as fast as
@@ -40,17 +48,21 @@ import { logger } from '../util/log.js';
  *     them anywhere z14 has rendered.
  */
 
-/** Layers requested from the worker for base tiles — ground fill only.
- *  Buildings/rails/labels are omitted for cost; roads are omitted because at
- *  the coarse underlay zoom bridges aren't tagged and would render flat under
- *  the elevated decks (see the class comment). */
-const BASE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse'];
+/** Layers requested from the worker for base tiles — ground fill + the road
+ *  skeleton. Buildings/rails/labels are omitted for cost. Roads are included
+ *  at the z12 base zoom because that's where the archive tags `is_bridge`, so
+ *  the roads extractor cleanly separates bridge segments out (see the class
+ *  comment) — base roads render correctly without flat ribbons under decks. */
+const BASE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads'];
 
-const DEFAULT_BASE_ZOOM = 11;
-const DEFAULT_BASE_CACHE_CAP = 16;
+const DEFAULT_BASE_ZOOM = 12;
+const DEFAULT_BASE_CACHE_CAP = 32;
 const MAX_IN_FLIGHT = 2;
-/** Working-set padding around the camera target tile, in z-tile units. */
-const PAD = 1;
+/** Working-set padding around the camera target tile, in z-tile units. A
+ *  z12 tile is ~1/6 the ground footprint of a z11, so PAD 2 (5×5) restores
+ *  the coverage the old z11 PAD 1 (3×3) gave AND extends it — enough to fill
+ *  the wide viewport when the main grid is suspended at far zoom. */
+const PAD = 2;
 /** Y-offset for the base scene root. Far below the z14 plane (whose deepest
  *  features sit ~y = −0.005) so depth-test occlusion is unambiguous from
  *  any reasonable tilt, and well above any underground feature so we don't
@@ -216,10 +228,26 @@ export class BaseTileManager {
       this.root.add(tile);
     }
     for (const layerName of BASE_LAYERS) {
-      const geom = geometries[layerName];
+      let geom = geometries[layerName];
       if (!geom) continue;
       const layer = this.deps.layers.get(layerName);
       if (!layer) continue;
+      // The roads layer registers its centerlines into two GLOBAL pipelines
+      // keyed off the geometry: `bridges` → the BridgesManager (BRIDGE_GROUPS
+      // + bridgeVersion), and `lines` → ROAD_GROUPS, which the BridgesManager
+      // reads to find where decks meet the ground AND the CarsLayer reads to
+      // spawn traffic. The underlay must feed NEITHER: it would build arched
+      // decks from coarse z12 tiles (duplicating / z-fighting the main z14
+      // decks, and floating once the main grid is suspended at far zoom),
+      // pollute the deck ground-connection search with z12 endpoints, and
+      // spawn a second set of cars along the coarse roads. Strip both so base
+      // roads are purely flat visual ribbons. (Ribbon rendering uses
+      // `submeshes`, untouched — only the registration data is dropped;
+      // bridges become small gaps, invisible at the wide zooms where the
+      // underlay is the only content.)
+      if (layerName === 'roads' && (geom.bridges || geom.lines)) {
+        geom = { ...geom, bridges: undefined, lines: undefined };
+      }
       const obj = layer.build(geom);
       // Render BEFORE z14 tiles (renderOrder defaults to 0). Combined with
       // the BASE_Y_OFFSET, this guarantees z14 painted pixels overwrite the

@@ -19,7 +19,9 @@
  * Query params (all optional):
  *   ?dpr=3            device pixel ratio (default 3 — deliberately heavy)
  *   ?clouds=1         enable the volumetric cloud raymarch (extra GPU load)
- *   ?quality=high|low force the quality tier (default high)
+ *   ?quality=high|mobile|low  force the quality tier (default high).
+ *                     Tip: ?quality=mobile&dpr=2 approximates an iPhone-8 load
+ *                     (the mobile tier itself caps DPR to 1.5 at rest).
  *   ?seconds=12       measured window length after warmup (default 12)
  *   ?warmup=5         seconds to stream tiles + settle before measuring (default 5)
  *   ?zoom=15 ?lat= ?lon=  starting view (defaults: Lower Manhattan)
@@ -41,8 +43,10 @@ const zoom = num('zoom', 15);
 const dpr = num('dpr', 3);
 const clouds = url.searchParams.get('clouds') === '1';
 const qualityParam = url.searchParams.get('quality');
-const quality: 'low' | 'high' | undefined =
-  qualityParam === 'low' || qualityParam === 'high' ? qualityParam : 'high';
+const quality: 'low' | 'mobile' | 'high' | undefined =
+  qualityParam === 'low' || qualityParam === 'mobile' || qualityParam === 'high'
+    ? qualityParam
+    : 'high';
 const warmupS = num('warmup', 5);
 const measureS = num('seconds', 12);
 
@@ -141,7 +145,6 @@ async function run(): Promise<void> {
   };
 
   // Machine-readable line for copy/paste back into the chat.
-  // eslint-disable-next-line no-console
   console.log('BENCH_RESULT ' + JSON.stringify(result));
 
   setStatus(

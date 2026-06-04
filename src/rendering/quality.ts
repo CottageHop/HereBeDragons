@@ -8,7 +8,7 @@
 
 import { logger } from '../util/log.js';
 
-export type QualityLevel = 'low' | 'high';
+export type QualityLevel = 'low' | 'mobile' | 'high';
 /** Value accepted by `HereBeDragonsOptions.quality`. `'auto'` detects the GPU. */
 export type QualityOption = QualityLevel | 'auto';
 
@@ -83,6 +83,19 @@ export interface QualityProfile {
    */
   maxTilt?: number;
   /**
+   * When `false`, the tier FORCE-DISABLES the ambient decoration layers —
+   * trees, grass, shoreline waves, shop signs, traffic cars — plus the
+   * drifting-spore field and the painterly surface wash, regardless of the
+   * theme or the developer's `layers` option. These are the per-frame
+   * billboard / animation costs (several of them animate every frame and so
+   * pin the render-on-demand loop awake). Used by the `'mobile'` tier so a
+   * phone-class GPU spends its budget on the realty essentials (3D buildings,
+   * labels, tags, parcels) instead of cinematic dressing. `undefined` / `true`
+   * means "leave the layers exactly as the developer configured them" — the
+   * `'low'` and `'high'` tiers don't touch them.
+   */
+  ambientFX?: boolean;
+  /**
    * Tile-pipeline overrides for this tier. Each field is merged UNDER the
    * developer's explicit `performance` options — an explicit setting
    * always wins; when both are absent the TileManager's own defaults
@@ -134,6 +147,51 @@ const PROFILES: Record<QualityLevel, QualityProfile> = {
       dispatchInterval: 6
     }
   },
+  // `'mobile'`: the most capable map a phone-class GPU (e.g. the iPhone 8's
+  // PowerVR GT7600 with only 2 GB of shared RAM) can sustain. It keeps the
+  // full real-estate feature set — EXTRUDED 3D buildings, labels, tags/markers,
+  // parcels, comp-radius polygons, tap-select + hover popups — and drops only
+  // the cinematic dressing that a phone can't afford:
+  //
+  //   • pixelRatioCap 1.5 — the iPhone 8 panel is DPR 2; rendering the full
+  //     multi-pass chain at 2× (4× the fragments of 1×) is the single biggest
+  //     way to blow the GT7600's fill budget. 1.5 keeps text and building
+  //     edges crisp while cutting ~45 % of the fragment work vs 2×. Dynamic
+  //     resolution still drops it further while the camera moves.
+  //   • underlay OFF — the z11 low-res underlay is 10–30 MB of GPU memory on a
+  //     device with a hard ~few-hundred-MB WebGL budget before Safari discards
+  //     the context. Streaming is fast on a phone, so a brief blank during the
+  //     z14 stream-in is the right trade.
+  //   • ambientFX OFF — trees, grass, waves, signs, cars, spores, painterly
+  //     wash. Several animate every frame (pinning the RAF loop awake and
+  //     draining battery); all are billboard/fill cost with no realty value.
+  //   • tighter tile window than 'high' (radius 3 vs 4) — less resident
+  //     geometry = less memory + fewer draw calls per frame.
+  //   • 3D buildings KEPT (flatBuildings:false) and tilt KEPT (capped at 60°
+  //     to avoid pathological near-horizon overdraw). This is what makes it a
+  //     "3D realty map" and not the top-down 'low' fallback.
+  //
+  // A phone too weak even for this auto-downgrades to 'low' (top-down, flat)
+  // via the same RAF watcher used on desktop.
+  mobile: {
+    pixelRatioCap: 1.5,
+    msaaSamples: 0,
+    clouds: false,
+    outlines: false,
+    flatBuildings: false,
+    maxTilt: 60,
+    fxaa: true,
+    labels: true,
+    underlay: false,
+    ambientFX: false,
+    tileZoomOffset: 0,
+    tile: {
+      visibleRadius: 2,
+      tileWindowRadius: 3,
+      tileWindowRadiusFar: 3,
+      dispatchInterval: 8
+    }
+  },
   // `'low'` is now the floor: a 2D-style overhead view for VERY weak
   // devices. Buildings render as flat footprints (no wall geometry, no
   // extrusion), the camera is locked to top-down (no tilt), and the tile
@@ -172,9 +230,55 @@ const LOW_TIER_PATTERNS = [
 ];
 
 /**
+ * Best-effort "is this a phone / tablet?" check, used to pick the `'mobile'`
+ * tier under `quality: 'auto'`. We can't read the GPU model on iOS (Safari
+ * redacts the renderer string), so the mobile decision is made from the
+ * platform instead of the GPU: a phone is a phone regardless of which exact
+ * SoC it ships, and the `'mobile'` profile is a safe ceiling for all of them.
+ *
+ * Detection order: explicit mobile user-agents (iPhone/iPad/iPod/Android/etc),
+ * then iPadOS — which masquerades as desktop Safari ("MacIntel") but reports
+ * touch points — then a coarse-pointer + small-screen fallback for anything
+ * the UA sniff misses. Desktops with touchscreens are NOT matched (they need
+ * both a coarse pointer AND a small physical screen), so a touch laptop keeps
+ * the full `'high'` tier.
+ */
+export function isMobileDevice(): boolean {
+  try {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    if (/iPhone|iPad|iPod|Android|Mobi|Windows Phone|BlackBerry|IEMobile|Opera Mini/i.test(ua)) {
+      return true;
+    }
+    // iPadOS 13+ reports as "MacIntel" desktop Safari but exposes touch points.
+    if (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1) {
+      return true;
+    }
+    // Fallback: a coarse primary pointer AND a small physical screen. Both are
+    // required so a desktop with a touchscreen (fine pointer, big screen) or a
+    // large tablet kiosk doesn't get needlessly downgraded.
+    if (typeof matchMedia !== 'undefined' && typeof window !== 'undefined') {
+      const coarse = matchMedia('(pointer: coarse)').matches;
+      const minSide = Math.min(
+        window.screen?.width ?? Number.POSITIVE_INFINITY,
+        window.screen?.height ?? Number.POSITIVE_INFINITY
+      );
+      return coarse && minSide <= 820;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Best-effort GPU tier detection.
  *
- * Probes `WEBGL_debug_renderer_info` for the UNMASKED renderer string and
+ * Phones short-circuit to `'mobile'` (see {@link isMobileDevice}) before any
+ * GPU probe — Safari redacts the renderer string on iOS so a probe can't help
+ * there anyway, and the platform is the reliable signal.
+ *
+ * Otherwise probes `WEBGL_debug_renderer_info` for the UNMASKED renderer string and
  * falls back to the masked `gl.getParameter(RENDERER)` if the extension is
  * unavailable. Logs both strings + the chosen tier via the project logger
  * so "why is auto-detect picking 'high' on my slow machine?" is debuggable
@@ -189,6 +293,12 @@ const LOW_TIER_PATTERNS = [
  */
 export function detectGpuTier(): QualityLevel {
   try {
+    // A phone is a phone — pick the mobile ceiling before anything else (the
+    // GPU string is redacted on iOS anyway, so a probe can't help there).
+    if (isMobileDevice()) {
+      logger.info('GPU detect: mobile device → tier=mobile');
+      return 'mobile';
+    }
     if (typeof document === 'undefined') return 'high';
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
@@ -235,6 +345,8 @@ export interface ResolvedQuality extends QualityProfile {
  */
 export function resolveQualityProfile(option: QualityOption | undefined): ResolvedQuality {
   const level: QualityLevel =
-    option === 'low' || option === 'high' ? option : detectGpuTier();
+    option === 'low' || option === 'mobile' || option === 'high'
+      ? option
+      : detectGpuTier();
   return { level, ...PROFILES[level] };
 }
