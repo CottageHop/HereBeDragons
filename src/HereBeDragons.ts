@@ -438,9 +438,6 @@ class HereBeDragonsImpl implements HereBeDragons {
     // Shop-sign banners: billboard shader, also excluded from normal pass.
     this.camera.three.layers.enable(SIGNS_THREE_LAYER);
     if (options.bounds) this.camera.setBounds(options.bounds);
-    // Fast pan stop defaults on: a pan coast settles quickly so sharp detail
-    // snaps in sooner. Off restores the long, smooth glide shared with zoom.
-    this.camera.setFastPanStop(options.fastPanStop ?? true);
     // Save the developer's chosen tilt range BEFORE any tier-imposed cap so
     // setQualityTier can restore it when switching back from `'low'` to
     // `'high'`. (`'low'` clamps tilt to 0 to enforce the top-down view.)
@@ -1576,14 +1573,6 @@ class HereBeDragonsImpl implements HereBeDragons {
 
   getInteractionTilePriority(): boolean {
     return this.interactionTilePriorityEnabled;
-  }
-
-  setFastPanStop(on: boolean): void {
-    this.camera.setFastPanStop(on);
-  }
-
-  getFastPanStop(): boolean {
-    return this.camera.getFastPanStop();
   }
 
   /**

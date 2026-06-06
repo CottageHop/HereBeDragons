@@ -123,15 +123,6 @@ export interface HereBeDragonsOptions {
    */
   interactionTilePriority?: boolean;
   /**
-   * Fast pan stop. Default `true`. A pan gesture coasts to a stop under inertia
-   * damping after you let go; when enabled, that coast settles in a few frames
-   * instead of ~a second, so the camera comes to rest fast and sharp,
-   * full-resolution detail snaps in sooner after a pan. Disable for a longer,
-   * smoother glide that matches the zoom feel. Only affects pan (drag / one-
-   * finger swipe) — wheel and pinch zoom always keep the smooth tail.
-   */
-  fastPanStop?: boolean;
-  /**
    * Restrict camera panning to this geographic box. The camera target's
    * lat/lon is clamped on every frame; the user can still zoom freely.
    * Combine with `COMMON_BOUNDS` for country/state presets.
@@ -518,13 +509,6 @@ export interface HereBeDragons {
   setInteractionTilePriority(on: boolean): void;
   /** Whether scroll/zoom is currently prioritized over tile loading. */
   getInteractionTilePriority(): boolean;
-  /**
-   * Toggle the fast pan stop at runtime (see the `fastPanStop` option).
-   * Applies to the next pan gesture, not one already in flight.
-   */
-  setFastPanStop(on: boolean): void;
-  /** Whether pans currently settle fast rather than coasting like zoom. */
-  getFastPanStop(): boolean;
   /**
    * Switch render-quality tier at runtime. Applies the profile's
    * runtime-safe levers: pixelRatio, the cloud pass, the outline pipeline,

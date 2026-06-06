@@ -130,7 +130,6 @@ Only three fields are required (`center`, `zoom`, `pmtiles_url`); everything els
 | `msaa` | `number` | tier (4 high / 0 low) | MSAA sample count on the color/normal targets. 0 = FXAA-only. Fixed at construction. |
 | `dynamicResolution` | `boolean` | `false` | Render at a cheaper `pixelRatio` while the camera moves, snap back to full resolution at rest. Off by default so the map never softens in motion; enable to buy frame rate on fill-rate-bound devices. No effect on 1× displays or when `pixelRatio` is pinned. |
 | `interactionTilePriority` | `boolean` | `false` | Prioritize scroll/zoom smoothness over tile loading: suspend tile-mesh construction (and its synchronous GPU upload) while a gesture is live, then burst-build the backlog the instant motion settles. Off by default so fresh detail streams in mid-pan/zoom; enable for maximally glass-smooth gestures at the cost of tiles appearing a beat after you stop. |
-| `fastPanStop` | `boolean` | `true` | Settle a pan's inertia coast in a few frames instead of ~a second, so sharp full-resolution detail snaps in sooner after a pan. Disable for a longer, smoother glide matching the zoom feel. Pan only — wheel/pinch zoom always keep the smooth tail. |
 | `lowResUnderlay` | `boolean \| { enabled?, zoom? }` | `true` (z11) | Low-zoom underlay beneath the z14 plane so the screen is never blank while tiles stream in. `false` to disable. |
 | `tileSpawnDurationMs` | `number` | `3000` | Duration of the per-tile "rise from below ground" load animation. 0 = snap in instantly. |
 | `performance` | `{ workerPoolSize?, visibleRadius?, tileWindowRadius?, tileWindowRadiusFar?, maxTileApplyMsPerFrame?, dispatchInterval?, frameBudgetMs?, autoUpgradeFrameMs?, autoDowngradeFrameMs? }` | auto | Tile-pipeline + auto-tier tuning. |
@@ -444,7 +443,7 @@ createMapStudio(map, {
 - **Buildings (painterly)** strength + floor-height sliders, roof + window color pickers, and a pitched-roofs toggle
 - **Signs** banner density + min-zoom sliders
 - **Outline / Ink** edge strength + darkness, halftone, hatching, and saturation sliders
-- **Performance** the smoothness-vs-detail tradeoff: `Load tiles while moving` (inverse of `interactionTilePriority`), `Motion blur (faster)` (`dynamicResolution`), and `Fast pan stop` (`fastPanStop`). All three round-trip through the exported JSON.
+- **Performance** the smoothness-vs-detail tradeoff: `Load tiles while moving` (inverse of `interactionTilePriority`) and `Motion blur (faster)` (`dynamicResolution`). Both round-trip through the exported JSON.
 - **Compass** show/hide overlay toggle
 - **Import JSON** button loads a config file (e.g. a previously exported one) and applies every editable setting to the live map, syncing all panel controls to match
 - **Export JSON** button downloads `here-be-dragons.config.json`

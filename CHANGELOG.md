@@ -6,6 +6,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+## 0.9.1 — drop the fast pan stop
+
+### Removed
+
+- **`fastPanStop` option (and `getFastPanStop()` / `setFastPanStop()`).** It existed only to make a pan settle fast so sharp detail snapped in sooner after the coast; now that the map renders full detail throughout a gesture (dynamic resolution off, tiles building during motion), there is nothing to wait for and the snappy pan stop is no longer needed. Pan inertia reverts to the long, smooth glide it shared with zoom (a single `dampingFactor` of 0.05). The Studio `Performance` section drops its `Fast pan stop` checkbox; the other two toggles remain.
+
 ## 0.9.0 — detail-first interaction defaults
 
 This release retunes the pan/zoom interaction model to favour **live map detail** over maximal gesture smoothness, and surfaces the whole tradeoff as three toggles in the Studio. Out of the box the map now keeps full resolution while you move, builds fresh tiles mid-gesture, and stops a pan quickly so sharp detail snaps in sooner. The smoothness-first behavior is still one option away.

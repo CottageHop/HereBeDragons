@@ -1019,25 +1019,10 @@ export class MapStudio implements MapStudioHandle {
     motionBlurRow.appendChild(motionBlurInput);
     perfSection.appendChild(motionBlurRow);
 
-    const fastPanRow = document.createElement('div');
-    fastPanRow.className = 'hbd-studio-row';
-    const fastPanLabel = document.createElement('label');
-    fastPanLabel.textContent = 'Fast pan stop';
-    const fastPanInput = document.createElement('input');
-    fastPanInput.type = 'checkbox';
-    fastPanInput.checked = this.map.getFastPanStop();
-    fastPanInput.addEventListener('change', () => {
-      this.map.setFastPanStop(fastPanInput.checked);
-    });
-    fastPanRow.appendChild(fastPanLabel);
-    fastPanRow.appendChild(fastPanInput);
-    perfSection.appendChild(fastPanRow);
-
     this.body.appendChild(perfSection);
     this.resyncFns.push(() => {
       tilesMovingInput.checked = !this.map.getInteractionTilePriority();
       motionBlurInput.checked = this.map.getDynamicResolution();
-      fastPanInput.checked = this.map.getFastPanStop();
     });
 
     // ----- Compass -------------------------------------------------------
@@ -1145,8 +1130,7 @@ export class MapStudio implements MapStudioHandle {
       labelHeight: roundTo(this.map.getLabelHeight(), 1),
       tileSpawnDurationMs: Math.round(this.map.getTileSpawnDurationMs()),
       interactionTilePriority: this.map.getInteractionTilePriority(),
-      dynamicResolution: this.map.getDynamicResolution(),
-      fastPanStop: this.map.getFastPanStop()
+      dynamicResolution: this.map.getDynamicResolution()
     };
     // The theme is exported as the base palette and customColors as overrides
     // layered on top — customColors only covers a subset of the theme's keys,
@@ -1295,7 +1279,6 @@ export class MapStudio implements MapStudioHandle {
     if (typeof config.dynamicResolution === 'boolean') {
       this.map.setDynamicResolution(config.dynamicResolution);
     }
-    if (typeof config.fastPanStop === 'boolean') this.map.setFastPanStop(config.fastPanStop);
     if (config.buildings && typeof config.buildings === 'object') {
       this.map.setBuildingPopup(config.buildings);
     }
