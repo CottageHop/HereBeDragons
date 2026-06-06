@@ -27,6 +27,23 @@ const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
 
 export class MapCameraController {
+  /**
+   * Damping factor for wheel/pinch zoom — low, so each zoom tick reads as a
+   * smooth glide into the map rather than a snap. MapControls multiplies the
+   * residual delta by `(1 - dampingFactor)` per frame, so 0.05 keeps 95% each
+   * frame: a long, deliberately smooth tail. This stays the default.
+   */
+  private static readonly ZOOM_DAMPING_FACTOR = 0.05;
+  /**
+   * Damping factor while panning (drag). Much higher than the zoom value so the
+   * pan coast settles in a few frames instead of ~a second — the camera comes
+   * to rest fast, which lets the tile-priority gate reopen and the sharp,
+   * full-resolution map snap in sooner after a pan. MapControls reads
+   * `dampingFactor` fresh each update, so swapping it on pointerdown applies to
+   * the gesture that follows (and its inertia tail), exactly like `panSpeed`.
+   */
+  private static readonly PAN_DAMPING_FACTOR = 0.2;
+
   /** Pan speed for mouse drag (desktop) — three.js MapControls default. */
   private static readonly MOUSE_PAN_SPEED = 1.0;
   /**
@@ -58,6 +75,17 @@ export class MapCameraController {
   private bounds: BoundingBox | null = null;
   private dom: HTMLCanvasElement;
   private onPointerDown: (e: PointerEvent) => void;
+  private onPointerUp: (e: PointerEvent) => void;
+  private onWheel: () => void;
+  /** Live touch-point count, so a two-finger pinch (zoom) is told apart from a
+   *  one-finger pan when choosing the damping factor. */
+  private activeTouches = 0;
+  /**
+   * Whether a pan settles fast (PAN_DAMPING_FACTOR) or coasts with the same
+   * smooth tail as zoom (ZOOM_DAMPING_FACTOR). Toggled at runtime via
+   * `setFastPanStop` / the `fastPanStop` option.
+   */
+  private fastPanStop = true;
   /**
    * True while a floor-badge reveal has lifted the tilt/zoom limits via
    * suspendLimits(). Guards against a double-suspend and tells the range
@@ -92,9 +120,10 @@ export class MapCameraController {
 
     this.controls = new MapControls(this.three, dom);
     this.controls.enableDamping = true;
-    // Lower damping factor = slower lerp toward the target spherical state, so
-    // each wheel tick feels like a smooth animation rather than a snap.
-    this.controls.dampingFactor = 0.05;
+    // Default to the smooth zoom tail; pan drags bump this to PAN_DAMPING_FACTOR
+    // on pointerdown and wheel zoom resets it (see below), so the inertia tail
+    // of each gesture settles at the factor that matches its feel.
+    this.controls.dampingFactor = MapCameraController.ZOOM_DAMPING_FACTOR;
     this.controls.zoomSpeed = 1.5;
     // Zoom toward where the cursor is pointing rather than the camera target.
     // Combined with damping, this reads as a smooth scroll-into-the-map motion.
@@ -122,22 +151,67 @@ export class MapCameraController {
       this.onInteractionEnd?.();
     });
 
-    // MapControls reads panSpeed fresh on every move, so switching it on
-    // pointerdown (by pointerType) applies cleanly to the gesture that
-    // follows: touch swipes pan faster, mouse drags keep the desktop feel.
+    // MapControls reads panSpeed and dampingFactor fresh on every move, so
+    // switching them on pointerdown applies cleanly to the gesture that follows
+    // (and its inertia tail): touch swipes pan faster, mouse drags keep the
+    // desktop feel, and a pan gets the snappy PAN_DAMPING_FACTOR while wheel and
+    // pinch zoom stay on the smooth ZOOM_DAMPING_FACTOR.
     this.dom = dom;
     this.controls.panSpeed = MapCameraController.MOUSE_PAN_SPEED;
     this.onPointerDown = (e: PointerEvent) => {
-      this.controls.panSpeed = e.pointerType === 'touch'
-        ? MapCameraController.TOUCH_PAN_SPEED
-        : MapCameraController.MOUSE_PAN_SPEED;
+      if (e.pointerType === 'touch') {
+        this.activeTouches += 1;
+        this.controls.panSpeed = MapCameraController.TOUCH_PAN_SPEED;
+        // Two or more fingers is a pinch (zoom) — keep the smooth zoom tail. A
+        // single finger is a pan — settle at the pan damping (fast unless
+        // `fastPanStop` is off, in which case it coasts like zoom).
+        this.controls.dampingFactor = this.activeTouches >= 2
+          ? MapCameraController.ZOOM_DAMPING_FACTOR
+          : this.panDampingFactor();
+      } else {
+        this.controls.panSpeed = MapCameraController.MOUSE_PAN_SPEED;
+        this.controls.dampingFactor = this.panDampingFactor();
+      }
+    };
+    this.onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        this.activeTouches = Math.max(0, this.activeTouches - 1);
+      }
+    };
+    // Wheel zoom never fires pointerdown, so reset to the smooth zoom tail here.
+    this.onWheel = () => {
+      this.controls.dampingFactor = MapCameraController.ZOOM_DAMPING_FACTOR;
     };
     dom.addEventListener('pointerdown', this.onPointerDown);
+    dom.addEventListener('pointerup', this.onPointerUp);
+    dom.addEventListener('pointercancel', this.onPointerUp);
+    dom.addEventListener('wheel', this.onWheel, { passive: true });
   }
 
   update(_dt: number): void {
     this.controls.update();
     if (this.bounds) this.clampTargetToBounds();
+  }
+
+  /** Damping a pan gesture (and its inertia tail) settles at — fast when
+   *  `fastPanStop`, otherwise the smooth zoom tail. */
+  private panDampingFactor(): number {
+    return this.fastPanStop
+      ? MapCameraController.PAN_DAMPING_FACTOR
+      : MapCameraController.ZOOM_DAMPING_FACTOR;
+  }
+
+  /**
+   * Toggle the fast pan stop. On (default): a pan coast settles in a few frames
+   * so sharp detail snaps in sooner. Off: a pan coasts with the same long,
+   * smooth glide as a zoom. Applies to the next gesture, not one in flight.
+   */
+  setFastPanStop(on: boolean): void {
+    this.fastPanStop = on;
+  }
+
+  getFastPanStop(): boolean {
+    return this.fastPanStop;
   }
 
   /**
@@ -386,6 +460,9 @@ export class MapCameraController {
 
   dispose(): void {
     this.dom.removeEventListener('pointerdown', this.onPointerDown);
+    this.dom.removeEventListener('pointerup', this.onPointerUp);
+    this.dom.removeEventListener('pointercancel', this.onPointerUp);
+    this.dom.removeEventListener('wheel', this.onWheel);
     this.controls.dispose();
   }
 }

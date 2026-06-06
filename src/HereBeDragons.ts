@@ -387,14 +387,20 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.appliedPixelRatio = effectivePixelRatio;
     this.pixelRatioCap = quality.pixelRatioCap;
     this.pixelRatioExplicit = options.pixelRatio;
-    // Dynamic resolution defaults on, but a pinned `pixelRatio` means "exactly
-    // this, always" — so it disables the motion downscale.
+    // Dynamic resolution defaults OFF: the map stays at full resolution during
+    // pans, zooms, and tile streaming so it never goes soft and then snaps crisp
+    // on settle. Smoothness during gestures is carried by the interaction gate
+    // (tile-build deferral) instead, which needs no resolution drop. Opt back in
+    // with `dynamicResolution: true` for fill-rate-bound devices. A pinned
+    // `pixelRatio` ("exactly this, always") also forces the downscale off.
     this.dynamicResolutionEnabled =
-      (options.dynamicResolution ?? true) && options.pixelRatio === undefined;
-    // Scroll/zoom smoothness over tile loading — on by default. The gesture
-    // gate works at any pixel ratio (unlike dynamic res), so a pinned
-    // pixelRatio doesn't disable it.
-    this.interactionTilePriorityEnabled = options.interactionTilePriority ?? true;
+      (options.dynamicResolution ?? false) && options.pixelRatio === undefined;
+    // Tile-build deferral during gestures — OFF by default so tiles keep
+    // building (streaming in fresh detail) while you pan and zoom, rather than
+    // bursting in only once motion settles. Per-frame build caps still throttle
+    // the GPU uploads. Opt in with `interactionTilePriority: true` to trade
+    // mid-gesture detail for maximally glass-smooth scroll/zoom.
+    this.interactionTilePriorityEnabled = options.interactionTilePriority ?? false;
     this.renderer = new Renderer(container, {
       pixelRatio: effectivePixelRatio,
       background: options.background,
@@ -432,6 +438,9 @@ class HereBeDragonsImpl implements HereBeDragons {
     // Shop-sign banners: billboard shader, also excluded from normal pass.
     this.camera.three.layers.enable(SIGNS_THREE_LAYER);
     if (options.bounds) this.camera.setBounds(options.bounds);
+    // Fast pan stop defaults on: a pan coast settles quickly so sharp detail
+    // snaps in sooner. Off restores the long, smooth glide shared with zoom.
+    this.camera.setFastPanStop(options.fastPanStop ?? true);
     // Save the developer's chosen tilt range BEFORE any tier-imposed cap so
     // setQualityTier can restore it when switching back from `'low'` to
     // `'high'`. (`'low'` clamps tilt to 0 to enforce the top-down view.)
@@ -1567,6 +1576,14 @@ class HereBeDragonsImpl implements HereBeDragons {
 
   getInteractionTilePriority(): boolean {
     return this.interactionTilePriorityEnabled;
+  }
+
+  setFastPanStop(on: boolean): void {
+    this.camera.setFastPanStop(on);
+  }
+
+  getFastPanStop(): boolean {
+    return this.camera.getFastPanStop();
   }
 
   /**

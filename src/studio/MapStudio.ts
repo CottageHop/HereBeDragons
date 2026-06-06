@@ -981,6 +981,65 @@ export class MapStudio implements MapStudioHandle {
     });
     this.body.appendChild(animSection);
 
+    // ----- Performance ---------------------------------------------------
+    // The smoothness-vs-detail tradeoff knobs. Defaults favour live detail:
+    // tiles build during gestures, no motion blur, and pans stop fast.
+    this.body.appendChild(makeSectionHeader('Performance'));
+    const perfSection = makeSection();
+
+    // "Load tiles while moving" is the inverse of `interactionTilePriority`
+    // (which *defers* builds for smoothness), so the checkbox state is negated.
+    const tilesMovingRow = document.createElement('div');
+    tilesMovingRow.className = 'hbd-studio-row';
+    const tilesMovingLabel = document.createElement('label');
+    tilesMovingLabel.textContent = 'Load tiles while moving';
+    const tilesMovingInput = document.createElement('input');
+    tilesMovingInput.type = 'checkbox';
+    tilesMovingInput.checked = !this.map.getInteractionTilePriority();
+    tilesMovingInput.addEventListener('change', () => {
+      this.map.setInteractionTilePriority(!tilesMovingInput.checked);
+    });
+    tilesMovingRow.appendChild(tilesMovingLabel);
+    tilesMovingRow.appendChild(tilesMovingInput);
+    perfSection.appendChild(tilesMovingRow);
+
+    // Dynamic resolution: renders cheaper (softer) during motion, snaps crisp on
+    // settle. Off = always full resolution. Labelled by what it buys: speed.
+    const motionBlurRow = document.createElement('div');
+    motionBlurRow.className = 'hbd-studio-row';
+    const motionBlurLabel = document.createElement('label');
+    motionBlurLabel.textContent = 'Motion blur (faster)';
+    const motionBlurInput = document.createElement('input');
+    motionBlurInput.type = 'checkbox';
+    motionBlurInput.checked = this.map.getDynamicResolution();
+    motionBlurInput.addEventListener('change', () => {
+      this.map.setDynamicResolution(motionBlurInput.checked);
+    });
+    motionBlurRow.appendChild(motionBlurLabel);
+    motionBlurRow.appendChild(motionBlurInput);
+    perfSection.appendChild(motionBlurRow);
+
+    const fastPanRow = document.createElement('div');
+    fastPanRow.className = 'hbd-studio-row';
+    const fastPanLabel = document.createElement('label');
+    fastPanLabel.textContent = 'Fast pan stop';
+    const fastPanInput = document.createElement('input');
+    fastPanInput.type = 'checkbox';
+    fastPanInput.checked = this.map.getFastPanStop();
+    fastPanInput.addEventListener('change', () => {
+      this.map.setFastPanStop(fastPanInput.checked);
+    });
+    fastPanRow.appendChild(fastPanLabel);
+    fastPanRow.appendChild(fastPanInput);
+    perfSection.appendChild(fastPanRow);
+
+    this.body.appendChild(perfSection);
+    this.resyncFns.push(() => {
+      tilesMovingInput.checked = !this.map.getInteractionTilePriority();
+      motionBlurInput.checked = this.map.getDynamicResolution();
+      fastPanInput.checked = this.map.getFastPanStop();
+    });
+
     // ----- Compass -------------------------------------------------------
     this.body.appendChild(makeSectionHeader('Overlays'));
     const overlaySection = makeSection();
@@ -1084,7 +1143,10 @@ export class MapStudio implements MapStudioHandle {
         strength: roundTo(this.map.getFogStrength(), 3)
       },
       labelHeight: roundTo(this.map.getLabelHeight(), 1),
-      tileSpawnDurationMs: Math.round(this.map.getTileSpawnDurationMs())
+      tileSpawnDurationMs: Math.round(this.map.getTileSpawnDurationMs()),
+      interactionTilePriority: this.map.getInteractionTilePriority(),
+      dynamicResolution: this.map.getDynamicResolution(),
+      fastPanStop: this.map.getFastPanStop()
     };
     // The theme is exported as the base palette and customColors as overrides
     // layered on top — customColors only covers a subset of the theme's keys,
@@ -1226,6 +1288,14 @@ export class MapStudio implements MapStudioHandle {
       this.map.setTileSpawnDurationMs(config.tileSpawnDurationMs);
     }
     if (typeof config.compass === 'boolean') this.map.setCompassVisible(config.compass);
+    // Performance knobs.
+    if (typeof config.interactionTilePriority === 'boolean') {
+      this.map.setInteractionTilePriority(config.interactionTilePriority);
+    }
+    if (typeof config.dynamicResolution === 'boolean') {
+      this.map.setDynamicResolution(config.dynamicResolution);
+    }
+    if (typeof config.fastPanStop === 'boolean') this.map.setFastPanStop(config.fastPanStop);
     if (config.buildings && typeof config.buildings === 'object') {
       this.map.setBuildingPopup(config.buildings);
     }

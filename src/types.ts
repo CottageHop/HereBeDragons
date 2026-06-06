@@ -88,13 +88,15 @@ export interface HereBeDragonsOptions {
    */
   quality?: 'low' | 'mobile' | 'high' | 'auto';
   /**
-   * Dynamic resolution. Default `true`. The renderer is render-on-demand, so
+   * Dynamic resolution. Default `false`. The renderer is render-on-demand, so
    * the only times it draws are while the camera moves and while tiles stream
-   * in — exactly when a Retina-resolution render is most expensive and least
-   * visible (the image is in motion). When enabled, the map renders at a
-   * cheaper `pixelRatio` (capped to 1) during those moments and snaps to the
-   * full tier resolution the instant motion settles, so a resting map stays
-   * crisp without paying the full fill-rate cost mid-pan.
+   * in. When enabled, the map renders at a cheaper `pixelRatio` (capped to 1)
+   * during those moments and snaps to the full tier resolution the instant
+   * motion settles — cheaper mid-pan, but the image visibly softens in motion
+   * and pops crisp on settle. Left off, the map stays at full resolution
+   * throughout (smoothness during gestures is handled by the interaction gate,
+   * which defers tile-mesh builds and needs no resolution drop). Turn it on for
+   * fill-rate-bound devices that can't hold frame rate at full Retina mid-pan.
    *
    * No effect on a 1× (non-Retina) display, where the motion ratio already
    * equals the rest ratio. Ignored when an explicit `pixelRatio` is set — that
@@ -102,7 +104,7 @@ export interface HereBeDragonsOptions {
    */
   dynamicResolution?: boolean;
   /**
-   * Prioritize scroll/zoom smoothness over tile loading. Default `true`.
+   * Prioritize scroll/zoom smoothness over tile loading. Default `false`.
    *
    * Building a decoded tile into a mesh forces a synchronous GPU buffer upload
    * on the next render — a few-millisecond main-thread spike. When enabled, the
@@ -112,10 +114,23 @@ export interface HereBeDragonsOptions {
    * and decoding in the background the whole time, then build in a quick burst
    * the instant motion settles. The trade-off: when panning into never-loaded
    * territory, fresh tiles appear a beat after you stop rather than streaming in
-   * mid-drag. Disable to build tiles continuously during motion (the pre-0.8
-   * behavior, gated only by the reactive frame budget).
+   * mid-drag.
+   *
+   * Left at the default `false`, tiles build continuously during motion (gated
+   * only by the per-frame build cap), so fresh detail streams in mid-pan and
+   * mid-zoom at the cost of occasional upload hitches. Enable it to trade that
+   * mid-gesture detail for maximally smooth scroll/zoom.
    */
   interactionTilePriority?: boolean;
+  /**
+   * Fast pan stop. Default `true`. A pan gesture coasts to a stop under inertia
+   * damping after you let go; when enabled, that coast settles in a few frames
+   * instead of ~a second, so the camera comes to rest fast and sharp,
+   * full-resolution detail snaps in sooner after a pan. Disable for a longer,
+   * smoother glide that matches the zoom feel. Only affects pan (drag / one-
+   * finger swipe) — wheel and pinch zoom always keep the smooth tail.
+   */
+  fastPanStop?: boolean;
   /**
    * Restrict camera panning to this geographic box. The camera target's
    * lat/lon is clamped on every frame; the user can still zoom freely.
@@ -503,6 +518,13 @@ export interface HereBeDragons {
   setInteractionTilePriority(on: boolean): void;
   /** Whether scroll/zoom is currently prioritized over tile loading. */
   getInteractionTilePriority(): boolean;
+  /**
+   * Toggle the fast pan stop at runtime (see the `fastPanStop` option).
+   * Applies to the next pan gesture, not one already in flight.
+   */
+  setFastPanStop(on: boolean): void;
+  /** Whether pans currently settle fast rather than coasting like zoom. */
+  getFastPanStop(): boolean;
   /**
    * Switch render-quality tier at runtime. Applies the profile's
    * runtime-safe levers: pixelRatio, the cloud pass, the outline pipeline,
