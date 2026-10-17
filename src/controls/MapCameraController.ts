@@ -15,7 +15,7 @@ export interface CameraInitOptions {
  */
 const ZOOM_BASE_DISTANCE = 512 * 2 ** 15; // distance = ZOOM_BASE_DISTANCE * 2^-zoom
 
-function zoomToDistance(zoom: number): number {
+export function zoomToDistance(zoom: number): number {
   return ZOOM_BASE_DISTANCE * 2 ** -zoom;
 }
 
@@ -24,7 +24,36 @@ function distanceToZoom(distance: number): number {
 }
 
 const DEG = Math.PI / 180;
+/** Glide step (CSS px per reference frame) below which the inertia tail is dropped (see
+ *  endSubpixelGlide). */
+export const GLIDE_STOP_PX = 0.25;
+/**
+ * Inertia / smoothing per REFERENCE frame (1/60 s). MapControls applies `dampingFactor` once per
+ * `update()`, i.e. per frame, so on its own the glide would decelerate three times as fast through
+ * a 50 ms frame as through a 17 ms one — the motion itself would jitter with the frame time, and a
+ * fling would travel a different distance at 30 fps than at 60. `update(dt)` rescales the factor
+ * to the frame's actual length so the curve is defined in seconds, like a platform scroll.
+ */
+export const BASE_DAMPING = 0.05;
+const REF_FRAME_S = 1 / 60;
+/** Longest frame the damping is scaled for (a hidden-tab resume is not one long glide step). */
+const MAX_DAMPING_DT_S = 0.1;
 const RAD = 180 / Math.PI;
+
+/** MapControls' closest approach when no zoom range is set (≈ zoom 19.4). */
+const DEFAULT_MIN_DISTANCE = 25;
+const DEFAULT_MAX_DISTANCE = 30_000;
+/** How long `setMaxZoomCap` takes to ease a too-close camera out. */
+export const ZOOM_CAP_EASE_MS = 600;
+
+/** Render an argument for an error message: type for objects, value for primitives. */
+export function describeArg(v: unknown): string {
+  if (v === null) return 'null';
+  if (v === undefined) return 'undefined';
+  if (typeof v === 'object') return Array.isArray(v) ? 'an array' : 'an object';
+  if (typeof v === 'number' && Number.isNaN(v)) return 'NaN';
+  return `${typeof v} ${JSON.stringify(v)}`;
+}
 
 export class MapCameraController {
   /** Pan speed for mouse drag (desktop) — three.js MapControls default. */
@@ -54,6 +83,8 @@ export class MapCameraController {
    */
   onInteractionEnd?: () => void;
 
+  /** A MapControls gesture (drag, pinch, wheel) is in progress — between its start and end. */
+  private gestureLive = false;
   private projection: Projection;
   private bounds: BoundingBox | null = null;
   private dom: HTMLCanvasElement;
@@ -71,9 +102,35 @@ export class MapCameraController {
   private savedLimits:
     | { minPolarAngle: number; maxPolarAngle: number; minDistance: number; maxDistance: number }
     | null = null;
+  /**
+   * The closest approach the map ITSELF allows (defaults / `setZoomRange`),
+   * kept apart from `controls.minDistance` so an overlay's zoom cap
+   * (`setMaxZoomCap`) can sit on top of it and be lifted again without
+   * either one forgetting the other.
+   */
+  private baseMinDistance = DEFAULT_MIN_DISTANCE;
+  /** Overlay zoom cap as a distance; null = none. */
+  private capDistance: number | null = null;
+  /** Overlay tilt cap (polar angle, radians; null = none) and its ease from the current tilt. */
+  private capPolar: number | null = null;
+  private tiltCapEase: { from: number; startMs: number } | null = null;
+  /** The map's own tilt range (polar radians), which the cap sits on top of. */
+  private rangeMinPolar = 0;
+  private rangeMaxPolar = 75 * DEG;
+  /** A cap that arrived with the camera closer than it allows: the limit
+   *  slides from where the camera was out to the cap, pushing it along. */
+  private capEase: { from: number; startMs: number } | null = null;
+  private readonly now: () => number;
 
-  constructor(dom: HTMLCanvasElement, projection: Projection, init: CameraInitOptions) {
+  constructor(
+    dom: HTMLCanvasElement,
+    projection: Projection,
+    init: CameraInitOptions,
+    /** Injectable clock (ms) for the zoom-cap ease; default `performance.now`. */
+    now: () => number = () => performance.now()
+  ) {
     this.projection = projection;
+    this.now = now;
 
     const aspect = dom.clientWidth / Math.max(1, dom.clientHeight);
     this.three = new THREE.PerspectiveCamera(50, aspect, 10, 60_000);
@@ -100,11 +157,11 @@ export class MapCameraController {
     // Combined with damping, this reads as a smooth scroll-into-the-map motion.
     this.controls.zoomToCursor = true;
     this.controls.screenSpacePanning = false;
-    this.controls.minDistance = 25;
+    this.controls.minDistance = DEFAULT_MIN_DISTANCE;
     // Keep maxDistance comfortably less than the camera far plane so the target
     // itself never crosses the far clipping plane (which would make all nearby
     // buildings disappear at max zoom-out).
-    this.controls.maxDistance = 30_000;
+    this.controls.maxDistance = DEFAULT_MAX_DISTANCE;
     this.controls.maxPolarAngle = 75 * DEG;
     this.controls.minPolarAngle = 0;
     this.controls.target.set(0, 0, 0);
@@ -116,9 +173,11 @@ export class MapCameraController {
     // rides on — fired before the camera has even moved, so the first frame of
     // a fling is already build-free.
     this.controls.addEventListener('start', () => {
+      this.gestureLive = true;
       this.onInteractionStart?.();
     });
     this.controls.addEventListener('end', () => {
+      this.gestureLive = false;
       this.onInteractionEnd?.();
     });
 
@@ -135,9 +194,50 @@ export class MapCameraController {
     dom.addEventListener('pointerdown', this.onPointerDown);
   }
 
-  update(_dt: number): void {
+  update(dt: number): void {
+    if (this.capEase) this.applyMinDistance();
+    if (this.tiltCapEase) this.applyPolarLimits();
+    // Time-based inertia: the same decay per second whatever the frame rate (see BASE_DAMPING).
+    const step = Number.isFinite(dt) && dt > 0 ? Math.min(dt, MAX_DAMPING_DT_S) : REF_FRAME_S;
+    this.controls.dampingFactor = 1 - Math.pow(1 - BASE_DAMPING, step / REF_FRAME_S);
     this.controls.update();
+    if (!this.gestureLive) this.endSubpixelGlide();
     if (this.bounds) this.clampTargetToBounds();
+  }
+
+  /**
+   * End the inertia glide once its next step is under `GLIDE_STOP_PX` on screen. MapControls
+   * damps per FRAME (5 % of the remaining delta each update) and only reports a change once the
+   * drift since the last report passes a tiny epsilon, so after a drag the camera keeps creeping
+   * for seconds — measured 0.35 CSS px a frame 0.3 s after release, still 0.02 px at 1.3 s, longer
+   * at lower frame rates — and every one of those invisible steps is camera motion to the map:
+   * the splat overlay stays on its lite motion LoD, dynamic resolution stays low, and the late,
+   * sporadic steps flip detail blurry → sharp → blurry. Dropping the rest of the glide stops the
+   * camera a few pixels short of where an invisible tail would have taken it.
+   */
+  /** A MapControls gesture (drag, pinch, wheel event) is in progress. */
+  isGestureLive(): boolean {
+    return this.gestureLive;
+  }
+
+  private endSubpixelGlide(): void {
+    const c = this.controls as unknown as {
+      _panOffset?: THREE.Vector3;
+      _sphericalDelta?: THREE.Spherical;
+      dampingFactor: number;
+      enableDamping: boolean;
+    };
+    if (!c.enableDamping || !c._panOffset || !c._sphericalDelta) return;
+    const pan = c._panOffset.length();
+    const rot = Math.abs(c._sphericalDelta.theta) + Math.abs(c._sphericalDelta.phi);
+    if (pan === 0 && rot === 0) return;
+    const distance = Math.max(1e-6, this.three.position.distanceTo(this.controls.target));
+    const focalPx = (this.dom.clientHeight || 1) / 2 / Math.tan((this.three.fov * DEG) / 2);
+    // The step a REFERENCE frame would take, so the stop speed is the same at any frame rate.
+    const stepPx = (pan / distance + rot) * BASE_DAMPING * focalPx;
+    if (stepPx >= GLIDE_STOP_PX) return;
+    c._panOffset.set(0, 0, 0);
+    c._sphericalDelta.set(0, 0, 0);
   }
 
   /**
@@ -166,6 +266,54 @@ export class MapCameraController {
       minPolar = min * DEG;
       maxPolar = max * DEG;
     }
+    this.rangeMinPolar = minPolar;
+    this.rangeMaxPolar = maxPolar;
+    this.applyPolarLimits();
+  }
+
+  /**
+   * Overlay tilt cap: hold the camera's tilt at or under `maxTiltDeg` ON TOP of the map's own
+   * tilt range (whichever is tighter wins) until it is lifted with `null`, which puts the range
+   * back exactly. A camera tilted further than the cap when it arrives is eased up to it over
+   * `ZOOM_CAP_EASE_MS` rather than snapped. The splats overlay uses this with its zoom cap: the
+   * satellite layer is at its best, and cheapest, seen from above rather than along the ground.
+   */
+  setMaxTiltCap(maxTiltDeg: number | null): void {
+    const next = maxTiltDeg === null || !Number.isFinite(maxTiltDeg)
+      ? null
+      : Math.max(0, Math.min(89, maxTiltDeg)) * DEG;
+    if (next === this.capPolar) return;
+    this.capPolar = next;
+    this.tiltCapEase = null;
+    if (next !== null && !this.limitsSuspended) {
+      const polar = this.controls.getPolarAngle();
+      if (polar > next) this.tiltCapEase = { from: polar, startMs: this.now() };
+    }
+    this.applyPolarLimits();
+    this.onChange?.();
+  }
+
+  /** The tilt cap in effect, degrees (`null` = none). */
+  getMaxTiltCap(): number | null {
+    return this.capPolar === null ? null : this.capPolar / DEG;
+  }
+
+  /** Write the effective tilt limits: the map's range, tightened by the overlay cap (mid-ease:
+   *  wherever the sliding limit has got to). */
+  private applyPolarLimits(): void {
+    let maxPolar = this.rangeMaxPolar;
+    if (this.capPolar !== null) {
+      let cap = this.capPolar;
+      if (this.tiltCapEase) {
+        const t = Math.min(1, (this.now() - this.tiltCapEase.startMs) / ZOOM_CAP_EASE_MS);
+        cap = this.tiltCapEase.from + (cap - this.tiltCapEase.from) * easeInOutCubic(t);
+        if (t >= 1) this.tiltCapEase = null;
+        // The limit moved but MapControls only reports the camera — keep frames coming.
+        this.onChange?.();
+      }
+      maxPolar = Math.min(maxPolar, cap);
+    }
+    const minPolar = Math.min(this.rangeMinPolar, maxPolar);
     // While a floor-badge reveal has the limits lifted, record the new range
     // as what to reinstate on close instead of fighting the relaxed live
     // controls — so the floor view stays put even if a quality-tier switch
@@ -206,22 +354,76 @@ export class MapCameraController {
     let minDist: number;
     let maxDist: number;
     if (range === null) {
-      minDist = 25;
-      maxDist = 30_000;
+      minDist = DEFAULT_MIN_DISTANCE;
+      maxDist = DEFAULT_MAX_DISTANCE;
     } else {
       const min = Math.min(range.min, range.max);
       const max = Math.max(range.min, range.max);
       minDist = zoomToDistance(max);
       maxDist = zoomToDistance(min);
     }
+    this.baseMinDistance = minDist;
     // Same deferral as setTiltRange while a floor-badge reveal is active.
     if (this.limitsSuspended && this.savedLimits) {
-      this.savedLimits.minDistance = minDist;
       this.savedLimits.maxDistance = maxDist;
+    } else {
+      this.controls.maxDistance = maxDist;
+    }
+    this.applyMinDistance();
+  }
+
+  /**
+   * Overlay zoom cap: hold the camera's max zoom at `maxZoom` ON TOP of the
+   * map's own zoom range (whichever is tighter wins) until it is lifted with
+   * `null`, which puts the previous limit back exactly — `setZoomRange` calls
+   * made meanwhile included. If the camera is closer than the cap allows when
+   * it arrives, it is eased out over `ZOOM_CAP_EASE_MS` rather than snapped.
+   * The splats overlay uses this: up close its surfels read as blobs.
+   */
+  setMaxZoomCap(maxZoom: number | null): void {
+    const next = maxZoom === null || !Number.isFinite(maxZoom) ? null : zoomToDistance(maxZoom);
+    if (next === this.capDistance) return;
+    this.capDistance = next;
+    this.capEase = null;
+    if (next !== null && !this.limitsSuspended) {
+      const distance = this.three.position.distanceTo(this.controls.target);
+      if (distance < next) this.capEase = { from: distance, startMs: this.now() };
+    }
+    this.applyMinDistance();
+    this.onChange?.();
+  }
+
+  /** The zoom cap in effect (`null` = none). */
+  getMaxZoomCap(): number | null {
+    return this.capDistance === null ? null : distanceToZoom(this.capDistance);
+  }
+
+  /** Write the effective closest approach: the map's own limit, or the
+   *  overlay cap (mid-ease: wherever the sliding limit has got to). */
+  private applyMinDistance(): void {
+    let min = this.baseMinDistance;
+    if (this.capDistance !== null) {
+      let cap = this.capDistance;
+      if (this.capEase) {
+        const t = Math.min(1, (this.now() - this.capEase.startMs) / ZOOM_CAP_EASE_MS);
+        cap = this.capEase.from + (cap - this.capEase.from) * easeInOutCubic(t);
+        if (t >= 1) this.capEase = null;
+        // The limit moved but MapControls only reports the camera — keep
+        // frames coming until the ease has finished.
+        this.onChange?.();
+      }
+      min = Math.max(min, cap);
+    } else {
+      this.capEase = null;
+    }
+    if (this.limitsSuspended && this.savedLimits) {
+      // A floor-badge reveal holds the limits open: hand it the value to
+      // reinstate instead of fighting the relaxed live controls.
+      this.savedLimits.minDistance = Math.min(min, this.savedLimits.maxDistance);
       return;
     }
-    this.controls.minDistance = minDist;
-    this.controls.maxDistance = maxDist;
+    // Never past the far limit (a cap looser than the map's MIN zoom).
+    this.controls.minDistance = Math.min(min, this.controls.maxDistance);
   }
 
   /**
@@ -244,8 +446,8 @@ export class MapCameraController {
     };
     this.controls.minPolarAngle = 0;
     this.controls.maxPolarAngle = 75 * DEG;
-    this.controls.minDistance = 25;
-    this.controls.maxDistance = 30_000;
+    this.controls.minDistance = DEFAULT_MIN_DISTANCE;
+    this.controls.maxDistance = DEFAULT_MAX_DISTANCE;
   }
 
   /**
@@ -293,6 +495,19 @@ export class MapCameraController {
   }
 
   setView(lat: number, lon: number, zoom?: number): void {
+    // The arguments are POSITIONAL, and an options object is the natural thing to reach for —
+    // `setView({ lat, lon, zoom })` then projects `undefined`, which puts the camera at NaN and
+    // leaves the map rendering nothing, with no error anywhere. Silent NaN is the worst outcome
+    // available: say what was passed instead.
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      throw new TypeError(
+        `setView(lat, lon, zoom?) takes POSITIONAL numbers — got lat=${describeArg(lat)}, ` +
+          `lon=${describeArg(lon)}. If you meant to pass an object, use flyTo({ lat, lon, ... }).`
+      );
+    }
+    if (zoom !== undefined && !Number.isFinite(zoom)) {
+      throw new TypeError(`setView: zoom must be a finite number when given — got ${describeArg(zoom)}.`);
+    }
     const m = this.projection.project(lon, lat);
     // Convention: Mercator X → scene X, Mercator Y → scene -Z (north is -Z).
     const targetX = m.x;
