@@ -1193,6 +1193,13 @@ class HereBeDragonsImpl implements HereBeDragons {
   }
 
   async init(): Promise<void> {
+    // Lazily import Spark for the splats overlay — alongside, NOT awaited. Its `open()` swallows
+    // failures (missing optional peer dep → overlay stays inert) and the overlay does nothing
+    // until Spark is in. Awaiting it here deadlocked any page whose entry module does
+    // `await createHereBeDragons(...)` at top level while its bundler put three in that entry
+    // chunk: Spark's lazily loaded chunk imports three from the entry, and the entry cannot
+    // finish evaluating until this promise resolves (the GitHub Pages demo hung exactly so).
+    void this.splats.open();
     // Run shader pre-compile in parallel with the PMTiles archive open. Both
     // are async and have no ordering dependency, so this saves one stage.
     await Promise.all([
@@ -1200,10 +1207,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       this.precompileShaders(),
       // Open the parcels archive in parallel; its own `open()` swallows
       // failures so a broken parcel source can never block the basemap.
-      this.parcelsManager?.open() ?? Promise.resolve(),
-      // Lazily import Spark for the splats overlay; its `open()` swallows
-      // failures (missing optional peer dep → overlay stays inert).
-      this.splats.open()
+      this.parcelsManager?.open() ?? Promise.resolve()
     ]);
     await this.tileManager.start();
     // Kick the underlay dispatcher synchronously so its first fetches go out

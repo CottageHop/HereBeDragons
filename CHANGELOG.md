@@ -4,6 +4,16 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+- **Fixed: a page that awaits `createHereBeDragons()` at module top level hung when splats were
+  configured** — the GitHub Pages demo did. `init()` waited for Spark's lazy import, and with
+  `three` bundled into the entry chunk, Spark's chunk imports it from there: the entry cannot finish
+  evaluating until the await returns, and the await waits for Spark — a module-graph deadlock
+  (dev servers, with `three` as its own module, never showed it). Spark now loads alongside
+  `init()` without blocking it; the overlay already does nothing until Spark is in, so the map's
+  promise (and `ready`) no longer wait for it.
+
 ## 0.10.1 — late `ready` listeners fire
 
 - **Fixed: `map.on('ready', …)` never fired when added after `await createHereBeDragons()`** — the
