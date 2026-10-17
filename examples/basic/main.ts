@@ -49,10 +49,139 @@ const msaaParam = url.searchParams.get('msaa');
 const msaa =
   msaaParam != null && Number.isFinite(Number(msaaParam)) ? Number(msaaParam) : undefined;
 
+// `?splats=<urlTemplate>` streams Gaussian-splat tiles (`{z}/{x}/{y}.spz`,
+// imagery from the same template as `.png`) over the basemap — e.g.
+// `?splats=http://localhost:8790/{z}/{x}/{y}.spz&pmtiles=…&lat=35.10&lon=-80.80&zoom=16`.
+// By default the vector map is cut out only under satellite tiles that have
+// landed (`hideBasemap: 'covered'`); `&hideBasemap=1` hides the basemap layers
+// globally instead (the old behaviour) and `&hideBasemap=0` keeps them visible
+// under the splats (handy for checking that the houses sit on their
+// footprints). `&keepLabels=0` cuts the labels out too, `&governor=0` turns
+// the frame-time governor off, `&targetFrameMs=` moves its target and
+// `&budgetGrowth=2` lets it grow the budget past `maxSplats`, not only cut. `&tilt=0`
+// looks straight down. The ripple clock is exposed on `window.__splatsSetTime(ms)`
+// (`null` to resume real time) so tooling can scrub the reveal frame by frame.
+// `&maxSplats=`, `&lowTierMaxSplats=` and `&radius=` override the resident
+// budget / window for A/B-ing weight on a given GPU. `&roundedUnion=0` shows
+// the tiles as plain squares; `&unionGrowMs=` / `&unionFeather=` tune the
+// rounded-union mask, `&splatsMinZoom=` lets the overlay show further out.
+// `&splatsReveal=ripple|none` sets the default transition of a plain
+// `setSplatsEnabled(on)` (`splats.reveal`); with `&studio=1` it defaults to
+// the ripple so the Studio's Enabled toggle shows it off. With `?studio=1`
+// and NO `splats=` the Studio's "3D Satellite" section starts empty — paste a
+// template there and the overlay is created at runtime.
+// The overlay's tile source: `?splats=` wins; otherwise a build-time default
+// (`VITE_SPLATS_TEMPLATE` in `.env.local`, e.g. a local tile server during
+// development) which starts OFF and is switched on with the "3D Satellite"
+// button, so the plain demo stays the plain demo. `?splatsLite=` /
+// `VITE_SPLATS_LITE_TEMPLATE` name a lighter pyramid for the low quality tiers
+// (`lowTierUrlTemplate`).
+const envTemplate = (import.meta.env.VITE_SPLATS_TEMPLATE as string | undefined)?.trim() || null;
+const splatsFromUrl = url.searchParams.get('splats');
+const splatsTemplate = splatsFromUrl ?? envTemplate;
+const splatsLiteTemplate =
+  url.searchParams.get('splatsLite')?.trim() ||
+  (import.meta.env.VITE_SPLATS_LITE_TEMPLATE as string | undefined)?.trim() ||
+  undefined;
+const studioMode = url.searchParams.get('studio') === '1';
+const splatsRevealParam = url.searchParams.get('splatsReveal');
+const splatsReveal: 'none' | 'ripple' | undefined =
+  splatsRevealParam === 'ripple' || splatsRevealParam === 'none'
+    ? splatsRevealParam
+    : studioMode
+      ? 'ripple'
+      : undefined;
+const splatsClock = (): number => splatsTimeOverride ?? performance.now();
+let splatsTimeOverride: number | null = null;
+const numParam = (name: string): number | undefined => {
+  const raw = url.searchParams.get(name);
+  const n = raw == null ? NaN : Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+};
+const splats = splatsTemplate
+  ? {
+      urlTemplate: splatsTemplate,
+      lowTierUrlTemplate: splatsLiteTemplate,
+      // a configured default is an OFFER, not a decision: the button turns it on
+      ...(splatsFromUrl ? {} : { enabled: false }),
+      ...(url.searchParams.get('frustumCull') === '0' ? { frustumCull: false } : {}),
+      splatMaxDistance: numParam('splatMaxDistance'),
+      // `&levelSelection=resolution` matches the pyramid level to what the screen can show,
+      // instead of keying off camera zoom (`&resolutionMargin=` tunes the oversampling).
+      ...((): Record<string, unknown> => {
+        const m = url.searchParams.get('levelSelection');
+        const margin = Number(url.searchParams.get('resolutionMargin'));
+        const ta = url.searchParams.get('resolutionTiltAware');
+        return {
+          ...(m === 'resolution' || m === 'bias' ? { levelSelection: m } : {}),
+          ...(Number.isFinite(margin) && margin > 0 ? { resolutionMargin: margin } : {}),
+          ...(ta === '0' ? { resolutionTiltAware: false } : {})
+        };
+      })(),
+      maxSplats: numParam('maxSplats'),
+      // `&sortIntervalMs=` spaces Spark's depth re-sorts (default 100; the low tiers use >= 250)
+      sortIntervalMs: numParam('sortIntervalMs'),
+      // `&budgetGrowth=2` lets the governor grow the budget past `maxSplats` on a device
+      // that holds well under target — `maxSplats` becomes a starting point, not a ceiling.
+      budgetGrowth: numParam('budgetGrowth'),
+      lowTierMaxSplats: numParam('lowTierMaxSplats'),
+      radius: numParam('radius'),
+      minZoom: numParam('splatsMinZoom'),
+      // Tile pyramid: `&minTileZoom=` / `&maxTileZoom=` bound the levels,
+      // `&lodBias=-1` runs one level coarser, `&maxCameraZoom=` moves the
+      // zoom-in stop.
+      minTileZoom: numParam('minTileZoom'),
+      maxTileZoom: numParam('maxTileZoom'),
+      lodBias: numParam('lodBias'),
+      maxCameraZoom: numParam('maxCameraZoom'),
+      hideBasemap:
+        url.searchParams.get('hideBasemap') === '0'
+          ? false
+          : url.searchParams.get('hideBasemap') === '1'
+            ? true
+            : undefined,
+      keepLabels: url.searchParams.get('keepLabels') === '0' ? false : undefined,
+      // `&leanMap=0` keeps the map's outlines / clouds / tilt-shift / ambient animation
+      // running while splats are on (the default switches them off — see `leanMap`).
+      leanMap: url.searchParams.get('leanMap') === '0' ? false : undefined,
+      // `&motionLod=0` draws the full tiles while moving too (A/B for motion LoD).
+      motionLod: url.searchParams.get('motionLod') === '0' ? false : undefined,
+      governor: url.searchParams.get('governor') === '0' ? false : undefined,
+      targetFrameMs: numParam('targetFrameMs'),
+      // Level cross-dissolve: `&levelFadeMs=0` swaps instantly (the old
+      // behaviour), `&transitionOvershoot=0` forbids the brief over-budget
+      // overlap, `&prefetchBand=0` turns the prefetch across the threshold off.
+      levelFadeMs: numParam('levelFadeMs'),
+      transitionOvershoot: numParam('transitionOvershoot'),
+      prefetchBand: numParam('prefetchBand'),
+      roundedUnion:
+        url.searchParams.get('roundedUnion') === '0'
+          ? false
+          : { growMs: numParam('unionGrowMs'), feather: numParam('unionFeather') },
+      reveal: splatsReveal ? { reveal: splatsReveal } : undefined,
+      clock: splatsClock
+    }
+  : undefined;
+const tiltParam = Number(url.searchParams.get('tilt') ?? '55');
+// Basemap tile reveal (rounded union of the loaded tiles): `&tileReveal=0`
+// turns it off (square tiles + rise-from-below, the old behaviour);
+// `&revealGrowMs=` / `&revealFeather=` tune it, `&revealRise=1` keeps the slab
+// rise as well.
+const tileReveal =
+  url.searchParams.get('tileReveal') === '0'
+    ? false
+    : {
+        growMs: numParam('revealGrowMs'),
+        feather: numParam('revealFeather'),
+        rise: url.searchParams.get('revealRise') === '1'
+      };
+
 const mapOptions = {
   center: { lat, lon },
   zoom,
-  tilt: 55,
+  tilt: Number.isFinite(tiltParam) ? tiltParam : 55,
+  splats,
+  tileReveal,
   pmtiles_url: pmtilesUrl,
   layers: {
     water: true,
@@ -72,8 +201,12 @@ const mapOptions = {
 // `theme` + `clouds` are now declarative on the options object — no need to
 // call `applyTheme` / `setCloudsEnabled` after construction. Demonstrates the
 // "exported Studio JSON drops straight in" workflow.
+// `&tiltShift=1` turns on the miniature look (high tier only); tune it in the Studio.
+const tiltShiftParam = url.searchParams.get('tiltShift') === '1';
+
 const map = await createHereBeDragons(container, {
   ...mapOptions,
+  ...(tiltShiftParam ? { tiltShift: true } : {}),
   theme: initialTheme,
   // Clouds are off by default (the raymarch is the heaviest per-frame GPU
   // cost). Flip to `true` — or `{ enabled: true, opacity }` — to bring back
@@ -83,7 +216,9 @@ const map = await createHereBeDragons(container, {
   quality,
   pixelRatio,
   dynamicResolution,
-  msaa
+  msaa,
+  // `&framePacing=0` submits a frame every tick even while splats are resident (A/B only).
+  ...(url.searchParams.get('framePacing') === '0' ? { performance: { framePacing: false } } : {})
 });
 
 // --- live HUD: FPS + active quality tier + pixelRatio --------------------
@@ -95,8 +230,13 @@ const map = await createHereBeDragons(container, {
   const tierEl = document.getElementById('hud-tier');
   if (fpsEl && tierEl) {
     const refreshTier = (): void => {
+      const s = map.getSplatsStats();
+      const splatsInfo = map.getSplatsOptions().urlTemplate
+        ? ` · splats z${s.tileZoom} ${s.tiles - (s.coverTiles ?? 0)}t${s.coverTiles ? `+${s.coverTiles}c` : ''}/${s.splats.toLocaleString()} of ${s.maxSplats.toLocaleString()}${s.reveal !== 'none' ? ` (${s.reveal})` : ''}`
+        : '';
       tierEl.textContent =
-        `tier: ${map.getQualityTier()} · ${map.getPixelRatio().toFixed(2)}× px`;
+        `tier: ${map.getQualityTier()} · ${map.getPixelRatio().toFixed(2)}× px${splatsInfo}` +
+        (map.getSplatsLeanMapActive() ? ' · lean' : '');
     };
     refreshTier();
     // Re-read often (150 ms) so two live signals show without wiring events:
@@ -147,7 +287,10 @@ if (url.searchParams.get('polygons') === '1') {
 }
 
 // Studio is opt-in via ?studio=1 so the standard demo stays clean.
-if (url.searchParams.get('studio') === '1') {
+if (studioMode) {
+  // An overlay the Studio creates from a pasted URL should still run on the
+  // scrubbable demo clock (stored now; no layer exists until a URL arrives).
+  if (!splats) map.setSplatsOptions({ clock: splatsClock });
   // Studio has its own theme picker — hide the corner dock to avoid duplication.
   document.querySelector<HTMLElement>('.theme-dock')?.style.setProperty('display', 'none');
   createMapStudio(map, {
@@ -164,10 +307,37 @@ map.on('tileerror', (e) => console.warn('[demo] tileerror', e));
 
 window.addEventListener('resize', () => map.resize());
 
+// Expose the map (and the splat clock) for tooling / the console.
+declare global {
+  interface Window {
+    map: typeof map;
+    __splatsSetTime: (ms: number | null) => void;
+  }
+}
+window.map = map;
+window.__splatsSetTime = (ms) => { splatsTimeOverride = ms; };
+
 // Expose for ad-hoc debugging.
 (window as unknown as { map: typeof map }).map = map;
 
 function buildThemeMenu(activeName: string): void {
+  // --- "3D Satellite" toggle: present whenever a tile source is configured ---
+  const splatsDock = document.getElementById('splats-dock') as HTMLDivElement | null;
+  const splatsBtn = document.getElementById('splats-toggle') as HTMLButtonElement | null;
+  if (splatsDock && splatsBtn && map.getSplatsOptions().urlTemplate) {
+    splatsDock.hidden = false;
+    const reflect = (): void => {
+      const on = map.getSplatsOptions().enabled;
+      splatsBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      splatsBtn.dataset.on = on ? 'true' : 'false';
+    };
+    splatsBtn.addEventListener('click', () => {
+      map.setSplatsEnabled(!map.getSplatsOptions().enabled);
+      reflect();
+    });
+    reflect();
+  }
+
   const dock = document.getElementById('theme-dock') as HTMLDivElement | null;
   const trigger = document.getElementById('theme-trigger') as HTMLButtonElement | null;
   const grid = document.getElementById('theme-grid') as HTMLDivElement | null;

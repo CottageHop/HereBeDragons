@@ -15,6 +15,30 @@
       }
 
       /* Compact theme dock — collapses to a swatch chip, blooms to a card. */
+      .splats-dock {
+        position: fixed;
+        top: 68px;
+        right: 16px;
+        z-index: 10;
+      }
+      .splats-dock[hidden] { display: none; }
+      .splats-toggle {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 8px 14px; border: 0; border-radius: 12px; cursor: pointer;
+        background: rgba(255, 255, 255, 0.96); color: #1d1d1f;
+        font: 600 13px/1 system-ui, -apple-system, sans-serif;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+      }
+      .splats-toggle-dot {
+        width: 9px; height: 9px; border-radius: 50%; background: #c7c7cc;
+        transition: background 160ms ease;
+      }
+      .splats-toggle[data-on="true"] .splats-toggle-dot { background: #34c759; }
+      .splats-toggle[data-on="true"] { background: #1d1d1f; color: #fff; }
+      @media (prefers-color-scheme: dark) {
+        .splats-toggle { background: rgba(28, 28, 30, 0.96); color: #f2f2f7; }
+        .splats-toggle[data-on="true"] { background: #f2f2f7; color: #1d1d1f; }
+      }
       .theme-dock {
         position: fixed;
         top: 16px;
@@ -209,6 +233,13 @@
     <div class="hud" id="hud" aria-hidden="true">
       <div id="hud-fps">— fps</div>
       <div id="hud-tier">tier: —</div>
+    </div>
+
+    <div class="splats-dock" id="splats-dock" hidden>
+      <button class="splats-toggle" id="splats-toggle" aria-pressed="false" data-on="false" title="Stream 3D buildings, trees and terrain over the map (Gaussian splats)">
+        <span class="splats-toggle-dot" aria-hidden="true"></span>
+        <span>3D Satellite</span>
+      </button>
     </div>
 
     <div class="theme-dock" id="theme-dock" data-expanded="false">

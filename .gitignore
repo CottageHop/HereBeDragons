@@ -9,3 +9,10 @@ coverage
 .claude
 *.tgz
 vite.config.ts.timestamp-*.mjs
+
+# local-only configuration (Vite reads .env.local; the example uses VITE_SPLATS_TEMPLATE)
+.env.local
+.env.*.local
+
+# local basemap extracts (build with: pmtiles extract https://build.protomaps.com/<date>.pmtiles public/<area>.pmtiles --bbox=W,S,E,N --maxzoom=15)
+public/cda.pmtiles
