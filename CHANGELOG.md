@@ -13,6 +13,9 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   (dev servers, with `three` as its own module, never showed it). Spark now loads alongside
   `init()` without blocking it; the overlay already does nothing until Spark is in, so the map's
   promise (and `ready`) no longer wait for it.
+- **Demo:** the GitHub Pages build serves Coeur d'Alene's splat tiles and basemap (a release
+  asset, `demo-tiles-cda-v1`), and its "3D Satellite" button opens that region with the layer on
+  (`VITE_SPLATS_REGION`, `?satellite=1`).
 
 ## 0.10.1 — late `ready` listeners fire
 

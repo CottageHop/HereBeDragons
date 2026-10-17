@@ -14,6 +14,14 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+# The demo's "3D Satellite" layer: Coeur d'Alene splat tiles plus that area's basemap, kept out of
+# git as a release asset (built by SplatMap's scripts/pack-tiles.sh) and served from this site.
+# The example's 3D Satellite button opens the region (VITE_SPLATS_REGION) and turns the layer on.
+env:
+  DEMO_TILES_RELEASE: demo-tiles-cda-v1
+  DEMO_TILES_ASSET: demo-tiles-cda.tar.gz
+  DEMO_TILES_SHA256: fe29aaa84567c04b3484cc3d39e7fa4c0c7d7065759df4a37ff525ef7d55b565
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,7 +35,23 @@ jobs:
 
       - run: npm ci
 
+      - name: Fetch the demo's splat tiles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$DEMO_TILES_RELEASE" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$DEMO_TILES_ASSET" --output demo-tiles.tar.gz
+          echo "$DEMO_TILES_SHA256  demo-tiles.tar.gz" | sha256sum -c -
+
+      # Tile templates are under the demo's base path (vite.config.ts: /HereBeDragons/).
       - run: npm run build:demo
+        env:
+          VITE_SPLATS_TEMPLATE: /HereBeDragons/tiles/full/{z}/{x}/{y}.spz
+          VITE_SPLATS_LITE_TEMPLATE: /HereBeDragons/tiles/lite/{z}/{x}/{y}.spz
+          VITE_SPLATS_REGION: 47.7079,-116.7709,15,cda.pmtiles
+
+      - name: Add the tiles and basemap to the site
+        run: tar -xzf demo-tiles.tar.gz -C dist
 
       - uses: actions/configure-pages@v5
         with:

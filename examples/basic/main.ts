@@ -83,6 +83,25 @@ const splatsLiteTemplate =
   url.searchParams.get('splatsLite')?.trim() ||
   (import.meta.env.VITE_SPLATS_LITE_TEMPLATE as string | undefined)?.trim() ||
   undefined;
+// Where the build-time tiles are: `VITE_SPLATS_REGION` = "lat,lon,zoom" or "lat,lon,zoom,<basemap>"
+// (a .pmtiles file next to the page — the GitHub Pages demo ships Coeur d'Alene's tiles and basemap).
+// Pressing "3D Satellite" far from it opens the region with the overlay on (`?satellite=1`)
+// instead of switching on an overlay with nothing to show.
+const splatsRegion = ((): { lat: number; lon: number; zoom: number; basemap?: string } | null => {
+  const raw = (import.meta.env.VITE_SPLATS_REGION as string | undefined)?.trim();
+  if (!raw) return null;
+  const [la, lo, zo, basemap] = raw.split(',').map((v) => v.trim());
+  const region = { lat: Number(la), lon: Number(lo), zoom: Number(zo) };
+  if (![region.lat, region.lon, region.zoom].every(Number.isFinite)) return null;
+  return basemap ? { ...region, basemap } : region;
+})();
+const satelliteOn = url.searchParams.get('satellite') === '1';
+/** Great-circle-ish distance in km — plenty for "is the view anywhere near the region". */
+const kmBetween = (a: { lat: number; lon: number }, b: { lat: number; lon: number }): number => {
+  const rad = Math.PI / 180;
+  const x = (b.lon - a.lon) * rad * Math.cos(((a.lat + b.lat) / 2) * rad);
+  return 6371 * Math.hypot(x, (b.lat - a.lat) * rad);
+};
 const studioMode = url.searchParams.get('studio') === '1';
 const splatsRevealParam = url.searchParams.get('splatsReveal');
 const splatsReveal: 'none' | 'ripple' | undefined =
@@ -102,8 +121,9 @@ const splats = splatsTemplate
   ? {
       urlTemplate: splatsTemplate,
       lowTierUrlTemplate: splatsLiteTemplate,
-      // a configured default is an OFFER, not a decision: the button turns it on
-      ...(splatsFromUrl ? {} : { enabled: false }),
+      // a configured default is an OFFER, not a decision: the button turns it on (and
+      // `?satellite=1` — what the button opens when it jumps to the region — starts it on)
+      ...(splatsFromUrl || satelliteOn ? {} : { enabled: false }),
       ...(url.searchParams.get('frustumCull') === '0' ? { frustumCull: false } : {}),
       splatMaxDistance: numParam('splatMaxDistance'),
       // `&levelSelection=resolution` matches the pyramid level to what the screen can show,
@@ -332,7 +352,20 @@ function buildThemeMenu(activeName: string): void {
       splatsBtn.dataset.on = on ? 'true' : 'false';
     };
     splatsBtn.addEventListener('click', () => {
-      map.setSplatsEnabled(!map.getSplatsOptions().enabled);
+      const turningOn = !map.getSplatsOptions().enabled;
+      if (turningOn && splatsRegion && !splatsFromUrl && kmBetween(map.getView(), splatsRegion) > 3) {
+        const q = new URLSearchParams({
+          lat: String(splatsRegion.lat),
+          lon: String(splatsRegion.lon),
+          zoom: String(splatsRegion.zoom),
+          tilt: '45',
+          satellite: '1'
+        });
+        if (splatsRegion.basemap) q.set('pmtiles', `${import.meta.env.BASE_URL}${splatsRegion.basemap}`);
+        window.location.search = q.toString();
+        return;
+      }
+      map.setSplatsEnabled(turningOn);
       reflect();
     });
     reflect();
