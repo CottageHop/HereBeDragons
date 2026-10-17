@@ -1209,7 +1209,9 @@ class HereBeDragonsImpl implements HereBeDragons {
     // Kick the underlay dispatcher synchronously so its first fetches go out
     // alongside the z14 burst rather than after a 0.5 s delay.
     this.baseTileManager?.start();
-    this.bus.emit('ready', { type: 'ready' });
+    // Latched: this runs before createHereBeDragons() resolves, so a caller can only subscribe
+    // afterwards — a listener added late still hears it (once, on a microtask).
+    this.bus.emitLatched('ready', { type: 'ready' });
   }
 
   /**
@@ -3134,8 +3136,9 @@ class HereBeDragonsImpl implements HereBeDragons {
  * (`theme`, `customColors`, `clouds`, `compass`) BEFORE the render loop
  * starts, so an exported Studio JSON drops straight in and the very first
  * frame paints with the requested theme — no color flash, no imperative
- * setup. The async resolution fires after the first tile request has been
- * queued; listen for `map.on('ready', ...)` if you need to wait for tiles.
+ * setup. The promise resolves after the first tile requests have been
+ * queued, and `ready` has fired by then: a `map.on('ready', ...)` listener
+ * added afterwards is still called, once, on the next microtask.
  */
 export async function createHereBeDragons(
   container: HTMLElement,

@@ -521,6 +521,11 @@ map.on('viewchange', (v) => console.log(v.lat, v.lon, v.zoom));
 off();          // unsubscribe
 ```
 
+`ready` fires once, while `createHereBeDragons()` is still pending, and it is *latched*: a
+listener added after it fired (any listener added after `await createHereBeDragons(...)`) is
+called once, on the next microtask. Every other event is delivered only to the listeners present
+when it fires.
+
 ### Lifecycle
 
 ```ts

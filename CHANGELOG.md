@@ -4,6 +4,17 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+- **Fixed: `map.on('ready', …)` never fired when added after `await createHereBeDragons()`** — the
+  pattern the README shows. `ready` is emitted inside `init()`, before the promise resolves, and
+  the event bus did not replay it, so a late listener waited forever (the CottageHop map's
+  `mapReady` flag never turned on: no road signs, no 3D toggle). `ready` is now latched: a listener
+  added after it fired is called once, on the next microtask; other events are unchanged
+  (`EventBus.emitLatched`, unit-tested).
+- **Docs:** `maxCameraZoom`'s doc comment (and so the published `.d.ts`) said the default was
+  16.5; it has been 15 since 0.10.0.
+
 ## 0.10.0 — 3D satellite overlay
 
 - **Splats: imagery uploads fall back to `<img>` where `createImageBitmap` ignores `imageOrientation`.** WebGL ignores `UNPACK_FLIP_Y` for ImageBitmaps, so a browser that does not honour the decode-time flip would draw the satellite imagery upside down. A one-time capability test (`detectBitmapFlip`: a 1×2 canvas decoded with `flipY` and read back) picks the path, and the console says which one (`splat imagery: ImageBitmap uploads` / `<img> uploads`).
