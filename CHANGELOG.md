@@ -4,7 +4,7 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.10.1 — late `ready` listeners fire
 
 - **Fixed: `map.on('ready', …)` never fired when added after `await createHereBeDragons()`** — the
   pattern the README shows. `ready` is emitted inside `init()`, before the promise resolves, and
