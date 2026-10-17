@@ -10,6 +10,7 @@ import { TileGroup } from '../scene/TileGroup.js';
 import { lonLatToTile, lonLatToTileFractional, tileKey } from '../core/TileId.js';
 import type { LayerName } from '../types.js';
 import { logger } from '../util/log.js';
+import type { CoverageField } from './CoverageField.js';
 
 const DEFAULT_ACTIVE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads', 'rails', 'buildings', 'labels', 'trees', 'grass', 'waves', 'signs'];
 /**
@@ -154,6 +155,9 @@ const TILE_SPAWN_DROP = 30;
  * 0 disables the animation entirely → tiles snap in instantly.
  */
 const DEFAULT_TILE_SPAWN_MS = 3000;
+/** Starting Y scale of a growing building layer (tile reveal) — not 0, which
+ *  would make the normal matrix singular for the first frame. */
+const SPAWN_GROW_MIN = 0.001;
 
 export interface TileManagerDeps {
   source: PMTilesSource;
@@ -213,6 +217,14 @@ export interface TileManagerDeps {
    * low-res underlay is enabled.
    */
   mainTileMinZoom?: number;
+  /**
+   * Tile-reveal coverage field (the rounded-union mask the basemap materials
+   * sample). The manager reports tile membership to it — landed / evicted /
+   * centre tile — and ticks it once per frame. It keeps tracking even while
+   * the mask is off or the basemap layers are hidden (splats overlay), so
+   * whenever the basemap shows again the field is already correct.
+   */
+  coverage?: CoverageField;
 }
 
 interface PendingState {
@@ -245,6 +257,15 @@ export class TileManager {
    * a few seconds for a more dramatic "rise in" effect.
    */
   private spawnDurationMs = DEFAULT_TILE_SPAWN_MS;
+  /**
+   * Layers temporarily masked by an overlay (the splats overlay hides the
+   * vector basemap under its imagery ground). Orthogonal to the registry's
+   * enabled state: a hidden layer stays "enabled" for the caller — decode
+   * continues, `getLayerEnabled()` is unchanged — it just isn't drawn until
+   * unhidden. Applied to resident tiles immediately and to every tile built
+   * while the mask is up.
+   */
+  private readonly hiddenLayers = new Set<LayerName>();
   /**
    * Offset applied to the archive's `maxZoom` in `chooseZoom`. Set by
    * quality tier (low = -1, high = 0) or directly by the developer.
@@ -328,7 +349,12 @@ export class TileManager {
   private pitchedRoofs = false;
 
   constructor(private deps: TileManagerDeps) {
-    this.cache = new TileCache(1024, (tile) => deps.scene.removeTile(tile));
+    this.cache = new TileCache(1024, (tile) => {
+      deps.scene.removeTile(tile);
+      // "Left": never blocks the eviction — the field only keeps a timestamp
+      // so the neighbours' joins retract instead of popping.
+      deps.coverage?.removeTile(tile.z, tile.x, tile.y);
+    });
     this.tileWindowRadius = Math.max(0, deps.tileWindowRadius ?? DEFAULT_TILE_WINDOW_RADIUS);
     this.tileWindowRadiusFar = Math.max(
       this.tileWindowRadius,
@@ -341,6 +367,9 @@ export class TileManager {
     this.applyBudgetMs = Math.max(0, deps.maxTileApplyMsPerFrame ?? DEFAULT_APPLY_BUDGET_MS);
     this.dispatchInterval = Math.max(1, deps.dispatchInterval ?? DEFAULT_DISPATCH_INTERVAL);
     this.mainMinCameraZoom = deps.mainTileMinZoom ?? -Infinity;
+    // The coverage window is the keep zone: everything that can be resident
+    // and near enough to matter, re-anchored only when the centre tile moves.
+    deps.coverage?.setWindowRadius(this.keepRadius);
   }
 
   async start(): Promise<void> {
@@ -376,6 +405,15 @@ export class TileManager {
    */
   update(forced = false, frameBudgetOk = true, suspendBuilds = false): boolean {
     if (this.disposed) return false;
+    const dirty = this.updateTiles(forced, frameBudgetOk, suspendBuilds);
+    // Tile reveal: advance the rounded-union mask LAST, so tiles built and the
+    // centre tile recorded this frame are in the texture the frame draws with.
+    // Runs even while the main grid is suspended (ejected tiles shrink out).
+    // A no-op unless something is animating or the window moved.
+    return this.deps.coverage?.tick() ? true : dirty;
+  }
+
+  private updateTiles(forced: boolean, frameBudgetOk: boolean, suspendBuilds: boolean): boolean {
 
     // Spawn animations are cheap (a few position writes) and matter for
     // visual smoothness, so they advance every frame. The apply-queue drain
@@ -452,6 +490,9 @@ export class TileManager {
     this.lastCenterX = center.x;
     this.lastCenterY = center.y;
     this.hasCenter = true;
+    // A new tile zoom (tier flip / zoom offset) resets the field: another
+    // grid, another tile size — and so another union radius.
+    this.deps.coverage?.setCentre(z, center.x, center.y);
 
     // The camera frustum's ground footprint is a convex TRAPEZOID, not a
     // rectangle. The bounding box of that trapezoid re-introduces big
@@ -800,8 +841,9 @@ export class TileManager {
 
   setLayerEnabled(layerName: LayerName, enabled: boolean): void {
     let present = false;
+    const visible = enabled && !this.hiddenLayers.has(layerName);
     for (const [, tile] of this.cache.entries()) {
-      tile.setLayerVisible(layerName, enabled);
+      tile.setLayerVisible(layerName, visible);
       if (tile.getLayer(layerName)) present = true;
     }
     // Enabling a per-tile layer that no cached tile actually has — e.g. an
@@ -1055,7 +1097,14 @@ export class TileManager {
       // y=0 over spawnDurationMs so tiles "rise in" instead of snapping in.
       // A spawnDurationMs of 0 means the user has disabled the animation —
       // snap directly to y=0 without bookkeeping.
-      if (this.spawnDurationMs > 0) {
+      //
+      // With the tile reveal on, the tile instead lands AT ground level and
+      // is uncovered by the growing rounded union: a disc growing on the
+      // ground and a slab rising through it fight each other (and top-down
+      // the slab is hidden under the ground plane for the first ~1.6 s, so
+      // the disc would grow over nothing). `tileReveal: { rise: true }` keeps
+      // both.
+      if (this.spawnDurationMs > 0 && this.slabRise()) {
         tile.position.y = -TILE_SPAWN_DROP;
         tile.userData.spawnStartMs = performance.now();
       } else {
@@ -1063,6 +1112,9 @@ export class TileManager {
       }
       this.cache.set(item.z, item.x, item.y, tile);
       this.deps.scene.addTile(tile);
+      // "Landed": the union grows from here. Tile-level only — buildings
+      // arriving in a later phase must not restart the growth.
+      this.deps.coverage?.addTile(item.z, item.x, item.y);
     }
     for (const layerName of item.layers) {
       const geom = item.geometries[layerName];
@@ -1083,10 +1135,19 @@ export class TileManager {
         this.spawnDurationMs > 0 &&
         tile.userData.spawnStartMs === undefined
       ) {
-        obj.position.y = -TILE_SPAWN_DROP;
+        if (this.slabRise()) {
+          obj.position.y = -TILE_SPAWN_DROP;
+        } else {
+          // Tile reveal: buildings GROW out of the (already revealed) ground
+          // rather than travel up from 30 m below it — nothing is hidden
+          // under the ground plane while it animates, and flattened
+          // buildings ('low' tier) simply appear at once.
+          obj.scale.y = SPAWN_GROW_MIN;
+          obj.userData.spawnGrow = true;
+        }
         obj.userData.spawnStartMs = performance.now();
       }
-      if (!this.deps.layers.isEnabled(layerName)) {
+      if (!this.deps.layers.isEnabled(layerName) || this.hiddenLayers.has(layerName)) {
         tile.setLayerVisible(layerName, false);
       }
     }
@@ -1132,19 +1193,29 @@ export class TileManager {
         const meshStart = child.userData.spawnStartMs as number | undefined;
         if (meshStart === undefined) continue;
         const elapsed = now - meshStart;
+        const grow = child.userData.spawnGrow === true;
         if (duration <= 0 || elapsed >= duration) {
           child.position.y = 0;
+          child.scale.y = 1;
           child.userData.spawnStartMs = undefined;
+          child.userData.spawnGrow = undefined;
           active = true;
         } else {
           const t = elapsed / duration;
           const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
-          child.position.y = -TILE_SPAWN_DROP * (1 - eased);
+          if (grow) child.scale.y = Math.max(SPAWN_GROW_MIN, eased);
+          else child.position.y = -TILE_SPAWN_DROP * (1 - eased);
           active = true;
         }
       }
     }
     return active;
+  }
+
+  /** Whether new tiles rise from below ground (always, unless the tile
+   *  reveal is on without its `rise` option). */
+  private slabRise(): boolean {
+    return this.deps.coverage?.slabRise ?? true;
   }
 
   /**
@@ -1160,6 +1231,23 @@ export class TileManager {
 
   getSpawnDurationMs(): number {
     return this.spawnDurationMs;
+  }
+
+  /**
+   * Mask a layer out of the drawn scene without changing its enabled state
+   * (see `hiddenLayers`). Idempotent; `hidden: false` restores the layer to
+   * whatever the registry says it should be.
+   */
+  setLayerHidden(layerName: LayerName, hidden: boolean): void {
+    if (hidden === this.hiddenLayers.has(layerName)) return;
+    if (hidden) this.hiddenLayers.add(layerName);
+    else this.hiddenLayers.delete(layerName);
+    const visible = this.deps.layers.isEnabled(layerName) && !hidden;
+    for (const [, tile] of this.cache.entries()) tile.setLayerVisible(layerName, visible);
+  }
+
+  isLayerHidden(layerName: LayerName): boolean {
+    return this.hiddenLayers.has(layerName);
   }
 
   /**

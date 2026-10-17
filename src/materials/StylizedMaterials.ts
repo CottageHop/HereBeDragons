@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import { build3BandGradient } from './GradientMaps.js';
 import { Palette, type PaletteSlot, type PaletteKey } from './Palette.js';
+import {
+  COVERAGE_GLSL,
+  type CoverageUniforms,
+  createCoverageUniforms,
+  patchCoverage,
+  registerCoverageUniforms
+} from './coverageShader.js';
 
 /**
  * World-space width (metres) of each thin "line" slot, used to drive the
@@ -81,6 +88,17 @@ export class StylizedMaterials {
    * change, so an underground roadway reads as a faint dashed road outline.
    */
   private tunnelMaterial: THREE.ShaderMaterial | null = null;
+  /** Unmasked twin of the tunnel material (the underlay's tunnels). */
+  private tunnelMaterialUnmasked: THREE.ShaderMaterial | null = null;
+  /**
+   * Tile-reveal coverage uniforms (see `coverageShader.ts`), shared by
+   * reference with every masked material and written by the `CoverageField`.
+   * They start in the "off" state, so a map without a field is unmasked.
+   */
+  readonly coverage: CoverageUniforms = createCoverageUniforms();
+  /** Masked material → its palette slot, so `unmaskedTwin()` can map a mesh's
+   *  material to the twin without the layers knowing about masking. */
+  private slotOf = new Map<THREE.Material, PaletteSlot>();
 
   constructor() {
     this.gradient = build3BandGradient();
@@ -90,10 +108,44 @@ export class StylizedMaterials {
     const key = this.cacheKey(slot);
     let mat = this.cache.get(key);
     if (!mat) {
-      mat = this.createMaterial(slot, slot.color);
+      mat = this.createMaterial(slot, slot.color, true);
       this.cache.set(key, mat);
     }
     return mat;
+  }
+
+  /**
+   * The slot's UNMASKED twin: the same stylized material compiled without the
+   * tile-reveal coverage mask. For geometry that must stay visible outside
+   * the rounded union of loaded tiles — the 50 km ground plane and the z12
+   * underlay — or the map would dissolve to the clear colour there. A
+   * separate cache entry (not a per-draw uniform toggle): three.js only
+   * re-uploads a material's uniforms when the material changes between
+   * draws, so two meshes sharing one material cannot reliably differ in a
+   * uniform. Twins live in the same cache, so the bulk setters (painterly
+   * surface, road texture, sub-pixel fade) reach them; `setColors` recolours
+   * both. Created lazily, inheriting the masked twin's current colour.
+   */
+  getUnmasked(slot: PaletteSlot): THREE.MeshToonMaterial {
+    const key = this.cacheKey(slot) + UNMASKED_SUFFIX;
+    let mat = this.cache.get(key);
+    if (!mat) {
+      mat = this.createMaterial(slot, slot.color, false);
+      mat.color.copy(this.get(slot).color);
+      this.cache.set(key, mat);
+    }
+    return mat;
+  }
+
+  /**
+   * Map a material handed out by `get()` / `getTunnelMaterial()` to its
+   * unmasked twin; anything else is returned unchanged. Lets the underlay
+   * reuse the ordinary layer builders and swap materials afterwards.
+   */
+  unmaskedTwin(mat: THREE.Material): THREE.Material {
+    if (mat === this.tunnelMaterial) return this.getTunnelMaterial(false);
+    const slot = this.slotOf.get(mat);
+    return slot ? this.getUnmasked(slot) : mat;
   }
 
   /**
@@ -114,19 +166,25 @@ export class StylizedMaterials {
       const cacheKey = this.cacheKey(slot);
       let mat = this.cache.get(cacheKey);
       if (!mat) {
-        mat = this.createMaterial(slot, hex);
+        mat = this.createMaterial(slot, hex, true);
         this.cache.set(cacheKey, mat);
       } else {
         mat.color.set(hex);
         mat.needsUpdate = true;
+      }
+      // Keep the unmasked twin (ground plane / underlay), if any, in step.
+      const twin = this.cache.get(cacheKey + UNMASKED_SUFFIX);
+      if (twin) {
+        twin.color.set(hex);
+        twin.needsUpdate = true;
       }
     }
 
     // Keep the tunnel outline tinted to the road colour.
     if (byKey.road_major) {
       this.roadColor.set(byKey.road_major);
-      if (this.tunnelMaterial) {
-        (this.tunnelMaterial.uniforms.uColor.value as THREE.Color).copy(this.roadColor);
+      for (const tunnel of [this.tunnelMaterial, this.tunnelMaterialUnmasked]) {
+        if (tunnel) (tunnel.uniforms.uColor.value as THREE.Color).copy(this.roadColor);
       }
     }
   }
@@ -240,9 +298,14 @@ export class StylizedMaterials {
   dispose(): void {
     for (const mat of this.cache.values()) mat.dispose();
     this.cache.clear();
+    this.slotOf.clear();
     this.fadeMaterials.length = 0;
     this.tunnelMaterial?.dispose();
     this.tunnelMaterial = null;
+    this.tunnelMaterialUnmasked?.dispose();
+    this.tunnelMaterialUnmasked = null;
+    // The placeholder texture only; a CoverageField disposes its own.
+    this.coverage.uCoverageTex.value.dispose();
     this.gradient.dispose();
   }
 
@@ -257,7 +320,8 @@ export class StylizedMaterials {
    * fade for thin road/rail ribbons. Single creation path so `get()` and
    * `setColors()` can't drift.
    */
-  private createMaterial(slot: PaletteSlot, hex: string): THREE.MeshToonMaterial {
+  private createMaterial(slot: PaletteSlot, hex: string, masked: boolean): THREE.MeshToonMaterial {
+    const coverage = masked ? this.coverage : null;
     const offset = slot.polygonOffsetUnits ?? 0;
     const mat = new THREE.MeshToonMaterial({
       color: new THREE.Color(hex),
@@ -278,7 +342,7 @@ export class StylizedMaterials {
     const isBuilding = slot === Palette.building || slot === Palette.building_top;
     const fadeWidth = FADE_WIDTHS_M.find(([s]) => s === slot)?.[1];
     if (isBuilding) {
-      attachBlueprintShader(mat);
+      attachBlueprintShader(mat, coverage);
     } else if (fadeWidth !== undefined) {
       const kind: 'road' | 'path' | 'none' =
         slot === Palette.road_major || slot === Palette.road_minor
@@ -286,13 +350,14 @@ export class StylizedMaterials {
           : slot === Palette.road_path
             ? 'path'
             : 'none';
-      attachRoadFadeShader(mat, this.groundColor, kind);
+      attachRoadFadeShader(mat, this.groundColor, kind, coverage);
       const rt = mat.userData.uRoadTexture as { value: number } | undefined;
       if (rt) rt.value = this.roadTextureStrength;
       this.fadeMaterials.push({ mat, widthM: fadeWidth });
     } else {
-      attachPainterlySurfaceShader(mat, this.painterlySurfaceStrength);
+      attachPainterlySurfaceShader(mat, this.painterlySurfaceStrength, coverage);
     }
+    if (masked) this.slotOf.set(mat, slot);
 
     return mat;
   }
@@ -312,16 +377,23 @@ export class StylizedMaterials {
    * (`dashU`), at low opacity — so an underground roadway reads as a faint
    * dashed outline below the surface. Tinted from the current ground colour.
    */
-  getTunnelMaterial(): THREE.ShaderMaterial {
-    if (this.tunnelMaterial) return this.tunnelMaterial;
-    this.tunnelMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        uColor: { value: this.roadColor.clone() },
-        uDashPeriod: { value: 16 },
-        uDashFill: { value: 0.5 },
-        uEdge: { value: 0.16 },
-        uOpacity: { value: 0.25 }
-      },
+  getTunnelMaterial(masked = true): THREE.ShaderMaterial {
+    const existing = masked ? this.tunnelMaterial : this.tunnelMaterialUnmasked;
+    if (existing) return existing;
+    const uniforms: { [name: string]: THREE.IUniform } = {
+      uColor: { value: this.roadColor.clone() },
+      uDashPeriod: { value: 16 },
+      uDashFill: { value: 0.5 },
+      uEdge: { value: 0.16 },
+      uOpacity: { value: 0.25 }
+    };
+    // Tile reveal: the masked variant fades with the coverage field (it is
+    // transparent, so alpha — no dither). The unmasked twin (underlay) keeps
+    // the original shader, compiled without the HBD_COVERAGE define.
+    if (masked) registerCoverageUniforms(uniforms, this.coverage);
+    const mat = new THREE.ShaderMaterial({
+      uniforms,
+      defines: masked ? { HBD_COVERAGE: '' } : {},
       vertexShader: TUNNEL_VERT,
       fragmentShader: TUNNEL_FRAG,
       transparent: true,
@@ -333,18 +405,29 @@ export class StylizedMaterials {
       polygonOffsetUnits: -26,
       side: THREE.DoubleSide
     });
-    return this.tunnelMaterial;
+    if (masked) this.tunnelMaterial = mat;
+    else this.tunnelMaterialUnmasked = mat;
+    return mat;
   }
 }
+
+/** Cache-key suffix of a slot's unmasked twin (see `getUnmasked`). */
+const UNMASKED_SUFFIX = '|unmasked';
 
 const TUNNEL_VERT = /* glsl */ `
 attribute float dashU;
 attribute float dashV;
 varying float vDashU;
 varying float vDashV;
+#ifdef HBD_COVERAGE
+varying vec2 vHbdCoverXZ;
+#endif
 void main() {
   vDashU = dashU;
   vDashV = dashV;
+#ifdef HBD_COVERAGE
+  vHbdCoverXZ = (modelMatrix * vec4(position, 1.0)).xz;
+#endif
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
@@ -357,6 +440,10 @@ uniform float uEdge;
 uniform float uOpacity;
 varying float vDashU;
 varying float vDashV;
+#ifdef HBD_COVERAGE
+varying vec2 vHbdCoverXZ;
+${COVERAGE_GLSL}
+#endif
 void main() {
   // Outline only: keep fragments near either long edge (vDashV ~ 0 or ~ 1),
   // drop the filled interior.
@@ -367,6 +454,9 @@ void main() {
   // Faint road-coloured dashed outline at low opacity reads as below-surface.
   // Targets are linear and uColor is a linear THREE.Color, so output linear.
   gl_FragColor = vec4(uColor, uOpacity);
+#ifdef HBD_COVERAGE
+  gl_FragColor.a *= hbdCoverage(vHbdCoverXZ);
+#endif
 }
 `;
 
@@ -380,7 +470,8 @@ void main() {
 function attachRoadFadeShader(
   mat: THREE.MeshToonMaterial,
   groundColor: THREE.Color,
-  kind: 'road' | 'path' | 'none'
+  kind: 'road' | 'path' | 'none',
+  coverage: CoverageUniforms | null
 ): void {
   const fade = { value: 1 };
   const ground = { value: groundColor.clone() };
@@ -468,7 +559,11 @@ uniform vec3 uRoadFadeGround;`;
         #include <colorspace_fragment>
         `
       );
+    if (coverage) patchCoverage(shader, coverage, 'discard');
   };
+  // three keys programs on `onBeforeCompile.toString()`, which is the same
+  // text for every kind and for both twins — tell them apart explicitly.
+  mat.customProgramCacheKey = () => `hbd-road:${kind}:${coverage ? 'masked' : 'plain'}`;
   mat.needsUpdate = true;
 }
 
@@ -481,7 +576,11 @@ uniform vec3 uRoadFadeGround;`;
  * Ghibli surfaces look like cels. Theme-gated by `uPainterlySurface` (0 = a
  * cheap branch skip, so non-Ghibli themes are untouched and pay nothing).
  */
-function attachPainterlySurfaceShader(mat: THREE.MeshToonMaterial, initial: number): void {
+function attachPainterlySurfaceShader(
+  mat: THREE.MeshToonMaterial,
+  initial: number,
+  coverage: CoverageUniforms | null
+): void {
   const strength = { value: initial };
   mat.userData.uPainterlySurface = strength;
 
@@ -543,7 +642,9 @@ float hbdsFbm(vec2 p) {
         #include <colorspace_fragment>
         `
       );
+    if (coverage) patchCoverage(shader, coverage, 'discard');
   };
+  mat.customProgramCacheKey = () => `hbd-surface:${coverage ? 'masked' : 'plain'}`;
   mat.needsUpdate = true;
 }
 
@@ -554,7 +655,7 @@ float hbdsFbm(vec2 p) {
  * each building mesh can flip it per-draw via `onBeforeRender` — meshes
  * share the cached material but can have different selected buildings.
  */
-function attachBlueprintShader(mat: THREE.MeshToonMaterial): void {
+function attachBlueprintShader(mat: THREE.MeshToonMaterial, coverage: CoverageUniforms | null): void {
   const selectedUniform = { value: -1 };
   // Hover-affordance: subtle warm brighten of whichever building's index this
   // is set to (-1 = none). Driven per-mesh in BuildingsManager.onBeforeRender,
@@ -852,6 +953,8 @@ float hbdNoise2(vec2 p) {
         #include <colorspace_fragment>
         `
       );
+    if (coverage) patchCoverage(shader, coverage, 'discard');
   };
+  mat.customProgramCacheKey = () => `hbd-building:${coverage ? 'masked' : 'plain'}`;
   mat.needsUpdate = true;
 }

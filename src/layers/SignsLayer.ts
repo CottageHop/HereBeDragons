@@ -3,6 +3,7 @@ import { Layer } from './Layer.js';
 import type { LayerName } from '../types.js';
 import type { LayerGeometry } from '../tiles/worker/decodeProtocol.js';
 import type { StylizedMaterials } from '../materials/StylizedMaterials.js';
+import { COVERAGE_GLSL, registerCoverageUniforms } from '../materials/coverageShader.js';
 
 /** Own render layer so the composer's normal/outline pass can skip the signs. */
 export const SIGNS_THREE_LAYER = 7;
@@ -62,6 +63,8 @@ export class SignsLayer extends Layer {
       depthWrite: true,
       fog: true
     });
+    // Tile reveal: sample the shared rounded-union coverage field.
+    registerCoverageUniforms(this.material.uniforms, materials.coverage);
   }
 
   build(geometry: LayerGeometry): THREE.Object3D {
@@ -142,6 +145,7 @@ uniform float uDensity;
 varying vec2 vUv;
 varying float vVar;
 #include <fog_pars_vertex>
+${COVERAGE_GLSL}
 void main() {
   vUv = uv;
   vVar = aVariant;
@@ -159,7 +163,9 @@ void main() {
   float lay = smoothstep(0.45, 0.95, downness);
   vec3 right = normalize(vec3(camRight.x, 0.0, camRight.z));
   vec3 up = normalize(mix(vec3(0.0, 1.0, 0.0), camUp, lay));
-  vec3 worldPos = worldBase + right * (position.x * uWidth) + up * (position.y * uHeight);
+  // Tile reveal: banners scale with the rounded-union mask at their base.
+  float reveal = hbdCoverage(worldBase.xz);
+  vec3 worldPos = worldBase + right * (position.x * uWidth * reveal) + up * (position.y * uHeight * reveal);
   vec4 mvPosition = viewMatrix * vec4(worldPos, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>

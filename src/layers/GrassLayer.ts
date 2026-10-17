@@ -3,6 +3,7 @@ import { Layer } from './Layer.js';
 import type { LayerName } from '../types.js';
 import type { LayerGeometry } from '../tiles/worker/decodeProtocol.js';
 import type { StylizedMaterials } from '../materials/StylizedMaterials.js';
+import { COVERAGE_GLSL, registerCoverageUniforms } from '../materials/coverageShader.js';
 
 /**
  * Dedicated THREE render layer for grass billboards — same rationale as
@@ -81,6 +82,8 @@ export class GrassLayer extends Layer {
       depthWrite: true,
       fog: true
     });
+    // Tile reveal: sample the shared rounded-union coverage field.
+    registerCoverageUniforms(this.material.uniforms, materials.coverage);
   }
 
   /** Recolour base + tip from the active theme (derived from the park color). */
@@ -166,6 +169,7 @@ uniform float uWindFreq;
 uniform float uWindSpeed;
 varying vec2 vUv;
 #include <fog_pars_vertex>
+${COVERAGE_GLSL}
 void main() {
   vUv = uv;
   vec3 worldBase = (modelMatrix * vec4(aOffset, 1.0)).xyz;
@@ -176,8 +180,10 @@ void main() {
   float lay = smoothstep(0.45, 0.95, downness);
   vec3 right = normalize(vec3(camRight.x, 0.0, camRight.z));
   vec3 up = normalize(mix(vec3(0.0, 1.0, 0.0), camUp, lay));
-  float w = uWidth * aScale;
-  float h = uHeight * aScale;
+  // Tile reveal: blades scale with the rounded-union mask at their base.
+  float reveal = hbdCoverage(worldBase.xz);
+  float w = uWidth * aScale * reveal;
+  float h = uHeight * aScale * reveal;
   vec3 worldPos = worldBase + right * (position.x * w) + up * (position.y * h);
 
   // Travelling wind wave across the field. Phase keys off the blade's world XZ

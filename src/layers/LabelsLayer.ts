@@ -4,6 +4,7 @@ import type { LayerName } from '../types.js';
 import type { LayerGeometry } from '../tiles/worker/decodeProtocol.js';
 import { LabelKind, type StreetLabelData } from '../tiles/worker/extractors/labels.js';
 import type { StylizedMaterials } from '../materials/StylizedMaterials.js';
+import { COVERAGE_GLSL, patchCoverage, registerCoverageUniforms } from '../materials/coverageShader.js';
 
 /**
  * Three.js layer index reserved for label objects (sprites + street meshes).
@@ -175,11 +176,17 @@ uniform float uDepthElevation;
 uniform float uVisualElevation;
 
 varying vec2 vUv;
+varying float vHbdReveal;
+${COVERAGE_GLSL}
 
 void main() {
   // World anchor — only XZ from the mesh, Y forced for each role.
   float anchorX = modelMatrix[3].x;
   float anchorZ = modelMatrix[3].z;
+  // Tile reveal: the whole label fades with the rounded-union mask at its
+  // anchor (one value per label, so it is never cut through). Labels stay on
+  // top of the 3D-satellite cut-out unless it is told to take them too.
+  vHbdReveal = hbdCoverageLabel(vec2(anchorX, anchorZ));
 
   // Screen projection from uVisualElevation (m above ground). 0 keeps labels
   // pinned to the place's ground position with zero drift on tilted cameras.
@@ -210,9 +217,11 @@ precision mediump float;
 
 uniform sampler2D uAtlas;
 varying vec2 vUv;
+varying float vHbdReveal;
 
 void main() {
   vec4 c = texture2D(uAtlas, vUv);
+  c.a *= vHbdReveal;
   // The atlas already bakes in stroke + fill colors per kind, so we just
   // forward the texel. Discard fully-transparent pixels so depthTest:false
   // labels behind buildings don't bleed white halos when the source canvas
@@ -278,6 +287,11 @@ export class LabelsLayer extends Layer {
       // Don't fade with scene fog — labels need to read at any distance.
       fog: false
     });
+    // Tile reveal: street glyphs lie on the ground, so they fade per fragment
+    // with the rounded-union mask (transparent → alpha, no dither). Street
+    // names stay readable over the 3D satellite (`splats.keepLabels`).
+    this.streetMaterial.onBeforeCompile = (shader) => patchCoverage(shader, materials.coverage, 'labelAlpha');
+    this.streetMaterial.customProgramCacheKey = () => 'hbd-street-labels:masked';
     this.placeMaterial = new THREE.ShaderMaterial({
       vertexShader: PLACE_VERT,
       fragmentShader: PLACE_FRAG,
@@ -306,6 +320,8 @@ export class LabelsLayer extends Layer {
       // automatic tone map would darken it.
       toneMapped: false
     });
+    // Tile reveal + satellite cut-out (shared coverage field).
+    registerCoverageUniforms(this.placeMaterial.uniforms, materials.coverage);
   }
 
   build(geometry: LayerGeometry): THREE.Object3D {

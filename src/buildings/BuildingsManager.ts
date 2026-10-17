@@ -22,6 +22,13 @@ export interface BuildingsManagerDeps {
    * highlight wouldn't paint until the next ~0.5 s heartbeat frame.
    */
   onSceneChange?: () => void;
+  /**
+   * Tile-reveal mask ∈ [0,1] at a scene position (`CoverageField.coverageAt`).
+   * Geometry the mask has discarded is still there for the raycaster, so
+   * hover / click / elevation hits on it are dropped — you cannot pick what
+   * you cannot see. Omitted → everything counts as visible.
+   */
+  coverageAt?: (worldX: number, worldZ: number) => number;
 }
 
 export type BuildingClickListener = (info: BuildingInfo) => void;
@@ -47,6 +54,7 @@ export class BuildingsManager {
   private readonly onSceneChange: () => void;
 
   private readonly raycaster = new THREE.Raycaster();
+  private readonly coverageAt?: (worldX: number, worldZ: number) => number;
   private readonly ndc = new THREE.Vector2();
   /** Scratch vector for manual world→view→clip transformation. Avoids the
    *  perspective-divide sign-flip Vector3.project() does when the anchor
@@ -135,6 +143,7 @@ export class BuildingsManager {
     this.camera = deps.camera;
     this.scene = deps.scene;
     this.onSceneChange = deps.onSceneChange ?? (() => {});
+    this.coverageAt = deps.coverageAt;
     this.config = { enabled: true, popupEnabled: false, ...config };
 
     if (this.config.injectDefaultStyles !== false) injectBuildingPopupStylesOnce();
@@ -465,7 +474,7 @@ export class BuildingsManager {
     );
     this.raycaster.setFromCamera(this.ndc, this.camera.three);
     const hits = BUILDING_MESHES.size > 0
-      ? this.raycaster.intersectObjects(buildingMeshArray(), false)
+      ? this.revealedHits(this.raycaster.intersectObjects(buildingMeshArray(), false))
       : [];
 
     // Resolve the hovered mesh + per-building index, if any.
@@ -513,7 +522,7 @@ export class BuildingsManager {
       if (this.selected) this.clearSelection();
       return;
     }
-    const hits = this.raycaster.intersectObjects(buildingMeshArray(), false);
+    const hits = this.revealedHits(this.raycaster.intersectObjects(buildingMeshArray(), false));
     if (hits.length === 0) {
       if (this.selected) this.clearSelection();
       return;
@@ -558,8 +567,15 @@ export class BuildingsManager {
     this.raycaster.ray.direction.set(0, -1, 0);
     this.raycaster.near = 0;
     this.raycaster.far = 20_000;
-    const hits = this.raycaster.intersectObjects(buildingMeshArray(), false);
+    const hits = this.revealedHits(this.raycaster.intersectObjects(buildingMeshArray(), false));
     return hits.length > 0 ? hits[0].point.y : 0;
+  }
+
+  /** Drop raycast hits on geometry the tile reveal has masked out. */
+  private revealedHits<T extends { point: THREE.Vector3 }>(hits: T[]): T[] {
+    const coverageAt = this.coverageAt;
+    if (!coverageAt || hits.length === 0) return hits;
+    return hits.filter((h) => coverageAt(h.point.x, h.point.z) >= 0.5);
   }
 
   /**

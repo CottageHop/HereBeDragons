@@ -253,7 +253,20 @@ export class BaseTileManager {
       // the BASE_Y_OFFSET, this guarantees z14 painted pixels overwrite the
       // base anywhere they overlap, while gaps in the streaming z14 grid
       // show the base color.
-      obj.traverse((node) => { node.renderOrder = -1; });
+      //
+      // The underlay also opts OUT of the tile reveal: it is exactly what
+      // should show where the main grid's rounded union has not reached yet,
+      // so its meshes swap to the materials' unmasked twins (the layers hand
+      // out the shared, masked ones).
+      const materials = this.deps.scene.materials;
+      obj.traverse((node) => {
+        node.renderOrder = -1;
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.material = Array.isArray(mesh.material)
+          ? mesh.material.map((m) => materials.unmaskedTwin(m))
+          : materials.unmaskedTwin(mesh.material);
+      });
       tile.setLayer(layerName, obj);
     }
     this.pending.delete(key);

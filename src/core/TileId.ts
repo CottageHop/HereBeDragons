@@ -1,4 +1,4 @@
-import { EARTH_CIRCUMFERENCE_M } from './Projection.js';
+import { EARTH_CIRCUMFERENCE_M, type Projection } from './Projection.js';
 
 export interface TileId {
   z: number;
@@ -77,6 +77,29 @@ export function tileBounds(z: number, x: number, y: number): TileBoundsLonLat {
 export function tileSizeMeters(z: number, y: number): number {
   const lat = tileToLonLat(z, 0, y + 0.5).lat;
   return (EARTH_CIRCUMFERENCE_M * Math.cos(lat * DEG)) / 2 ** z;
+}
+
+/** A tile's footprint in scene coordinates (metres; +X east, +Z SOUTH). */
+export interface TileWorldRect {
+  xMin: number;
+  zMin: number;
+  xMax: number;
+  zMax: number;
+}
+
+/**
+ * Scene-space XZ rectangle of tile (z, x, y). Scene Z is −mercator Y, and
+ * tile y grows south, so `zMin` is the tile's NORTH edge. The projection is a
+ * uniformly scaled Mercator, so every tile of one zoom is the same exact
+ * square and the grid is linear in (x, y) — fractional / out-of-range tile
+ * coordinates are fine.
+ */
+export function tileWorldRect(projection: Projection, z: number, x: number, y: number): TileWorldRect {
+  const nw = tileToLonLat(z, x, y);
+  const se = tileToLonLat(z, x + 1, y + 1);
+  const a = projection.project(nw.lon, nw.lat);
+  const b = projection.project(se.lon, se.lat);
+  return { xMin: a.x, zMin: -a.y, xMax: b.x, zMax: -b.y };
 }
 
 function clampInt(value: number, lo: number, hi: number): number {

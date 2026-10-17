@@ -3,6 +3,7 @@ import { Layer, makeBufferGeometry } from './Layer.js';
 import type { LayerName } from '../types.js';
 import type { LayerGeometry } from '../tiles/worker/decodeProtocol.js';
 import type { StylizedMaterials } from '../materials/StylizedMaterials.js';
+import { COVERAGE_GLSL, registerCoverageUniforms } from '../materials/coverageShader.js';
 
 /**
  * Own render layer so the composer's normal/outline pass can skip the waves —
@@ -65,6 +66,8 @@ export class WavesLayer extends Layer {
       polygonOffsetUnits: -30,
       fog: true
     });
+    // Tile reveal: sample the shared rounded-union coverage field.
+    registerCoverageUniforms(this.material.uniforms, materials.coverage);
   }
 
   /** Recolour shallow water / wet sand / foam from the active theme. */
@@ -125,10 +128,12 @@ attribute float shoreV;
 attribute float shoreU;
 varying float vV;
 varying float vU;
+varying vec2 vHbdCoverXZ;
 #include <fog_pars_vertex>
 void main() {
   vV = shoreV;
   vU = shoreU;
+  vHbdCoverXZ = (modelMatrix * vec4(position, 1.0)).xz;
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
@@ -144,7 +149,9 @@ uniform vec3 uFoam;
 uniform float uOpacity;
 varying float vV;
 varying float vU;
+varying vec2 vHbdCoverXZ;
 #include <fog_pars_fragment>
+${COVERAGE_GLSL}
 
 float hbdwHash(float n) { return fract(sin(n) * 43758.5453123); }
 
@@ -173,7 +180,8 @@ void main() {
   // Alpha: the wet band feathers out at the ribbon edges (blending into open
   // water / dry land); foam is bright and near-opaque where it breaks.
   float band = 1.0 - d;
-  float a = max(band * 0.5, foam) * uOpacity;
+  // × the tile reveal's rounded-union mask (transparent → alpha, no dither).
+  float a = max(band * 0.5, foam) * uOpacity * hbdCoverage(vHbdCoverXZ);
   if (a < 0.01) discard;
 
   gl_FragColor = vec4(col, a);

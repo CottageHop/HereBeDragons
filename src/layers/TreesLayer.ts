@@ -4,6 +4,7 @@ import { Palette } from '../materials/Palette.js';
 import type { LayerName } from '../types.js';
 import type { LayerGeometry } from '../tiles/worker/decodeProtocol.js';
 import type { StylizedMaterials } from '../materials/StylizedMaterials.js';
+import { COVERAGE_GLSL, registerCoverageUniforms } from '../materials/coverageShader.js';
 
 /**
  * Dedicated THREE render layer for tree billboards. The composer's normal pass
@@ -91,6 +92,8 @@ export class TreesLayer extends Layer {
       // tilt/strength controls, which drive scene.fog.density).
       fog: true
     });
+    // Tile reveal: each tree scales with the coverage mask at its base.
+    registerCoverageUniforms(this.material.uniforms, materials.coverage);
   }
 
   /**
@@ -191,6 +194,7 @@ uniform float uWindFreq;
 uniform float uWindSpeed;
 varying vec2 vUv;
 #include <fog_pars_vertex>
+${COVERAGE_GLSL}
 void main() {
   vUv = uv;
   // Tree base in world space (modelMatrix carries the tile group's transform,
@@ -209,8 +213,12 @@ void main() {
   float lay = smoothstep(0.45, 0.95, downness);
   vec3 right = normalize(vec3(camRight.x, 0.0, camRight.z));
   vec3 up = normalize(mix(vec3(0.0, 1.0, 0.0), camUp, lay));
-  float w = uWidth * aScale;
-  float h = uHeight * aScale;
+  // Tile reveal: the whole tree scales with the rounded-union mask sampled at
+  // its BASE, so it grows in as the reveal's edge sweeps over it (never cut
+  // in half). The mask is exactly 1 on settled ground.
+  float reveal = hbdCoverage(worldBase.xz);
+  float w = uWidth * aScale * reveal;
+  float h = uHeight * aScale * reveal;
   vec3 worldPos = worldBase + right * (position.x * w) + up * (position.y * h);
   // Wind sway: the canopy leans along the wind in a slow travelling wave that
   // sweeps across the stand (phase keyed off the tree's world XZ). Linear in
