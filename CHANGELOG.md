@@ -4,7 +4,7 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.10.0 — 3D satellite overlay
 
 - **Splats: imagery uploads fall back to `<img>` where `createImageBitmap` ignores `imageOrientation`.** WebGL ignores `UNPACK_FLIP_Y` for ImageBitmaps, so a browser that does not honour the decode-time flip would draw the satellite imagery upside down. A one-time capability test (`detectBitmapFlip`: a 1×2 canvas decoded with `flipY` and read back) picks the path, and the console says which one (`splat imagery: ImageBitmap uploads` / `<img> uploads`).
 
