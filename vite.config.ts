@@ -34,7 +34,10 @@ export default defineConfig(({ mode }) => {
           copyPublicDir: false,
           sourcemap: true,
           rollupOptions: {
-            external: ['three']
+            // `@sparkjsdev/spark` is an OPTIONAL peer dep — the splats overlay
+            // reaches it via a dynamic `import()` that must stay bare in the
+            // published bundle so apps that never use splats never ship it.
+            external: ['three', '@sparkjsdev/spark']
           },
           target: 'es2022',
           minify: false

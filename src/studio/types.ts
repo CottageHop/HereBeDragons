@@ -63,7 +63,10 @@ export interface MapStudio {
   /**
    * Apply a config to the live map and sync every panel control to match.
    * Missing fields are left untouched, except camera ranges (an omitted range
-   * resets to its default) so an exported config round-trips exactly.
+   * resets to its default) so an exported config round-trips exactly. A
+   * `splats` block (with a `urlTemplate`) REPLACES the overlay's options —
+   * keys it leaves out go back to their defaults, as exports elide them — and
+   * creates / rebuilds the layer as needed.
    */
   setConfig(config: Partial<StudioConfig>): void;
   /** Show or hide the panel. */

@@ -10,17 +10,32 @@ import type {
   SnapshotOptions,
   Unsubscribe
 } from './types.js';
+import type { RenderStats } from './types.js';
+
+function emptyRenderStats(): RenderStats {
+  return {
+    frames: 0, renders: 0, needsRender: 0, tileDirty: 0, layersDirty: 0, bridgesDirty: 0,
+    sporesDirty: 0, cloudsDirty: 0, noiseDirty: 0, heartbeat: 0, lowRes: 0, paced: 0, swapHeld: 0, dissolveFrames: 0, reprojected: 0
+  };
+}
 import { EventBus } from './core/EventBus.js';
 import { Projection } from './core/Projection.js';
 import { Renderer } from './rendering/Renderer.js';
 import { SceneRoot } from './scene/SceneRoot.js';
-import { MapCameraController } from './controls/MapCameraController.js';
+import { GLIDE_STOP_PX, MapCameraController } from './controls/MapCameraController.js';
+import { createMotionDetail, stepMotionDetail } from './core/motionDetail.js';
 import { shouldSuspendBuilds } from './controls/interactionGate.js';
 import { Composer } from './rendering/Composer.js';
 import { resolveQualityProfile, isMobileDevice } from './rendering/quality.js';
 import type { QualityLevel } from './rendering/quality.js';
 import { PMTilesSource } from './tiles/PMTilesSource.js';
 import { TileWorkerPool } from './tiles/TileWorkerPool.js';
+import {
+  CoverageField,
+  resolveTileReveal,
+  type ResolvedTileReveal,
+  type TileRevealOptions
+} from './tiles/CoverageField.js';
 import { TileManager, DEFAULT_MAIN_TILE_MIN_ZOOM } from './tiles/TileManager.js';
 import { BaseTileManager } from './tiles/BaseTileManager.js';
 import { LayerRegistry } from './scene/LayerRegistry.js';
@@ -50,10 +65,16 @@ import type {
   BuildingPopupConfig
 } from './buildings/types.js';
 import { ParcelsManager } from './parcels/ParcelsManager.js';
+import { SplatsLayer, SPLAT_THREE_LAYER, SPLATS_HIDDEN_BASEMAP_LAYERS, type SparkModule } from './splats/SplatsLayer.js';
+import type { SplatsConfig, SplatsRevealOptions, SplatsStats } from './splats/types.js';
+import { SplatsController } from './splats/SplatsController.js';
+import type { ResolvedSplatsOptions } from './splats/options.js';
 import type { ParcelClickEvent } from './parcels/types.js';
 import { Compass } from './studio/Compass.js';
 import { ScaleBar, type ScaleBarUnits } from './studio/ScaleBar.js';
 import * as THREE from 'three';
+import { MINIATURE_IMAGERY_TILT_SHIFT, resolveTiltShift, type TiltShiftSettings } from './rendering/TiltShiftPass.js';
+import { approach, prefersReducedMotion, tauFor, DURATION, EASE, progress } from './core/motion.js';
 import { logger } from './util/log.js';
 
 type EventMap = {
@@ -74,6 +95,9 @@ class HereBeDragonsImpl implements HereBeDragons {
   private readonly workerPool: TileWorkerPool;
   private readonly layers: LayerRegistry;
   private readonly tileManager: TileManager;
+  /** Tile reveal: the rounded-union coverage field the basemap materials
+   *  sample (always present; `tileReveal: false` just leaves it switched off). */
+  private readonly coverage: CoverageField;
   /** Optional low-res underlay (only constructed if `options.lowResUnderlay`). */
   private readonly baseTileManager: BaseTileManager | null;
   /** Direct handle to the labels layer for setting place-label elevation. */
@@ -160,6 +184,11 @@ class HereBeDragonsImpl implements HereBeDragons {
   /** Optional parcels overlay (second PMTiles source). Null when no
    *  `parcels` option was supplied — keeps existing maps zero-cost. */
   private parcelsManager: ParcelsManager | null = null;
+  /** Optional Gaussian-splat tile overlay (Spark). The controller always
+   *  exists but holds NO layer until a `splats.urlTemplate` is configured —
+   *  at construction or later through `setSplatsOptions()` — so existing
+   *  maps stay zero-cost and Spark is never imported for them. */
+  private splats!: SplatsController;
   private compass: Compass;
   /** Scale-bar overlay. Null when the caller passed `scaleBar: false`. */
   private scaleBar: ScaleBar | null = null;
@@ -189,6 +218,30 @@ class HereBeDragonsImpl implements HereBeDragons {
   private surfacePainterlyValue = 0;
   /** Screen-space paper-grain strength in the final pass (0..1). */
   private paperGrainValue = 0;
+  /** Tilt-shift miniature: where the eased strength is heading (0 / 1) and where it is. */
+  /**
+   * The user's reduced-motion preference, cached and kept live. Every eased effect reads it:
+   * with it on, animations jump to their end state rather than merely running faster (which is
+   * what the media query actually asks for).
+   */
+  private reducedMotion = prefersReducedMotion();
+  private tiltShiftTarget = 0;
+  private tiltShiftStrength = 0;
+  /** `setTiltShift({ … })` has been called: those settings beat the overlay's imagery preset. */
+  private tiltShiftCustomized = false;
+  /** The splat overlay's miniature look is driving the tilt-shift (see syncMiniature), and the
+   *  settings to hand back when it stops. */
+  private miniatureActive = false;
+  private miniatureSaved: TiltShiftSettings | null = null;
+  private readonly tiltShiftNdc = new THREE.Vector3();
+  /** True while the splats overlay holds the post chain at (or on the way to
+   *  / from) a neutral grade. */
+  private splatsNeutralGrade = false;
+  /** How far the grade has eased toward neutral: 0 = the theme's look,
+   *  1 = neutral (linear time; `applySplatsGrade` smooths it). */
+  private splatsGradeT = 0;
+  /** Theme look saved while the neutral grade is active (restored on exit). */
+  private savedGrade: { saturation: number; shine: number } | null = null;
   /** Procedural road surfacing (cobblestone/dirt) strength (0..1). */
   private roadTextureValue = 0;
   /** Whether drifting spore/pollen motes are enabled. */
@@ -215,6 +268,33 @@ class HereBeDragonsImpl implements HereBeDragons {
    * building so the camera stays smooth. Default ~22 ms (≈ 45 FPS floor).
    */
   private readonly frameBudgetMs: number;
+  /** `performance.framePacing` (default true): see gpuStillBusy. */
+  private readonly framePacing: boolean;
+  /** `performance.settleFadeMs` (default 400, 0 = snap): see beginSettleFade. */
+  private readonly settleFadeMs: number;
+  /** `performance.reprojection` (default true): held ticks present the last frame warped to the
+   *  current camera (Composer.presentReprojected) instead of repeating it. */
+  private readonly reprojection: boolean;
+  /** Projection × view the last real frame was rendered with (valid once one has been). */
+  private readonly renderedViewProj = new THREE.Matrix4();
+  private renderedValid = false;
+  private readonly scratchViewProj = new THREE.Matrix4();
+  /**
+   * Settle dissolve state. `hold`: the captured moving frame stays on screen (renders go on
+   * behind it) until full detail has been drawn (`ready`) or `SETTLE_HOLD_MAX_MS` passes;
+   * `fade`: the screen blends from that frame into the live picture over `settleFadeMs`.
+   */
+  private settle: { phase: 'idle' | 'hold' | 'fade'; since: number; fadeStart: number; ready: boolean } =
+    { phase: 'idle', since: 0, fadeStart: 0, ready: false };
+  /** Motion LoD was drawing the lite splats on the previous tick (a flip back = detail rising). */
+  private lastSplatsLite = false;
+  /** Detail ramp over the second half of a glide (see core/motionDetail), and the camera pose of
+   *  the previous tick it measures the on-screen step from. */
+  private readonly motionDetail = createMotionDetail();
+  private readonly lastCamPos = new THREE.Vector3(Number.NaN, 0, 0);
+  private readonly lastCamQuat = new THREE.Quaternion();
+  /** Longest the settle dissolve holds the moving frame waiting for full detail, ms. */
+  private static readonly SETTLE_HOLD_MAX_MS = 700;
   /** Resolved render-quality tier — exposed via `getQualityTier()` so apps
    *  (and the demo HUD) can see whether auto-detect picked 'low', 'mobile',
    *  or 'high'. Mutable: `setQualityTier()` flips it at runtime. */
@@ -245,6 +325,21 @@ class HereBeDragonsImpl implements HereBeDragons {
    * `dynamicResolution` option.
    */
   private dynamicResolutionEnabled: boolean;
+  /** Render-loop counters since the last `getRenderStats()` (see that method). */
+  private renderStats: RenderStats = emptyRenderStats();
+  /** GPU frame pacing: fences of the frames submitted while splats were resident, oldest
+   *  first, with their submit times. */
+  private frameFences: { sync: WebGLSync; at: number }[] = [];
+  /** Frames allowed on the GPU at once under pacing (see gpuStillBusy). */
+  private static readonly FRAMES_IN_FLIGHT = 1;
+  /** Motion LoD: full-detail splat tiles come back this long after the camera's last move. */
+  private static readonly MOTION_LOD_SETTLE_MS = 250;
+  /** Never hold a frame back longer than this, whatever the fence says (lost context, driver). */
+  private static readonly PACING_MAX_HOLD_MS = 100;
+  /** `splats.leanMap` in effect right now: splats showing, the map's own effects parked. */
+  private leanMapActive = false;
+  /** What lean mode switched off, to put back when the splats go. */
+  private leanSaved: { clouds: boolean; dynamicResolution: boolean } | null = null;
   /**
    * Pixel-ratio cap applied while the view is moving or tiles are streaming —
    * 1 (no Retina super-sampling during motion). The rest ratio is
@@ -437,6 +532,9 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.camera.three.layers.enable(SPORES_THREE_LAYER);
     // Shop-sign banners: billboard shader, also excluded from normal pass.
     this.camera.three.layers.enable(SIGNS_THREE_LAYER);
+    // Gaussian splats (optional overlay): Spark's renderer mesh + per-tile
+    // SplatMeshes sit on their own layer so the normal pass can exclude them.
+    this.camera.three.layers.enable(SPLAT_THREE_LAYER);
     if (options.bounds) this.camera.setBounds(options.bounds);
     // Save the developer's chosen tilt range BEFORE any tier-imposed cap so
     // setQualityTier can restore it when switching back from `'low'` to
@@ -463,7 +561,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     // tier used to ship with gets equivalent vibrance for free. FxaaPass runs
     // on every tier so this knob is safe to set unconditionally; on high we
     // hold it at 1.0 to avoid compounding with the outline pass's own boost.
-    this.composer.setSaturation(quality.outlines ? 1.0 : 1.5);
+    this.composer.setSaturation(this.splatsNeutralGrade || quality.outlines ? 1.0 : 1.5);
 
     // Note: `applyQualityStructure` would normally fire here, but several
     // of its targets (LayerRegistry, TileManager) don't exist yet at this
@@ -562,6 +660,12 @@ class HereBeDragonsImpl implements HereBeDragons {
     // value works across GPU tiers — a slow machine simply spends more
     // time over budget and throttles harder.
     this.frameBudgetMs = options.performance?.frameBudgetMs ?? 22;
+    this.framePacing = options.performance?.framePacing !== false;
+    this.reprojection = options.performance?.reprojection !== false;
+    const settleFade = options.performance?.settleFadeMs;
+    this.settleFadeMs = typeof settleFade === 'number' && Number.isFinite(settleFade) && settleFade >= 0
+      ? settleFade
+      : 400;
 
     // Auto-tier watchers. In auto mode we start at `'high'` (the cheap
     // FXAA-only 3D path is the right default for almost everything), then:
@@ -597,6 +701,16 @@ class HereBeDragonsImpl implements HereBeDragons {
     // tier sets them — 'high' leaves them undefined so the TileManager's own
     // desktop defaults take over).
     const qtile = quality.tile;
+    // Tile reveal: the basemap is drawn inside the rounded union of the
+    // loaded tiles. The field writes the coverage uniforms every basemap
+    // material shares; the TileManager feeds it tile membership.
+    this.coverage = new CoverageField(
+      this.projection,
+      this.scene.materials.coverage,
+      // Reduced motion: keep the rounded-union SHAPE but drop its grow animation.
+      ((r) => (this.reducedMotion ? { ...r, growMs: 0 } : r))(resolveTileReveal(options.tileReveal))
+    );
+    this.composer.setCoverageUniforms(this.scene.materials.coverage);
     this.tileManager = new TileManager({
       source: this.source,
       workerPool: this.workerPool,
@@ -604,6 +718,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       scene: this.scene,
       layers: this.layers,
       camera: this.camera,
+      coverage: this.coverage,
       tileWindowRadius: options.performance?.tileWindowRadius ?? qtile?.tileWindowRadius,
       tileWindowRadiusFar: options.performance?.tileWindowRadiusFar ?? qtile?.tileWindowRadiusFar,
       visibleRadius: options.performance?.visibleRadius ?? qtile?.visibleRadius,
@@ -672,6 +787,20 @@ class HereBeDragonsImpl implements HereBeDragons {
       );
     }
 
+    // Track the preference live — a user can flip it without reloading the page.
+    if (typeof matchMedia === 'function') {
+      const mq = matchMedia('(prefers-reduced-motion: reduce)');
+      mq.addEventListener?.('change', (e) => {
+        this.reducedMotion = e.matches;
+        // Snap anything mid-flight straight to where it was heading.
+        if (e.matches) {
+          this.tiltShiftStrength = this.tiltShiftTarget;
+          this.composer.tiltShift.setStrength(this.tiltShiftStrength);
+          this.needsRender = true;
+        }
+      });
+    }
+
     this.camera.onChange = () => {
       // Any camera mutation (pan/zoom/rotate, including the per-frame damping
       // settle) makes the frame dirty — render-on-demand keys off this.
@@ -732,7 +861,9 @@ class HereBeDragonsImpl implements HereBeDragons {
         scene: this.scene.three,
         // Canvas building clicks change the highlight overlay without
         // touching the camera or a public setter — nudge render-on-demand.
-        onSceneChange: () => { this.needsRender = true; }
+        onSceneChange: () => { this.needsRender = true; },
+        // Tile reveal: no hover / click / elevation hits on masked-out geometry.
+        coverageAt: (x, z) => this.coverage.coverageAt(x, z)
       },
       options.buildings ?? {}
     );
@@ -899,6 +1030,36 @@ class HereBeDragonsImpl implements HereBeDragons {
       );
     }
 
+    // Optional Gaussian-splat overlay — a layer is only constructed once a
+    // `splats.urlTemplate` is known (here, or later via `setSplatsOptions`).
+    // Spark itself is imported lazily (see SplatsLayer.open). The quality
+    // tier picks the resident-splat budget: 'high' gets `maxSplats`,
+    // 'mobile' / 'low' the smaller `lowTierMaxSplats` (0 = off) — an
+    // integrated GPU can show a few hundred thousand splats, not the
+    // millions a 5×5 window holds.
+    // Spark's module is imported lazily by the layer; kick the import NOW when a tile source is
+    // configured, so it overlaps the map's own start-up instead of beginning when the overlay
+    // opens (measured under the dev server: ~1.8 s before the first tile could be fetched).
+    if (options.splats?.urlTemplate) void HereBeDragonsImpl.sparkImport();
+    this.splats = new SplatsController(
+      {
+        createLayer: (config) => this.createSplatsLayer(config),
+        // `maxCameraZoom`: a cap laid over the map's own zoom range while
+        // the overlay is on, lifted (previous limit back) when it goes off.
+        onCameraTiltCapChange: (maxTilt) => {
+          this.camera.setMaxTiltCap(maxTilt);
+          this.needsRender = true;
+        },
+        onCameraZoomCapChange: (maxZoom) => {
+          this.camera.setMaxZoomCap(maxZoom);
+          this.needsRender = true;
+        },
+        onChange: () => { this.needsRender = true; }
+      },
+      options.splats
+    );
+    this.splats.setQualityTier(this.qualityTier);
+
     // Compass overlay — mounted on the same container as the canvas. Visible
     // by default unless the developer opts out via `options.compass === false`.
     this.compass = new Compass(this, container);
@@ -960,6 +1121,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     // value when omitted). Applied after the theme so an explicit option wins.
     if (options.surfacePainterly !== undefined) this.setSurfacePainterly(options.surfacePainterly);
     if (options.paperGrain !== undefined) this.setPaperGrain(options.paperGrain);
+    if (options.tiltShift) this.setTiltShift(options.tiltShift === true ? true : options.tiltShift);
     if (options.roadTexture !== undefined) this.setRoadTexture(options.roadTexture);
     if (options.spores !== undefined) this.setSporesEnabled(options.spores);
     if (options.pitchedRoofs !== undefined) this.setPitchedRoofsEnabled(options.pitchedRoofs);
@@ -1038,7 +1200,10 @@ class HereBeDragonsImpl implements HereBeDragons {
       this.precompileShaders(),
       // Open the parcels archive in parallel; its own `open()` swallows
       // failures so a broken parcel source can never block the basemap.
-      this.parcelsManager?.open() ?? Promise.resolve()
+      this.parcelsManager?.open() ?? Promise.resolve(),
+      // Lazily import Spark for the splats overlay; its `open()` swallows
+      // failures (missing optional peer dep → overlay stays inert).
+      this.splats.open()
     ]);
     await this.tileManager.start();
     // Kick the underlay dispatcher synchronously so its first fetches go out
@@ -1074,6 +1239,16 @@ class HereBeDragonsImpl implements HereBeDragons {
     for (const slot of Object.values(Palette)) {
       const mat = this.scene.materials.get(slot);
       warmup.add(new THREE.Mesh(geo, mat));
+    }
+    // The underlay draws with the materials' UNMASKED twins (it opts out of
+    // the tile reveal) — separate programs, so warm those too. Buildings
+    // never appear in the underlay; the ground plane's twin compiles with
+    // the first frame anyway.
+    if (this.baseTileManager) {
+      for (const slot of Object.values(Palette)) {
+        if (slot === Palette.building || slot === Palette.building_top) continue;
+        warmup.add(new THREE.Mesh(geo, this.scene.materials.getUnmasked(slot)));
+      }
     }
     // Live lights influence shader specialization (light count is part of
     // the program key for MeshToonMaterial). Add to the real scene so the
@@ -1159,6 +1334,11 @@ class HereBeDragonsImpl implements HereBeDragons {
     // (reading via getFps/getFrameMs) should see after a pause.
     this.smoothedFrameMs = 1000 / 60;
     let lastFrameRendered = false;
+    // GPU frame pacing (see gpuStillBusy): a tick that wanted to draw but was held back
+    // because the GPU had not finished the previous frame, and when the last real render
+    // happened — the frame cost the governors read is render-to-render, not tick-to-tick.
+    let lastTickPaced = false;
+    let lastRenderAt = performance.now();
     const tick = (): void => {
       if (this.destroyed) return;
       // Idle-tab pause: if the document is hidden, drop the loop entirely so
@@ -1187,6 +1367,8 @@ class HereBeDragonsImpl implements HereBeDragons {
       // a dedicated flag so the synthetic settle redraw isn't read as motion.
       const cameraMoved = this.cameraDirty;
       this.cameraDirty = false;
+      // Any motion ends a settle dissolve at once: the moving picture is what should show.
+      if (cameraMoved && this.settle.phase !== 'idle') this.cancelSettleFade();
       // --- gesture tile-priority gate -----------------------------------
       // Suspend mesh construction while a gesture is live so scroll/zoom owns
       // the main thread. "Live" = the map is physically grabbed (gesturePressed,
@@ -1198,7 +1380,9 @@ class HereBeDragonsImpl implements HereBeDragons {
       // couple of tiles per frame (TileManager's per-frame build cap), so
       // uploads spread across frames instead of spiking the settle render.
       const suspendBuilds = shouldSuspendBuilds({
-        enabled: this.interactionTilePriorityEnabled,
+        // Lean map (splats on): always — a basemap mesh upload mid-pan only competes with
+        // the splats for the GPU; the backlog lands the moment the camera settles.
+        enabled: this.interactionTilePriorityEnabled || this.leanMapActive,
         gesturePressed: this.gesturePressed,
         msSinceMotion: now - this.lastCameraMotionMs
       });
@@ -1210,6 +1394,33 @@ class HereBeDragonsImpl implements HereBeDragons {
       // Cheap when no overlay is configured (null), disabled, or below its
       // minZoom; new tiles flag `needsRender` via the onSceneChange nudge.
       this.parcelsManager?.update();
+      // Same for the Gaussian-splat overlay (tile-pyramid window; the level
+      // follows the camera zoom).
+      // Motion LoD: lite tiles while the camera moves, full detail once it has settled.
+      const atRest = now - this.lastCameraMotionMs >= HereBeDragonsImpl.MOTION_LOD_SETTLE_MS;
+      this.splats.setCameraMoving(!atRest);
+      // Detail comes back over the second half of a scroll / fling, not after it.
+      this.splats.setMotionDetail(stepMotionDetail(this.motionDetail, {
+        stepPx: this.cameraStepPx(dt),
+        gestureLive: this.camera.isGestureLive(),
+        atRest,
+        stopPx: GLIDE_STOP_PX
+      }));
+      this.splats.update();
+      // Lite → full detail at rest: dissolve into it rather than pop (see beginSettleFade).
+      const splatsLite = this.splats.isDrawingLite();
+      if (this.lastSplatsLite && !splatsLite && !cameraMoved) this.beginSettleFade(now);
+      this.lastSplatsLite = splatsLite;
+      this.syncLeanMap();
+      // `hideBasemap: 'covered'`: the overlay has just reported this frame's
+      // rounded union — bake it NOW (a no-op when nothing moved), so the
+      // vector map's cut and the imagery it complements are drawn from the
+      // same instant rather than a frame apart.
+      if (this.coverage.tick()) this.needsRender = true;
+      this.syncMiniature();
+      if (this.tickTiltShift(dt)) this.needsRender = true;
+      this.updateSplatsGrade(dt * 1000);
+      this.updateAmbientThrottle();
       // Bridge decks rebuild (debounced) when the loaded bridge-tile set
       // changes; a rebuild is a visible scene change.
       const bridgesDirty = this.bridgesManager.update(dt);
@@ -1241,17 +1452,92 @@ class HereBeDragonsImpl implements HereBeDragons {
       // perpetually dirty like clouds. With zero sources the pass is a
       // no-op so this is free in practice.
       const noiseDirty = this.noiseEnabled;
-      const heartbeat = this.framesSinceRender >= HereBeDragonsImpl.RENDER_HEARTBEAT_FRAMES;
-      const willRender =
+      // No heartbeat while splat tiles are resident: each of those forced redraws
+      // re-rasterises every splat from a cold GPU — measured 100–150 ms, twice a
+      // second, on a map that is standing still. The overlay nudges needsRender
+      // itself for everything that changes its picture (sorts, landings, fades).
+      const heartbeat =
+        this.framesSinceRender >= HereBeDragonsImpl.RENDER_HEARTBEAT_FRAMES && !this.splats.hasTiles();
+      let willRender =
         this.needsRender || tileDirty || layersDirty || bridgesDirty ||
         sporesDirty || cloudsDirty || noiseDirty || heartbeat;
+      // Settle dissolve: hold → fade once full detail has been drawn (or the hold times out),
+      // then a blend step every tick. The fade owns the frame: the camera is still, so whatever
+      // else asks for a render meanwhile (tiles landing after the gesture, their reveal) waits the
+      // few hundred ms and is drawn right after — otherwise every blend step is a full-detail scene
+      // render (measured: 4 steps ~110 ms apart instead of a fade). Not when the hold timed out:
+      // then the live picture still has detail to gain and must keep rendering.
+      let presentOnly = false;
+      if (this.settle.phase === 'hold'
+        && (this.settle.ready || now - this.settle.since > HereBeDragonsImpl.SETTLE_HOLD_MAX_MS)) {
+        this.settle.phase = 'fade';
+        this.settle.fadeStart = now;
+      }
+      if (this.settle.phase === 'fade') {
+        const t = progress(now - this.settle.fadeStart, this.settleFadeMs, EASE.inOut);
+        this.composer.setDissolveT(t);
+        if (t >= 1) {
+          this.composer.endDissolve();
+          this.settle.phase = 'idle';
+        }
+        if (willRender && this.settle.ready && t < 1) {
+          willRender = false;
+          this.needsRender = true;
+        }
+        presentOnly = !willRender;
+      }
+      // Why this frame rendered (see getRenderStats): the counters that tell a
+      // "why is the GPU busy while nothing moves?" investigation where to look.
+      const rs = this.renderStats;
+      rs.frames++;
+      // GPU frame pacing: while splat tiles are resident, never queue a frame behind one the
+      // GPU has not finished. Held back, the frame is drawn on the next tick with whatever
+      // changed in between (needsRender carries the dirty state over).
+      const paced = willRender && this.gpuStillBusy(now);
+      if (paced) {
+        willRender = false;
+        this.needsRender = true;
+        rs.paced++;
+      }
+      // Motion-LoD swap: hold the picture while the lite set sorts rather than draw the full set
+      // a few more times behind it (see SplatsLayer.holdForSwap). Bounded by the layer, and only
+      // started with no frame left unfinished on the GPU (pacing has just retired the done ones).
+      let swapHeld = false;
+      if (willRender && this.splats.holdForSwap(this.frameFences.length === 0)) {
+        willRender = false;
+        this.needsRender = true;
+        rs.swapHeld++;
+        swapHeld = true;
+      }
+      if (willRender) {
+        rs.renders++;
+        if (this.needsRender) rs.needsRender++;
+        if (tileDirty) rs.tileDirty++;
+        if (layersDirty) rs.layersDirty++;
+        if (bridgesDirty) rs.bridgesDirty++;
+        if (sporesDirty) rs.sporesDirty++;
+        if (cloudsDirty) rs.cloudsDirty++;
+        if (noiseDirty) rs.noiseDirty++;
+        if (heartbeat) rs.heartbeat++;
+        if (this.renderingLowRes) rs.lowRes++;
+      }
 
       // --- FPS measurement + auto-tier watchers (movement frames only) ---
-      // Only update when THIS frame and the PREVIOUS frame both rendered.
-      // `dt` between two render frames reflects actual render workload;
-      // anything else (idle skip, just-resumed-from-idle) doesn't.
-      if (willRender && lastFrameRendered) {
-        this.smoothedFrameMs = this.smoothedFrameMs * 0.9 + (dt * 1000) * 0.1;
+      // Only update when THIS frame and the PREVIOUS one both wanted to render
+      // (a tick held back by GPU pacing still wanted to). The cost is the time
+      // between two real renders: under pacing a render can follow a held-back
+      // tick, and the tick interval alone would read as a fast frame.
+      // Anything else (idle skip, just-resumed-from-idle) doesn't count.
+      const frameMs = now - lastRenderAt;
+      if (willRender && (lastFrameRendered || lastTickPaced)) {
+        this.smoothedFrameMs = this.smoothedFrameMs * 0.9 + frameMs * 0.1;
+        // Splats frame-time governor: the same render-to-render delta, but it
+        // only counts frames drawn while the picture moves (it filters the
+        // rest itself) — that is when every resident splat is re-rasterised.
+        this.splats.reportFrame(
+          frameMs,
+          now - this.lastCameraMotionMs < HereBeDragonsImpl.SPLATS_MOTION_WINDOW_MS
+        );
 
         // Auto-upgrade: 'auto' mode starts on 'low' and promotes once we
         // see sustained fast frames AFTER the warmup. Counters advance only
@@ -1307,14 +1593,27 @@ class HereBeDragonsImpl implements HereBeDragons {
         }
       }
       lastFrameRendered = willRender;
+      lastTickPaced = paced;
 
       // --- Render (or skip) -----------------------------------------------
       if (willRender) {
+        lastRenderAt = now;
         this.composer.setCloudTime(this.cloudTime);
         this.composer.setNoiseTime(this.cloudTime);
         this.updateFogForTilt();
         this.updateSubpixelFade();
+        this.updateTiltShiftFocus();
         this.composer.render();
+        this.fenceFrame(now);
+        // The camera this frame was drawn with — what a reprojected present on a later held tick
+        // warps FROM. three has just refreshed matrixWorldInverse inside render().
+        const cam = this.camera.three;
+        this.renderedViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+        this.renderedValid = true;
+        // The held frame may give way once full detail is what was just drawn.
+        if (this.settle.phase === 'hold' && !this.renderingLowRes && this.splats.isDetailSettled()) {
+          this.settle.ready = true;
+        }
         // Tag/popup DOM overlays only need repositioning when something
         // moved — gate them with the render so a static idle scene does
         // zero per-frame work.
@@ -1324,10 +1623,61 @@ class HereBeDragonsImpl implements HereBeDragons {
         this.framesSinceRender = 0;
       } else {
         this.framesSinceRender++;
+        if (presentOnly) {
+          if (this.composer.present()) rs.dissolveFrames++;
+          else this.needsRender = true;   // the last picture is gone (a resize): render instead
+        } else if ((paced || swapHeld) && this.reprojection && this.renderedValid && this.splats.hasTiles()) {
+          // Held back with the camera moving: show the motion anyway, from the last frame.
+          const cam = this.camera.three;
+          cam.updateMatrixWorld();
+          this.scratchViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+          if (!this.scratchViewProj.equals(this.renderedViewProj)) {
+            this.scratchViewProj.invert();
+            if (this.composer.presentReprojected(this.scratchViewProj, this.renderedViewProj, cam.position)) {
+              rs.reprojected++;
+              this.tagsManager.update();
+            }
+          }
+        }
       }
       this.rafHandle = requestAnimationFrame(tick);
     };
     this.rafHandle = requestAnimationFrame(tick);
+  }
+
+  /** On-screen camera movement since the previous tick, CSS px per REFERENCE frame (1/60 s) —
+   *  translation over distance plus rotation, times the focal length in CSS px, scaled by the
+   *  tick's length so a long frame does not read as a fast camera. */
+  private cameraStepPx(dtS: number): number {
+    const cam = this.camera.three;
+    const first = Number.isNaN(this.lastCamPos.x);
+    const dist = Math.max(1e-6, cam.position.distanceTo(this.camera.controls.target));
+    const focalPx = this.renderer.height / 2 / Math.tan((cam.fov * Math.PI) / 360);
+    const step = first
+      ? 0
+      : (cam.position.distanceTo(this.lastCamPos) / dist
+        + 2 * Math.acos(Math.min(1, Math.abs(cam.quaternion.dot(this.lastCamQuat))))) * focalPx;
+    this.lastCamPos.copy(cam.position);
+    this.lastCamQuat.copy(cam.quaternion);
+    return step * (1 / 60) / Math.max(dtS, 1 / 240);
+  }
+
+  /**
+   * Start a settle dissolve: the picture is about to get sharper while the camera is still (dynamic
+   * resolution coming back, the splat overlay leaving its motion LoD). The last presented frame is
+   * captured and stays on screen while the sharp picture gets ready behind it, then fades into it
+   * — one smooth focus pull instead of a resolution pop followed by a detail pop. Cheap: the fade
+   * frames are a blend of two textures (see Composer.present).
+   */
+  private beginSettleFade(now: number): void {
+    if (this.settleFadeMs <= 0 || this.settle.phase !== 'idle' || prefersReducedMotion()) return;
+    if (!this.composer.beginDissolve()) return;
+    this.settle = { phase: 'hold', since: now, fadeStart: 0, ready: false };
+  }
+
+  private cancelSettleFade(): void {
+    this.composer.endDissolve();
+    this.settle.phase = 'idle';
   }
 
   setView(lat: number, lon: number, zoom?: number): void {
@@ -1416,6 +1766,11 @@ class HereBeDragonsImpl implements HereBeDragons {
   }
 
   setCloudsEnabled(on: boolean): void {
+    if (this.leanMapActive && this.leanSaved) {
+      // Lean map (splats on): remember the wish; it takes effect when the splats go.
+      this.leanSaved.clouds = on;
+      return;
+    }
     this.cloudsEnabled = on;
     this.composer.setCloudsEnabled(on);
     this.needsRender = true;
@@ -1598,14 +1953,19 @@ class HereBeDragonsImpl implements HereBeDragons {
 
     // Cloud raymarch + outline pipeline — both runtime-toggleable.
     this.setCloudsEnabled(profile.clouds);
-    this.composer.setOutlineEnabled(profile.outlines);
+    // Lean map (splats on) keeps the outline pipeline off whatever the tier says.
+    this.composer.setOutlineEnabled(profile.outlines && !this.leanMapActive);
     // FXAA → passthrough (or back) on tier swap. `'low'` skips FXAA math.
     this.composer.setFxaaEnabled(profile.fxaa);
     // Keep the FxaaPass saturation in sync with the tier so a runtime swap
     // doesn't leave low tier monochrome or high tier double-saturated.
     this.composer.setSaturation(profile.outlines ? 1.0 : 1.5);
+    if (this.splatsNeutralGrade) this.applySplatsGrade(this.splatsGradeT);
     // Structural toggles: flat buildings + tilt cap + labels + tile zoom.
     this.applyQualityStructure(profile);
+    // Splats overlay: swap to the tier's resident-splat budget (evicts at
+    // once when it shrinks; the user's enabled choice is preserved).
+    this.splats.setQualityTier(tier);
     this.needsRender = true;
   }
 
@@ -1711,10 +2071,17 @@ class HereBeDragonsImpl implements HereBeDragons {
     const pr = this.desiredPixelRatio();
     if (Math.abs(pr - this.appliedPixelRatio) < 1e-6) return false;
     this.appliedPixelRatio = pr;
-    this.renderer.three.setPixelRatio(pr);
-    // composer.resize() reads renderer.getPixelRatio() — running it without a
-    // fresh canvas size still re-allocates the targets at the new ratio.
-    this.composer.resize(this.renderer.width, this.renderer.height);
+    // The canvas keeps the display's ratio; a cheaper motion picture is rendered INTERNALLY at
+    // pr / effective and upscaled by the final pass. Resizing the canvas's drawing buffer along
+    // with the targets cost ~20 ms of main thread on the first moving tick of every gesture
+    // (measured) — the frame the user is waiting for. Only a real DPR change touches the canvas.
+    if (Math.abs(this.renderer.three.getPixelRatio() - this.effectivePixelRatio) > 1e-6) {
+      this.renderer.three.setPixelRatio(this.effectivePixelRatio);
+      this.composer.resize(this.renderer.width, this.renderer.height);
+    }
+    const scale = pr / this.effectivePixelRatio;
+    this.composer.setRenderScale(scale);
+    this.splats.setRenderScale(scale);
     return true;
   }
 
@@ -1734,6 +2101,18 @@ class HereBeDragonsImpl implements HereBeDragons {
     if (cameraMoved || tilesStreaming) this.lastInteractionMs = now;
     const active = (now - this.lastInteractionMs) < HereBeDragonsImpl.DYNAMIC_RES_SETTLE_MS;
     if (active === this.renderingLowRes) return;
+    // Back to the full ratio: capture the moving frame BEFORE the targets are reallocated at the
+    // new size, and dissolve into the sharp picture rather than pop (see beginSettleFade).
+    if (!active && Math.abs(this.effectivePixelRatio - this.appliedPixelRatio) > 1e-6) {
+      this.beginSettleFade(now);
+    }
+    // Into motion: the resize below destroys the last frame, which reprojection needs to show the
+    // first ticks of the gesture while the swap hold waits — keep a copy (see captureHeldFrame).
+    if (active && this.reprojection && this.splats.hasTiles()
+      && Math.abs(this.effectivePixelRatio - this.appliedPixelRatio) < 1e-6
+      && Math.abs(this.effectivePixelRatio - HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP) > 1e-6) {
+      this.composer.captureHeldFrame();
+    }
     this.renderingLowRes = active;
     const changed = this.syncPixelRatio();
     // Settling back to full res: the scene is otherwise idle, so force the one
@@ -1817,6 +2196,12 @@ class HereBeDragonsImpl implements HereBeDragons {
     outline.settings.hatching = theme.outline?.hatching ?? 0;
     outline.settings.hatchingScale = theme.outline?.hatchingScale ?? 14;
     outline.settings.saturation = theme.saturation ?? 1.5;
+    if (this.splatsNeutralGrade) {
+      // A theme switch while the overlay is up: remember the new look, stay
+      // where the grade is.
+      this.savedGrade = { saturation: outline.settings.saturation, shine: outline.settings.shine };
+      this.applySplatsGrade(this.splatsGradeT);
+    }
     outline.applySettings();
 
     // Atmosphere: a theme can own its sky + light. Apply its cloud/light
@@ -1839,7 +2224,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.roadTextureValue = theme.roadTexture ?? 0;
     this.sporesEnabledValue = theme.spores === true;
     this.scene.materials.setPainterlySurface(this.surfacePainterlyValue);
-    this.composer.setPaperGrain(this.paperGrainValue);
+    this.composer.setPaperGrain(this.paperGrainValue * (1 - this.splatsGradeAmount()));
     this.scene.materials.setRoadTexture(this.roadTextureValue);
     this.sporesField.setEnabled(this.sporesEnabledValue);
     // Peaked roofs are a building-geometry choice baked in the tile worker, so
@@ -1960,6 +2345,325 @@ class HereBeDragonsImpl implements HereBeDragons {
     return this.parcelsManager?.isEnabled() ?? false;
   }
 
+  /**
+   * Toggle the Gaussian-splat overlay on/off. No-op when none is configured.
+   * On the 'mobile' / 'low' tiers the overlay runs under the smaller
+   * `lowTierMaxSplats` budget (with `0` it is forced off there — the choice
+   * is remembered and applies once back on 'high').
+   * `{ reveal: 'ripple' }` animates the transition (see `SplatsRevealOptions`).
+   */
+  /**
+   * Hold the post chain at a neutral grade while the splats overlay is showing: saturation
+   * 1.0 in both the outline pass and the final pass (themes default to a 1.5x vibrance
+   * boost, which turns captured imagery neon), no shine highlight, no paper grain. The
+   * theme's own values are saved and restored when the overlay lets go.
+   *
+   * The grade is a full-screen post-process — it cannot follow the satellite's outline. So
+   * it is EASED (400 ms, smoothstep) rather than snapped, and what it follows depends on
+   * `hideBasemap`: with `true` (the basemap is gone wherever a tile shows) it is on while
+   * tiles are resident; with `'covered'` (the vector map still fills the rest of the view)
+   * it is on while the VIEW CENTRE is over landed satellite — what the camera is looking at
+   * decides the look, and panning off the patch hands the theme its colours back.
+   */
+  private updateSplatsGrade(dtMs: number): void {
+    let want = 0;
+    if (this.splats.neutralGrade) {
+      if (this.splats.isHidingBasemap()) want = 1;
+      else if (this.splats.isCovering()) {
+        const t = this.camera.controls.target;
+        // Hysteresis on the rim so a camera parked on it doesn't pump the look.
+        want = this.coverage.cutoutAt(t.x, t.z) >= (this.splatsGradeT > 0.5 ? 0.25 : 0.75) ? 1 : 0;
+      }
+    }
+    if (want === this.splatsGradeT) return;
+    if (this.reducedMotion) {
+      this.applySplatsGrade(want); // reduced motion: straight to the end state
+      return;
+    }
+    const step = Math.min(dtMs, 50) / HereBeDragonsImpl.SPLATS_GRADE_EASE_MS;
+    const t = want > this.splatsGradeT
+      ? Math.min(1, this.splatsGradeT + step)
+      : Math.max(0, this.splatsGradeT - step);
+    this.applySplatsGrade(t);
+  }
+
+  private static readonly SPLATS_GRADE_EASE_MS = 400;
+  /** The camera counts as moving (for the splats governor) this long after
+   *  its last change — covers the damping glide between input events. */
+  private static readonly SPLATS_MOTION_WINDOW_MS = 250;
+  /** Ambient layers (always-dirty wind / foam animations) throttled while
+   *  splat tiles share the frame. */
+  private static readonly AMBIENT_LAYERS: readonly LayerName[] = ['trees', 'grass', 'waves'];
+  /** Fastest the ambient layers tick while splats are resident (15 fps)… */
+  private static readonly AMBIENT_MIN_INTERVAL_MS = 1000 / 15;
+  /** …the share of GPU time they may claim (interval ≥ frame cost / share)… */
+  private static readonly AMBIENT_GPU_SHARE = 0.25;
+  /** …and past this interval a stutter looks worse than a still tree: freeze. */
+  private static readonly AMBIENT_FREEZE_INTERVAL_MS = 150;
+  /** How often a frozen ambient layer still runs its zoom gate (`dt = 0`). */
+  private static readonly AMBIENT_FROZEN_TICK_MS = 1000;
+  /** Ambient throttle interval in force (0 = none), to skip no-op writes. */
+  private ambientIntervalMs = 0;
+
+  /**
+   * Idle cost. Trees, grass and shoreline foam animate continuously, so while
+   * they are on screen the map renders EVERY frame — and with splat tiles
+   * resident every render re-rasterises every splat (the whole frame's cost
+   * on an integrated GPU). With the basemap no longer hidden globally
+   * (`hideBasemap: 'covered'` / `false`) that would turn an idle map into a
+   * permanently saturated GPU for the sake of some swaying leaves. So while
+   * splats are resident the ambient layers tick at 15 fps at most, never
+   * claim more than a quarter of the GPU (interval ≥ 4 × the measured frame
+   * cost), and freeze outright once that interval would pass 150 ms — a
+   * still tree beats a stuttering one. Camera moves and tile landings render
+   * at full rate as always; the limit lifts when the last splat tile leaves.
+   */
+  private updateAmbientThrottle(): void {
+    let interval = 0;
+    if (this.splats.hasTiles() && !this.splats.isHidingBasemap()) {
+      const cost = Math.max(this.splats.governorFrameMs, this.smoothedFrameMs);
+      interval = Math.max(
+        HereBeDragonsImpl.AMBIENT_MIN_INTERVAL_MS,
+        cost / HereBeDragonsImpl.AMBIENT_GPU_SHARE
+      );
+      // Quantise so a drifting frame time doesn't rewrite the throttle per frame.
+      interval = Math.round(interval / 16) * 16;
+      if (interval > HereBeDragonsImpl.AMBIENT_FREEZE_INTERVAL_MS) interval = Infinity;
+      // Lean map: frozen outright — a swaying tree is not worth re-rasterising
+      // every resident splat.
+      if (this.leanMapActive) interval = Infinity;
+    }
+    if (interval === this.ambientIntervalMs) return;
+    this.ambientIntervalMs = interval;
+    for (const name of HereBeDragonsImpl.AMBIENT_LAYERS) {
+      if (interval === 0) this.layers.setThrottle(name, null);
+      else if (interval === Infinity) {
+        this.layers.setThrottle(name, HereBeDragonsImpl.AMBIENT_FROZEN_TICK_MS, false);
+      } else this.layers.setThrottle(name, interval, true);
+    }
+  }
+
+  /**
+   * Lean map while the splats overlay is on (`splats.leanMap`, default on).
+   * Every resident splat is re-rasterised on every rendered frame, so while
+   * they show the GPU goes to nothing else: the outline pipeline (a second
+   * full-scene render + Sobel), the cloud raymarch and the tilt-shift blur
+   * are off, the ambient animations are frozen (updateAmbientThrottle) and
+   * dynamic resolution renders the moving picture at 1×. All of it comes
+   * back when the overlay goes off. Runs every frame; a no-op unless the
+   * overlay's active state flipped.
+   */
+  private syncLeanMap(): void {
+    const want = this.splats.isEnabled() && this.getSplatsOptions().leanMap;
+    if (want === this.leanMapActive) return;
+    this.leanMapActive = want;
+    if (want) {
+      this.leanSaved = {
+        clouds: this.cloudsEnabled,
+        dynamicResolution: this.dynamicResolutionEnabled
+      };
+      this.cloudsEnabled = false;
+      this.composer.setCloudsEnabled(false);
+      this.composer.setOutlineEnabled(false);
+      this.setDynamicResolution(true);
+    } else {
+      const saved = this.leanSaved;
+      this.leanSaved = null;
+      this.composer.setOutlineEnabled(resolveQualityProfile(this.qualityTier).outlines);
+      if (saved) {
+        this.cloudsEnabled = saved.clouds;
+        this.composer.setCloudsEnabled(saved.clouds);
+        this.setDynamicResolution(saved.dynamicResolution);
+      }
+    }
+    // The neutral grade's base saturation depends on whether outlines run.
+    if (this.splatsNeutralGrade) this.applySplatsGrade(this.splatsGradeT);
+    this.needsRender = true;
+  }
+
+  /**
+   * GPU frame pacing, while splat tiles are resident. Splats make the frame GPU-bound, and a
+   * render loop that submits a frame every rAF regardless queues frames in the GPU process
+   * faster than they drain. Nothing on screen gets faster, but every synchronous GPU call —
+   * Spark's per-sort depth readback above all (`getBufferSubData`, after its fence has already
+   * signalled) — now waits behind the whole queue: measured 90–120 ms per sort, the pan
+   * stutter. So a frame is only submitted once the GPU has finished the one before it (a
+   * fence polled with `getSyncParameter`, which never blocks). The frame rate is what the GPU
+   * can do either way; what changes is that the queue stays shallow, so input latency and those
+   * stalls stay short.
+   *
+   * ONE frame in flight (was two): with reprojection presenting on every held tick the frames
+   * not drawn cost nothing visible, and the sort's readback — which waits for every frame queued
+   * ahead of it — halves. Measured interleaved on an Intel Iris: presented p95 32–39 → 20–21 ms,
+   * interval sd 10–11 → 7, readback stall 7–9 → 4 ms mean; a gesture starting mid-landing
+   * 86 → 50–67 ms worst frame.
+   */
+  private gpuStillBusy(now: number): boolean {
+    const fences = this.frameFences;
+    if (fences.length === 0) return false;
+    const gl = this.renderer.three.getContext() as WebGL2RenderingContext;
+    if (gl.isContextLost()) {
+      this.frameFences = [];
+      return false;
+    }
+    // retire every finished frame (they finish in order)
+    while (fences.length && gl.getSyncParameter(fences[0].sync, gl.SYNC_STATUS) === gl.SIGNALED) {
+      gl.deleteSync(fences.shift()!.sync);
+    }
+    if (fences.length < HereBeDragonsImpl.FRAMES_IN_FLIGHT) return false;
+    if (now - fences[0].at < HereBeDragonsImpl.PACING_MAX_HOLD_MS) return true;
+    gl.deleteSync(fences.shift()!.sync);          // stuck fence: never hold the map hostage
+    return false;
+  }
+
+  /** After a render: fence it if splats are resident (see gpuStillBusy). */
+  private fenceFrame(now: number): void {
+    const gl = this.renderer.three.getContext() as WebGL2RenderingContext;
+    if (!this.framePacing || !this.splats.hasTiles() || gl.isContextLost()) {
+      for (const f of this.frameFences) gl.deleteSync(f.sync);
+      this.frameFences = [];
+      return;
+    }
+    const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (sync) this.frameFences.push({ sync, at: now });
+  }
+
+  /** Whether the lean map is in effect (splats on and `leanMap` not disabled). */
+  getSplatsLeanMapActive(): boolean {
+    return this.leanMapActive;
+  }
+
+  /**
+   * Render-loop counters since the previous call (which resets them): how many
+   * RAF ticks there were, how many of them rendered, and which dirty source
+   * asked for each render. The map is render-on-demand, so on a still scene
+   * `renders` should be near zero; when it is not, the non-zero reason names
+   * the layer that keeps the GPU busy. `lowRes` counts renders drawn at the
+   * dynamic-resolution motion ratio.
+   */
+  getRenderStats(): RenderStats {
+    const out = this.renderStats;
+    this.renderStats = emptyRenderStats();
+    return out;
+  }
+
+  /** Eased neutral amount for the linear ease position (smoothstep). */
+  private splatsGradeAmount(): number {
+    const t = this.splatsGradeT;
+    return t * t * (3 - 2 * t);
+  }
+
+  /** Put the post chain `t` of the way (linear time) from the theme's look to neutral. */
+  private applySplatsGrade(t: number): void {
+    this.splatsGradeT = t;
+    const a = this.splatsGradeAmount();
+    const outline = this.composer.outlinePass;
+    if (t > 0 && !this.savedGrade) {
+      this.savedGrade = { saturation: outline.settings.saturation, shine: outline.settings.shine };
+    }
+    this.splatsNeutralGrade = t > 0;
+    const theme = this.savedGrade;
+    if (theme) {
+      outline.settings.saturation = theme.saturation + (1.0 - theme.saturation) * a;
+      outline.settings.shine = theme.shine * (1 - a);
+      outline.applySettings();
+      if (t === 0) this.savedGrade = null;
+    }
+    const base = this.composer.outlinesEnabled ? 1.0 : 1.5;
+    this.composer.setSaturation(base + (1.0 - base) * a);
+    this.composer.setPaperGrain(this.paperGrainValue * (1 - a));
+    this.needsRender = true;
+  }
+
+  /**
+   * Build a `SplatsLayer` wired to this map (the controller calls this at
+   * construction and again whenever `setSplatsOptions` needs a rebuild).
+   */
+  /** The one Spark import, shared by the early kick above and the layer (`loadSpark`). */
+  private static sparkPromise: Promise<unknown> | null = null;
+  private static sparkImport(): Promise<unknown> {
+    return (HereBeDragonsImpl.sparkPromise ??= import('@sparkjsdev/spark'));
+  }
+
+  private createSplatsLayer(config: SplatsConfig): SplatsLayer {
+    return new SplatsLayer(
+      {
+        renderer: this.renderer.three,
+        // the import kicked at construction (sparkImport), so a tile source never waits for it
+        loadSpark: () => HereBeDragonsImpl.sparkImport() as Promise<SparkModule>,
+        scene: this.scene.three,
+        camera: this.camera,
+        projection: this.projection,
+        // A tile landing (or Spark finishing an async sort) changes the
+        // scene without a camera move — nudge render-on-demand.
+        onSceneChange: () => { this.needsRender = true; },
+        // `hideBasemap: 'covered'` (the default): the overlay reports its
+        // rounded union to the tile-reveal coverage field, whose second
+        // channel cuts every basemap material out under the landed tiles —
+        // nothing is hidden or suspended globally.
+        cutout: this.coverage,
+        // One source of truth for the whole map (see core/motion.ts).
+        prefersReducedMotion: () => this.reducedMotion,
+        getMetersPerPixel: () => this.getMetersPerPixel(),
+        getCamera: () => this.camera.three,
+        renderHeightPx: () => this.composer.internalHeight(),
+        getAspect: () => this.renderer.width / Math.max(1, this.renderer.height),
+        // `hideBasemap: true`: mask the vector basemap layers out of the drawn
+        // scene while splat tiles (and their imagery ground) are showing.
+        // A per-layer visibility mask in the TileManager — nothing is
+        // rebuilt, decode carries on, and the caller's own
+        // `setLayerEnabled` choices are untouched underneath.
+        setBasemapHidden: (hidden) => {
+          for (const name of SPLATS_HIDDEN_BASEMAP_LAYERS) {
+            this.tileManager.setLayerHidden(name, hidden);
+            // …and stop ticking them: an invisible grass-wind / foam
+            // animation reporting "dirty" every frame would pin the render
+            // loop and re-rasterise every resident splat for nothing.
+            this.layers.setSuspended(name, hidden);
+          }
+          // (The neutral grade follows from the RAF loop — `updateSplatsGrade`.)
+          this.needsRender = true;
+        }
+      },
+      config
+    );
+  }
+
+  setSplatsEnabled(on: boolean, opts?: SplatsRevealOptions): void {
+    this.splats.setEnabled(on, opts);
+    this.needsRender = true;
+  }
+
+  /** Whether the splats overlay is currently in effect (false if unconfigured
+   *  or suppressed by the quality tier). */
+  getSplatsEnabled(): boolean {
+    return this.splats.isEnabled();
+  }
+
+  /** Resident splat-tile count + total splat count (zeros if unconfigured). */
+  getSplatsStats(): SplatsStats {
+    return this.splats.getStats();
+  }
+
+  /**
+   * Change splat-overlay options at runtime. Cheap ones are applied to the
+   * running layer (the tile-pyramid bounds, `lodBias` and `maxCameraZoom`
+   * included); `urlTemplate` / `imageryTemplate` / rounded union on-off
+   * rebuild it, and a first `urlTemplate` on a map constructed
+   * without `splats` CREATES it (importing Spark on the spot). A key present
+   * with the value `undefined` resets that option to its default.
+   */
+  setSplatsOptions(patch: Partial<SplatsConfig>): void {
+    this.splats.setOptions(patch);
+    this.needsRender = true;
+  }
+
+  /** The splat-overlay options in effect, defaults filled in
+   *  (`urlTemplate: ''` when no overlay is configured). */
+  getSplatsOptions(): ResolvedSplatsOptions {
+    return this.splats.getOptions();
+  }
+
   /** Snapshot of every building currently loaded across visible tiles. */
   getLoadedBuildings(): BuildingInfo[] {
     const out: BuildingInfo[] = [];
@@ -2051,7 +2755,7 @@ class HereBeDragonsImpl implements HereBeDragons {
   /** Screen-space paper-grain strength in the final pass (0..1). 0 = off. */
   setPaperGrain(strength: number): void {
     this.paperGrainValue = Math.max(0, Math.min(1, strength));
-    this.composer.setPaperGrain(this.paperGrainValue);
+    this.composer.setPaperGrain(this.paperGrainValue * (1 - this.splatsGradeAmount()));
     this.needsRender = true;
   }
 
@@ -2247,6 +2951,121 @@ class HereBeDragonsImpl implements HereBeDragons {
     return this.tileManager.getSpawnDurationMs();
   }
 
+  /**
+   * Turn the basemap tile reveal (rounded-union mask) on / off. The field
+   * keeps tracking tiles while off, so switching on shows the settled union
+   * of whatever is loaded; tiles that land afterwards grow in.
+   */
+  /**
+   * Tilt-shift "miniature" look: a sharp band across the point the camera looks at, blur growing
+   * above and below it, and a saturated model-photography grade. Eases in and out (~450 ms,
+   * critically-damped feel); costs nothing while off. Only runs on the `'high'` quality tier —
+   * on lower tiers the request is remembered and applies if the tier rises.
+   */
+  setTiltShift(on: boolean | Partial<TiltShiftSettings>): void {
+    if (typeof on === 'object' && on !== null) {
+      this.composer.tiltShift.settings = resolveTiltShift({ ...this.composer.tiltShift.settings, ...on });
+      this.composer.tiltShift.applySettings();
+      this.tiltShiftCustomized = true;
+      // The overlay has the pass: its hand-back must carry this change too.
+      if (this.miniatureSaved) this.miniatureSaved = resolveTiltShift({ ...this.miniatureSaved, ...on });
+      this.tiltShiftTarget = 1;
+    } else {
+      this.tiltShiftTarget = on ? 1 : 0;
+    }
+    this.needsRender = true;
+  }
+
+  /** Whether the tilt-shift look is requested (it may be held off by the quality tier). */
+  getTiltShift(): boolean {
+    return this.tiltShiftTarget > 0;
+  }
+
+  getTiltShiftSettings(): TiltShiftSettings {
+    return { ...this.composer.tiltShift.settings };
+  }
+
+  /**
+   * The splat overlay's miniature look (`splats.miniature`): while satellite tiles are on screen
+   * the overlay drives the tilt-shift — on, with the imagery preset unless `setTiltShift({ … })`
+   * chose settings — and hands it back, previous settings restored, when the last tile goes. The
+   * ease in and out is `tickTiltShift`'s. Runs every tick; a no-op unless the state flipped.
+   */
+  private syncMiniature(): void {
+    const want = this.splats.miniature && this.splats.isEnabled() && this.splats.hasTiles();
+    if (want === this.miniatureActive) return;
+    this.miniatureActive = want;
+    const ts = this.composer.tiltShift;
+    if (want) {
+      this.miniatureSaved = { ...ts.settings };
+      if (!this.tiltShiftCustomized) {
+        ts.settings = { ...MINIATURE_IMAGERY_TILT_SHIFT };
+        ts.applySettings();
+      }
+    } else if (this.miniatureSaved) {
+      ts.settings = this.miniatureSaved;
+      ts.applySettings();
+      this.miniatureSaved = null;
+    }
+    this.needsRender = true;
+  }
+
+  /** Ease the effect strength toward its target. Returns true while it is still moving. */
+  private tickTiltShift(dt: number): boolean {
+    // Lean map (splats on): the blur eases out and comes back when they go — unless the overlay's
+    // own miniature look is what wants it (syncMiniature), which the lean map makes way for.
+    const allowed = this.qualityTier === 'high' && (!this.leanMapActive || this.miniatureActive);
+    const goal = allowed ? (this.miniatureActive ? 1 : this.tiltShiftTarget) : 0;
+    const cur = this.tiltShiftStrength;
+    if (Math.abs(goal - cur) < 1e-3) {
+      if (cur !== goal) {
+        this.tiltShiftStrength = goal;
+        this.composer.tiltShift.setStrength(goal);
+        return true;
+      }
+      return false;
+    }
+    if (this.reducedMotion) {
+      this.tiltShiftStrength = goal; // reduced motion: no ramp, just the end state
+      this.composer.tiltShift.setStrength(goal);
+      return true;
+    }
+    // Exponential approach: starts fast, lands softly, and a reversal mid-way simply heads back
+    // from wherever it is (frame-rate independent — see core/motion.ts).
+    const k = approach(dt * 1000, tauFor(DURATION.base));
+    this.tiltShiftStrength = cur + (goal - cur) * k;
+    this.composer.tiltShift.setStrength(this.tiltShiftStrength);
+    return true;
+  }
+
+  /** Keep the sharp band on the point the camera looks at. */
+  private updateTiltShiftFocus(): void {
+    if (this.tiltShiftStrength <= 0.001) return;
+    this.tiltShiftNdc.copy(this.camera.controls.target).project(this.camera.three);
+    this.composer.tiltShift.setFocusY(this.tiltShiftNdc.y * 0.5 + 0.5);
+  }
+
+  setTileReveal(reveal: boolean | TileRevealOptions): void {
+    if (typeof reveal === 'boolean') {
+      this.coverage.setEnabled(reveal);
+    } else if (reveal && typeof reveal === 'object') {
+      // Object form: tune `growMs` / `feather` / `rise` live (and switch the
+      // reveal on, as the same value would at construction).
+      this.coverage.setOptions(reveal);
+      this.coverage.setEnabled(true);
+    }
+    this.needsRender = true;
+  }
+
+  /** The tile reveal's settings in effect (`enabled` + resolved params). */
+  getTileRevealOptions(): ResolvedTileReveal {
+    return { ...this.coverage.config };
+  }
+
+  getTileReveal(): boolean {
+    return this.coverage.enabled;
+  }
+
   setBuildingsFlat(flat: boolean): void {
     this.buildingsFlat = flat;
     this.scene.materials.setBuildingsFlat(flat);
@@ -2291,11 +3110,13 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.polygonsManager.dispose();
     this.buildingsManager.dispose();
     this.parcelsManager?.dispose();
+    this.splats.dispose();
     this.bridgesManager.dispose();
     this.sporesField.dispose();
     this.compass.destroy();
     this.scaleBar?.destroy();
     this.tileManager.dispose();
+    this.coverage.dispose();
     this.baseTileManager?.dispose();
     this.workerPool.dispose();
     this.layers.dispose();
@@ -2320,6 +3141,32 @@ export async function createHereBeDragons(
   container: HTMLElement,
   options: HereBeDragonsOptions
 ): Promise<HereBeDragons> {
+  // Check what the caller passed BEFORE anything touches it. These three mistakes otherwise
+  // surface far from their cause — a missing `center` as "Cannot read properties of undefined
+  // (reading 'lat')" from inside the camera, and a missing `pmtiles_url` as a network error about
+  // the string "undefined". Both send people looking in the wrong place on their first run.
+  if (!container || typeof (container as HTMLElement).appendChild !== 'function') {
+    throw new Error(
+      `createHereBeDragons(container, options): the first argument must be an element, got ${
+        container === null ? 'null' : typeof container
+      }. A common cause is document.getElementById('…') not matching any element.`
+    );
+  }
+  if (!options || typeof options !== 'object') {
+    throw new Error('createHereBeDragons(container, options): the second argument must be an options object.');
+  }
+  if (!options.pmtiles_url) {
+    throw new Error(
+      'createHereBeDragons: `pmtiles_url` is required — it must point at a .pmtiles archive the browser can read over HTTP range requests.'
+    );
+  }
+  const c = options.center as { lat?: unknown; lon?: unknown } | undefined;
+  if (!c || typeof c.lat !== 'number' || typeof c.lon !== 'number') {
+    throw new Error(
+      'createHereBeDragons: `center` is required and must be `{ lat: number, lon: number }`' +
+        (c ? ` — got ${JSON.stringify(options.center)}.` : '.')
+    );
+  }
   const map = new HereBeDragonsImpl(container, options);
   await map.init();
   return map;

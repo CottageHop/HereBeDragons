@@ -147,6 +147,17 @@ export interface HereBeDragonsOptions {
    * maps behave exactly as before. See `ParcelsConfig` for the full shape.
    */
   parcels?: import('./parcels/types.js').ParcelsConfig;
+  /**
+   * Optional Gaussian-splat tile overlay. Set `splats.urlTemplate` to stream
+   * pre-tiled 3D Gaussian splats (`{z}/{x}/{y}.spz` or `.ply`, in the SplatMap
+   * tile-local frame) over the vector basemap, drawn with `@sparkjsdev/spark`
+   * — an OPTIONAL peer dependency that is dynamically imported only when this
+   * option is present. Omit entirely to leave the overlay off — existing maps
+   * behave exactly as before and never load Spark. Residency is bounded by a
+   * splat budget (`maxSplats`, or `lowTierMaxSplats` on the `'mobile'` /
+   * `'low'` tiers). See `SplatsConfig` for the full shape.
+   */
+  splats?: import('./splats/types.js').SplatsConfig;
   /** Show the compass overlay. Default true. Click resets bearing to north. */
   compass?: boolean;
   /**
@@ -203,6 +214,39 @@ export interface HereBeDragonsOptions {
    * 0–3000 ms but any positive value is accepted programmatically.
    */
   tileSpawnDurationMs?: number;
+  /**
+   * Tile reveal: how newly loaded VECTOR basemap tiles appear. Instead of
+   * whole squares popping / rising in, the basemap is only drawn inside the
+   * "rounded union" of the loaded tiles — the morphological opening (radius
+   * half a tile) of their squares: one tile shows as a circle, two adjacent
+   * tiles as a pill with the shared side fully joined, a 2×2 block as a
+   * rounded square — and the shape grows as tiles land (the same look as
+   * the splats overlay's `roundedUnion`). Outside it the ground plane and
+   * the low-res underlay show, as before.
+   *
+   *  - `true` / omitted → on, with the defaults below;
+   *  - `false` → off: square tiles and the rise-from-below animation,
+   *    exactly the old behaviour;
+   *  - `{ growMs, feather, rise }` → `growMs` (default 700; 0 = no
+   *    animation) is how long a tile takes to grow from its centre and a
+   *    join to close; `feather` (default 0.03, tile units) is the half-width
+   *    of the soft edge — an ordered dither on opaque geometry, alpha on
+   *    transparent layers; `rise: true` also keeps the 30 m rise-from-below
+   *    slab animation (off by default with the reveal: tiles land at ground
+   *    level and buildings grow out of it over `tileSpawnDurationMs`).
+   *
+   * Overlays (parcels, polygons, tags, splats) are never masked. Toggle at
+   * runtime with `setTileReveal()`.
+   */
+  tileReveal?: boolean | import('./tiles/CoverageField.js').TileRevealOptions;
+  /**
+   * Tilt-shift "miniature" look: a sharp band across the point the camera looks at with blur
+   * growing above and below it, plus a saturated model-photography grade — towns read as scale
+   * models. `true` for the defaults or an object to tune it (`radius` CSS px, `band`, `falloff`
+   * as fractions of screen height, `saturation`, `contrast`, `vignette`). Runs on the `'high'`
+   * quality tier only; free while off. Default off. Toggle at runtime with `setTiltShift()`.
+   */
+  tiltShift?: boolean | Partial<import('./rendering/TiltShiftPass.js').TiltShiftSettings>;
   /**
    * Cloud pass settings. Accepts a boolean for the simple "on / off" case
    * or an object to set opacity at the same time.
@@ -334,6 +378,36 @@ export interface HereBeDragonsOptions {
      */
     frameBudgetMs?: number;
     /**
+     * GPU frame pacing while splat tiles are resident. Default `true`. Splats make the frame
+     * GPU-bound; a loop that submits a frame on every rAF queues frames faster than the GPU
+     * drains them, and the splat sort's synchronous depth readback then waits behind the whole
+     * queue. With pacing a new frame is only submitted once the GPU has finished the previous one
+     * (one frame in flight; reprojection presents the camera's motion on the held ticks). Measured on an Intel Iris with motion LoD (3 interleaved rounds): frames over
+     * 50 ms 43 → 17 per pan, the readback stall 58 → 28 ms, p95 57 → 50 ms, for 3 % fewer frames
+     * drawn. (Before motion LoD, with heavier frames, it was a trade — see
+     * docs/splats-performance.md §5.) `false` submits a frame every tick.
+     */
+    framePacing?: boolean;
+    /**
+     * Settle dissolve, ms (default `400`; `0` = snap). When the picture sharpens at rest — dynamic
+     * resolution returning to full, the splat overlay swapping its motion LoD for full detail —
+     * the last moving frame is held on screen while the sharp one gets ready, then cross-fades
+     * into it (a focus pull instead of a pop). A brief pause in a gesture shows nothing: the swap
+     * happens behind the held frame. The fade frames only blend two images, so they run at display
+     * rate however heavy the scene is. Any camera motion cancels it at once. Off under
+     * `prefers-reduced-motion`.
+     */
+    settleFadeMs?: number;
+    /**
+     * Reprojection on held ticks (default `true`). While splat tiles are resident the frame is
+     * GPU-bound and ticks get held back (GPU frame pacing, the motion-LoD swap hold); with this on,
+     * such a tick presents the last frame warped to the current camera — a ground-plane
+     * reprojection, exact for the ground, ~0.2 px out for a 10 m roof 300 m away — so every vsync
+     * shows the camera's motion and a gesture starts moving on its first frame. One full-screen
+     * pass. `false` repeats the last frame on held ticks, as before.
+     */
+    reprojection?: boolean;
+    /**
      * Smoothed frame-time threshold (ms) BELOW which the map auto-upgrades
      * itself from `'low'` to `'high'` (only fires when `quality: 'auto'`).
      * Default 12 ms (≈ 83 FPS). Conservative on purpose: we want low tier
@@ -416,6 +490,45 @@ export interface NoiseSource {
   lat: number;
   lon: number;
   db: number;
+}
+
+/**
+ * Render-loop counters from `map.getRenderStats()`: RAF ticks seen, how many
+ * rendered, and which dirty source asked for each render (a render can have
+ * several reasons, so the reasons can sum to more than `renders`).
+ */
+export interface RenderStats {
+  /** RAF ticks since the previous call. */
+  frames: number;
+  /** Ticks that drew a frame. Near zero on a still scene. */
+  renders: number;
+  /** Camera moved or a scene-mutating API call. */
+  needsRender: number;
+  /** Basemap tiles landed, faded or were evicted. */
+  tileDirty: number;
+  /** An animated layer (trees, grass, waves, signs, cars) reported a change. */
+  layersDirty: number;
+  bridgesDirty: number;
+  sporesDirty: number;
+  /** The cloud pass is on (it drifts, so it is dirty every frame). */
+  cloudsDirty: number;
+  noiseDirty: number;
+  /** The safety-net redraw every `RENDER_HEARTBEAT_FRAMES` ticks. */
+  heartbeat: number;
+  /** Renders drawn at the dynamic-resolution motion ratio. */
+  lowRes: number;
+  /** Ticks that wanted to render but were held back one tick because the GPU had not
+   *  finished the previous frame (GPU frame pacing, while splat tiles are resident). */
+  paced: number;
+  /** Ticks that held the picture while a motion-LoD swap sorted the lite splat set (gesture
+   *  start, at most ~200 ms) instead of drawing the full set behind it. */
+  swapHeld: number;
+  /** Settle-dissolve frames presented WITHOUT re-rendering the scene (a blend of the held
+   *  frame and the last render — see `performance.settleFadeMs`). */
+  dissolveFrames: number;
+  /** Held ticks that presented the last frame reprojected to the current camera instead of
+   *  repeating it (see `performance.reprojection`). */
+  reprojected: number;
 }
 
 export type Unsubscribe = () => void;
@@ -562,6 +675,49 @@ export interface HereBeDragons {
   setParcelsEnabled(on: boolean): void;
   /** Whether the parcels overlay is currently enabled. */
   getParcelsEnabled(): boolean;
+  /**
+   * Toggle the Gaussian-splat overlay on/off (no-op when none is configured,
+   * or on the `'mobile'` / `'low'` tiers when `lowTierMaxSplats` is `0`).
+   * Pass `{ reveal: 'ripple', origin?, durationMs?, speedMps? }`
+   * to animate the transition as an expanding (or, on disable, collapsing)
+   * front — see `SplatsRevealOptions`. `opts` are laid over the configured
+   * `splats.reveal` defaults field by field, so a plain `setSplatsEnabled(on)`
+   * transitions the way the config says (instant unless configured).
+   */
+  setSplatsEnabled(on: boolean, opts?: import('./splats/types.js').SplatsRevealOptions): void;
+  /** Whether the splats overlay is currently in effect (false if unconfigured
+   *  or suppressed by the quality tier). */
+  getSplatsEnabled(): boolean;
+  /** Whether the lean map is in effect: the overlay is on and `splats.leanMap`
+   *  (default `true`) has parked the map's outlines, clouds, tilt-shift and
+   *  ambient animation for the splats' sake. */
+  getSplatsLeanMapActive(): boolean;
+  /** Render-loop counters since the previous call (which resets them). See `RenderStats`. */
+  getRenderStats(): RenderStats;
+  /** Resident splat-tile count, total splat count, reveal animation state and
+   *  whether the basemap is currently hidden (zeros / `'none'` / `false` if
+   *  unconfigured). */
+  getSplatsStats(): import('./splats/types.js').SplatsStats;
+  /**
+   * Change splat-overlay options at runtime. Applied live where that is
+   * cheap — `minZoom`, the tile-pyramid options (`minTileZoom` /
+   * `maxTileZoom` / `lodBias` / `lowTierLodBias`: the active level is
+   * re-evaluated, nothing is rebuilt), `maxCameraZoom`, `radius`,
+   * `maxSplats`, `lowTierMaxSplats`, `maxInFlight`, `hideBasemap`,
+   * `neutralGrade`, `roundedUnion.feather` / `.growMs`, `maxStdDev`,
+   * `sortIntervalMs`, the `reveal` defaults, and `enabled` (same as
+   * `setSplatsEnabled(on)`). Changing `urlTemplate`, `imageryTemplate` or
+   * switching `roundedUnion` on / off
+   * transparently rebuilds the layer, and a first `urlTemplate` on a map
+   * that was constructed without `splats` CREATES the overlay (Spark is
+   * imported then). An empty `urlTemplate` removes it. A key present with
+   * the value `undefined` resets that option to its default; absent keys
+   * are left alone.
+   */
+  setSplatsOptions(options: Partial<import('./splats/types.js').SplatsConfig>): void;
+  /** The splat-overlay options in effect, every default filled in
+   *  (`urlTemplate: ''` when no overlay is configured; no `clock`). */
+  getSplatsOptions(): import('./splats/options.js').ResolvedSplatsOptions;
   /** Enumerate all buildings in currently-loaded tiles. */
   getLoadedBuildings(): import('./buildings/types.js').BuildingInfo[];
   /** Convert scene-world meters (x, z) → geographic (lat, lon). */
@@ -616,6 +772,20 @@ export interface HereBeDragons {
    */
   setTileSpawnDurationMs(ms: number): void;
   getTileSpawnDurationMs(): number;
+  /** Turn the basemap tile reveal (rounded-union mask) on / off at runtime
+   *  (turning it on shows the settled union of whatever is loaded), or pass
+   *  the option's object form — `{ growMs?, feather?, rise? }` — to retune it
+   *  live (which also switches it on, as the same value would at
+   *  construction). */
+  /** Turn the tilt-shift miniature look on / off (eased), or pass settings to tune it and turn it on. */
+  setTiltShift(on: boolean | Partial<import('./rendering/TiltShiftPass.js').TiltShiftSettings>): void;
+  /** Whether tilt-shift is requested (the quality tier may be holding it off). */
+  getTiltShift(): boolean;
+  getTiltShiftSettings(): import('./rendering/TiltShiftPass.js').TiltShiftSettings;
+  setTileReveal(reveal: boolean | import('./tiles/CoverageField.js').TileRevealOptions): void;
+  getTileReveal(): boolean;
+  /** The tile reveal's settings in effect: `{ enabled, growMs, feather, rise }`. */
+  getTileRevealOptions(): import('./tiles/CoverageField.js').ResolvedTileReveal;
   /** Collapse extruded buildings to the ground plane (or restore them). */
   setBuildingsFlat(flat: boolean): void;
   getBuildingsFlat(): boolean;

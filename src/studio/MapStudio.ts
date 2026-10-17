@@ -1,7 +1,10 @@
+import { TILT_SHIFT_DEFAULTS } from '../rendering/TiltShiftPass.js';
 import type { HereBeDragons, HereBeDragonsOptions, LayerConfig, LayerName } from '../types.js';
 import { THEMES, THEME_NAMES, type ThemeColors } from '../themes.js';
 import { injectDefaultStudioStylesOnce } from './styles.js';
 import type { MapStudio as MapStudioHandle, StudioConfig, StudioOptions } from './types.js';
+import { SPLATS_DEFAULTS, exportSplatsOptions, imageryTemplateFrom, splatsReplacePatch } from '../splats/options.js';
+import { exportTileReveal, resolveTileReveal } from '../tiles/CoverageField.js';
 
 /** Color-valued ThemeColors keys (excludes non-color fields like `outline`). */
 type ThemeColorKey = 'water' | 'park' | 'building' | 'road' | 'land' | 'beach' | 'sky';
@@ -40,6 +43,8 @@ const LAYER_KEYS: ReadonlyArray<LayerName> = [
  * round-trips correctly.
  */
 export class MapStudio implements MapStudioHandle {
+  /** Re-reads the tilt-shift rows from the map (set when the rows are built). */
+  private syncTiltShiftRows: (() => void) | null = null;
   private readonly map: HereBeDragons;
   private readonly container: HTMLElement;
   private readonly initialConfig: Partial<HereBeDragonsOptions>;
@@ -88,6 +93,11 @@ export class MapStudio implements MapStudioHandle {
 
   private readonly layerState = new Map<LayerName, boolean>();
   private readonly cameraSyncHandle: number;
+  /** Stats poll of the splats section — runs only while that fold is open. */
+  private splatsStatsHandle: number | null = null;
+  /** True once the user picked a reveal style; until then an overlay the
+   *  studio CREATES from a pasted URL defaults to the ripple. */
+  private splatsRevealTouched = false;
   private destroyed = false;
 
   constructor(map: HereBeDragons, options: StudioOptions = {}) {
@@ -359,6 +369,9 @@ export class MapStudio implements MapStudioHandle {
     flattenRow.appendChild(flattenInput);
     layerSection.appendChild(flattenRow);
     this.body.appendChild(layerSection);
+
+    // ----- 3D Satellite (splats) ------------------------------------------
+    this.buildSplatsSection();
 
     // ----- Quality --------------------------------------------------------
     // Live tier switch. Headline performance control:
@@ -979,6 +992,95 @@ export class MapStudio implements MapStudioHandle {
       spawnRow.input.value = String(ms);
       spawnRow.value.textContent = `${ms} ms`;
     });
+
+    // Tile reveal: the vector basemap drawn inside the growing rounded union
+    // of the loaded tiles (`tileReveal` option). On/off + its three params.
+    const tr0 = this.map.getTileRevealOptions();
+    const revealRow = makeCheckboxRow('Tile reveal', tr0.enabled);
+    const revealGrowRow = makeSliderRow('Reveal grow', 0, 3000, 50, tr0.growMs, ' ms');
+    const revealFeatherRow = makeSliderRow('Reveal feather', 0, 0.2, 0.005, tr0.feather);
+    const revealRiseRow = makeCheckboxRow('Slab rise', tr0.rise);
+    revealGrowRow.row.classList.add('hbd-studio-subrow-wide');
+    revealFeatherRow.row.classList.add('hbd-studio-subrow-wide');
+    revealRiseRow.row.classList.add('hbd-studio-subrow-wide');
+    const syncTileReveal = (): void => {
+      const tr = this.map.getTileRevealOptions();
+      revealRow.input.checked = tr.enabled;
+      revealGrowRow.input.value = String(tr.growMs);
+      revealGrowRow.value.textContent = `${Math.round(tr.growMs)} ms`;
+      revealFeatherRow.input.value = String(tr.feather);
+      revealFeatherRow.value.textContent = tr.feather.toFixed(3);
+      revealRiseRow.input.checked = tr.rise;
+      for (const el of [revealGrowRow.input, revealFeatherRow.input, revealRiseRow.input]) {
+        el.disabled = !tr.enabled;
+      }
+    };
+    // The object form of setTileReveal switches the reveal on, so the params
+    // are only editable (and only sent) while it is on.
+    revealRow.input.addEventListener('change', () => {
+      this.map.setTileReveal(revealRow.input.checked);
+      syncTileReveal();
+    });
+    revealGrowRow.input.addEventListener('input', () => {
+      this.map.setTileReveal({ growMs: Number(revealGrowRow.input.value) });
+      syncTileReveal();
+    });
+    revealFeatherRow.input.addEventListener('input', () => {
+      this.map.setTileReveal({ feather: Number(revealFeatherRow.input.value) });
+      syncTileReveal();
+    });
+    revealRiseRow.input.addEventListener('change', () => {
+      this.map.setTileReveal({ rise: revealRiseRow.input.checked });
+      syncTileReveal();
+    });
+    animSection.appendChild(revealRow.row);
+    animSection.appendChild(revealGrowRow.row);
+    animSection.appendChild(revealFeatherRow.row);
+    animSection.appendChild(revealRiseRow.row);
+
+    // Tilt-shift "miniature" look (`tiltShift` option): on/off + the three knobs that matter.
+    const ts0 = this.map.getTiltShiftSettings();
+    const tsRow = makeCheckboxRow('Tilt-shift (miniature)', this.map.getTiltShift());
+    const tsRadiusRow = makeSliderRow('Blur', 0, 24, 0.5, ts0.radius, ' px');
+    const tsBandRow = makeSliderRow('Focus band', 0, 0.3, 0.005, ts0.band);
+    const tsSatRow = makeSliderRow('Saturation', 0.8, 2, 0.01, ts0.saturation, '×');
+    for (const r of [tsRadiusRow, tsBandRow, tsSatRow]) r.row.classList.add('hbd-studio-subrow-wide');
+    const syncTiltShift = (): void => {
+      const on = this.map.getTiltShift();
+      const ts = this.map.getTiltShiftSettings();
+      tsRow.input.checked = on;
+      tsRadiusRow.input.value = String(ts.radius);
+      tsRadiusRow.value.textContent = `${ts.radius.toFixed(1)} px`;
+      tsBandRow.input.value = String(ts.band);
+      tsBandRow.value.textContent = ts.band.toFixed(3);
+      tsSatRow.input.value = String(ts.saturation);
+      tsSatRow.value.textContent = `${ts.saturation.toFixed(2)}×`;
+      for (const el of [tsRadiusRow.input, tsBandRow.input, tsSatRow.input]) el.disabled = !on;
+    };
+    tsRow.input.addEventListener('change', () => {
+      this.map.setTiltShift(tsRow.input.checked);
+      syncTiltShift();
+    });
+    tsRadiusRow.input.addEventListener('input', () => {
+      this.map.setTiltShift({ radius: Number(tsRadiusRow.input.value) });
+      syncTiltShift();
+    });
+    tsBandRow.input.addEventListener('input', () => {
+      this.map.setTiltShift({ band: Number(tsBandRow.input.value) });
+      syncTiltShift();
+    });
+    tsSatRow.input.addEventListener('input', () => {
+      this.map.setTiltShift({ saturation: Number(tsSatRow.input.value) });
+      syncTiltShift();
+    });
+    animSection.appendChild(tsRow.row);
+    animSection.appendChild(tsRadiusRow.row);
+    animSection.appendChild(tsBandRow.row);
+    animSection.appendChild(tsSatRow.row);
+    syncTiltShift();
+    this.syncTiltShiftRows = syncTiltShift;
+    syncTileReveal();
+    this.resyncFns.push(syncTileReveal);
     this.body.appendChild(animSection);
 
     // ----- Performance ---------------------------------------------------
@@ -1166,6 +1268,22 @@ export class MapStudio implements MapStudioHandle {
     if (this.zoomRange.enabled) {
       cfg.zoomRange = { min: this.zoomRange.min, max: this.zoomRange.max };
     }
+    // Splats overlay + basemap tile reveal: only what differs from the
+    // defaults (and no `splats` block at all while no tile URL is set), so a
+    // map that never touched them exports exactly what it did before.
+    const splats = exportSplatsOptions(this.map.getSplatsOptions());
+    if (splats) cfg.splats = splats;
+    const tileReveal = exportTileReveal(this.map.getTileRevealOptions());
+    if (tileReveal !== undefined) cfg.tileReveal = tileReveal;
+    // Tilt-shift: only when on; `true` at the defaults, else just the keys that differ.
+    if (this.map.getTiltShift()) {
+      const ts = this.map.getTiltShiftSettings();
+      const diff: Record<string, number> = {};
+      for (const k of Object.keys(TILT_SHIFT_DEFAULTS) as Array<keyof typeof TILT_SHIFT_DEFAULTS>) {
+        if (Math.abs(ts[k] - TILT_SHIFT_DEFAULTS[k]) > 1e-9) diff[k] = ts[k];
+      }
+      cfg.tiltShift = Object.keys(diff).length ? diff : true;
+    }
     return cfg;
   }
 
@@ -1283,6 +1401,36 @@ export class MapStudio implements MapStudioHandle {
       this.map.setBuildingPopup(config.buildings);
     }
 
+    // Tilt-shift — `true` / `false` / settings object (an object also switches it on).
+    if (config.tiltShift !== undefined) {
+      if (config.tiltShift && typeof config.tiltShift === 'object') {
+        this.map.setTiltShift({ ...TILT_SHIFT_DEFAULTS, ...config.tiltShift });
+      } else {
+        this.map.setTiltShift(!!config.tiltShift);
+      }
+      this.syncTiltShiftRows?.();
+    }
+
+    // Basemap tile reveal — `false`, `true`, or `{ growMs?, feather?, rise? }`
+    // (params a literal leaves out are the defaults, as at construction).
+    if (typeof config.tileReveal === 'boolean' || (config.tileReveal && typeof config.tileReveal === 'object')) {
+      const tr = resolveTileReveal(config.tileReveal);
+      this.map.setTileReveal({ growMs: tr.growMs, feather: tr.feather, rise: tr.rise });
+      this.map.setTileReveal(tr.enabled);
+    }
+
+    // Splats overlay. The block REPLACES the live options (keys it leaves out
+    // go back to their defaults — exports elide them), creating or rebuilding
+    // the layer as needed. A config without a `splats.urlTemplate` leaves the
+    // overlay alone: like `pmtiles_url`, the tile source is per-environment.
+    if (
+      config.splats && typeof config.splats === 'object' &&
+      typeof config.splats.urlTemplate === 'string' && config.splats.urlTemplate.trim() !== ''
+    ) {
+      this.map.setSplatsOptions(splatsReplacePatch(config.splats));
+      this.splatsRevealTouched = true;
+    }
+
     // `pixelRatio` / `background` are construction-only (no runtime setter); we
     // skip them on import and leave the live map untouched.
 
@@ -1298,12 +1446,355 @@ export class MapStudio implements MapStudioHandle {
     if (this.destroyed) return;
     this.destroyed = true;
     window.clearInterval(this.cameraSyncHandle);
+    if (this.splatsStatsHandle !== null) window.clearInterval(this.splatsStatsHandle);
+    this.splatsStatsHandle = null;
     this.panel.remove();
   }
 
   // ---------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------
+
+  /**
+   * "3D Satellite (splats)" — the Gaussian-splat overlay. Everything here
+   * goes through `map.setSplatsOptions()`, which applies cheap options to the
+   * running layer and rebuilds it for the construction-only ones — including
+   * CREATING it when a tile URL is pasted into a map that had none. Until
+   * there is a URL the rest of the section is disabled.
+   */
+  private buildSplatsSection(): void {
+    const map = this.map;
+    const fold = makeFold('3D Satellite (splats)', true);
+    this.body.appendChild(fold.header);
+    const section = fold.body;
+    this.body.appendChild(section);
+
+    // --- Tile source (always editable) -------------------------------------
+    const urlRow = makeTextRow('Tile URL', '', 'https://…/{z}/{x}/{y}.spz');
+    section.appendChild(urlRow.row);
+
+    const stats = document.createElement('div');
+    stats.className = 'hbd-studio-stats';
+    section.appendChild(stats);
+
+    // Everything below needs an overlay to act on.
+    const controls = document.createElement('div');
+    section.appendChild(controls);
+
+    const enableRow = makeCheckboxRow('Enabled', false);
+    controls.appendChild(enableRow.row);
+
+    const imageryOnRow = makeCheckboxRow('Satellite ground', true);
+    controls.appendChild(imageryOnRow.row);
+    const imageryRow = makeTextRow('Imagery URL', '', '(tile URL with .png)');
+    imageryRow.row.classList.add('hbd-studio-subrow-wide');
+    controls.appendChild(imageryRow.row);
+
+    const D = SPLATS_DEFAULTS;
+    const minZoomRow = makeSliderRow('Min zoom', 10, 20, 0.5, D.minZoom);
+    // Tile pyramid: the level follows the camera zoom between these bounds
+    // (bias < 0 = coarser), and the camera is kept out of blob range.
+    const minTileRow = makeSliderRow('Coarsest tiles', 8, 20, 1, D.minTileZoom);
+    const maxTileRow = makeSliderRow('Finest tiles', 8, 20, 1, D.maxTileZoom);
+    const lodBiasRow = makeSliderRow('Detail bias', -3, 3, 0.25, D.lodBias);
+    const lowLodBiasRow = makeSliderRow('Low-tier bias', -3, 3, 0.25, D.lowTierLodBias);
+    const maxCamRow = makeSliderRow('Max camera zoom', 14, 20, 0.25, D.maxCameraZoom);
+    const radiusRow = makeSliderRow('Window radius', 0, 3, 1, D.radius);
+    const budgetRow = makeSliderRow('Budget', 100_000, 5_000_000, 50_000, D.maxSplats, '', formatCount);
+    const lowBudgetRow = makeSliderRow('Low-tier budget', 0, 1_500_000, 25_000, D.lowTierMaxSplats, '', formatCount);
+    // How the vector basemap gives way: under the landed satellite only
+    // ('covered', the default), everywhere (`true`), or not at all (`false`).
+    const hideRow = document.createElement('div');
+    hideRow.className = 'hbd-studio-row';
+    const hideLabel = document.createElement('label');
+    hideLabel.textContent = 'Basemap';
+    const hideGroup = document.createElement('div');
+    hideGroup.className = 'hbd-studio-row';
+    hideGroup.style.flex = '1.4';
+    hideGroup.style.gap = '6px';
+    hideGroup.style.margin = '0';
+    const hideModes: ReadonlyArray<{ value: boolean | 'covered'; text: string; title: string }> = [
+      { value: 'covered', text: 'Cut out', title: 'Remove the vector map only under satellite tiles that have landed' },
+      { value: true, text: 'Hide', title: 'Hide the vector basemap layers while any satellite tile is showing' },
+      { value: false, text: 'Keep', title: 'Never hide the vector basemap' }
+    ];
+    const hideButtons = hideModes.map((m) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'hbd-studio-btn';
+      b.textContent = m.text;
+      b.title = m.title;
+      hideGroup.appendChild(b);
+      return b;
+    });
+    hideRow.appendChild(hideLabel);
+    hideRow.appendChild(hideGroup);
+    const labelsRow = makeCheckboxRow('Labels on top', D.keepLabels);
+    labelsRow.row.classList.add('hbd-studio-subrow-wide');
+    const governorRow = makeCheckboxRow('Frame governor', D.governor);
+    const targetRow = makeSliderRow('Target frame', 8, 100, 1, D.targetFrameMs, ' ms');
+    targetRow.row.classList.add('hbd-studio-subrow-wide');
+    // How far ABOVE the budget the governor may grow on a device with headroom (1 = cut-only).
+    const growthRow = makeSliderRow('Budget growth', 1, 4, 0.25, D.budgetGrowth, '×');
+    growthRow.row.classList.add('hbd-studio-subrow-wide');
+    growthRow.row.title =
+      'Let the governor grow the splat budget past maxSplats when frames stay well under target.\n'
+      + '1× keeps maxSplats a hard ceiling. Buys coverage with memory and bandwidth.';
+    // Cross-dissolve between pyramid levels (0 = instant swap).
+    const levelFadeRow = makeSliderRow('Level fade', 0, 2000, 50, D.levelFadeMs, ' ms');
+    levelFadeRow.row.title =
+      'Cross-dissolve between tile-pyramid levels when zooming (0 = instant swap)';
+    const gradeRow = makeCheckboxRow('Neutral grade', D.neutralGrade);
+    const unionRow = makeCheckboxRow('Rounded union', true);
+    const featherRow = makeSliderRow('Feather', 0, 0.25, 0.005, D.roundedUnion.feather);
+    const growRow = makeSliderRow('Grow', 0, 3000, 50, D.roundedUnion.growMs, ' ms');
+    featherRow.row.classList.add('hbd-studio-subrow-wide');
+    growRow.row.classList.add('hbd-studio-subrow-wide');
+    for (const r of [
+      minZoomRow, minTileRow, maxTileRow, lodBiasRow, lowLodBiasRow, maxCamRow,
+      radiusRow, budgetRow, lowBudgetRow
+    ]) controls.appendChild(r.row);
+    controls.appendChild(levelFadeRow.row);
+    controls.appendChild(governorRow.row);
+    controls.appendChild(targetRow.row);
+    controls.appendChild(growthRow.row);
+    controls.appendChild(hideRow);
+    controls.appendChild(labelsRow.row);
+    controls.appendChild(gradeRow.row);
+    controls.appendChild(unionRow.row);
+    controls.appendChild(featherRow.row);
+    controls.appendChild(growRow.row);
+
+    // Reveal style — what the Enabled toggle (and a plain
+    // `setSplatsEnabled(on)` in the embedding page) plays.
+    const revealRow = document.createElement('div');
+    revealRow.className = 'hbd-studio-row';
+    const revealLabel = document.createElement('label');
+    revealLabel.textContent = 'Reveal';
+    const revealGroup = document.createElement('div');
+    revealGroup.className = 'hbd-studio-row';
+    revealGroup.style.flex = '1.4';
+    revealGroup.style.gap = '6px';
+    revealGroup.style.margin = '0';
+    const noneBtn = document.createElement('button');
+    noneBtn.type = 'button';
+    noneBtn.className = 'hbd-studio-btn';
+    noneBtn.textContent = 'None';
+    const rippleBtn = document.createElement('button');
+    rippleBtn.type = 'button';
+    rippleBtn.className = 'hbd-studio-btn';
+    rippleBtn.textContent = 'Ripple';
+    revealGroup.appendChild(noneBtn);
+    revealGroup.appendChild(rippleBtn);
+    revealRow.appendChild(revealLabel);
+    revealRow.appendChild(revealGroup);
+    controls.appendChild(revealRow);
+    const durationRow = makeSliderRow('Duration', 200, 5000, 100, D.reveal.durationMs, ' ms');
+    const speedRow = makeSliderRow('Speed', 50, 1000, 10, D.reveal.speedMps, ' m/s');
+    durationRow.row.classList.add('hbd-studio-subrow-wide');
+    speedRow.row.classList.add('hbd-studio-subrow-wide');
+    controls.appendChild(durationRow.row);
+    controls.appendChild(speedRow.row);
+
+    // Advanced fold: Spark's cut-off + sort spacing, fetch concurrency.
+    const adv = makeFold('Advanced', false, true);
+    controls.appendChild(adv.header);
+    controls.appendChild(adv.body);
+    const stdDevRow = makeSliderRow('Max std dev', 1, 3, 0.01, D.maxStdDev);
+    const sortRow = makeSliderRow('Sort interval', 0, 1000, 10, D.sortIntervalMs, ' ms');
+    const inFlightRow = makeSliderRow('Max in flight', 1, 6, 1, D.maxInFlight);
+    adv.body.appendChild(stdDevRow.row);
+    adv.body.appendChild(sortRow.row);
+    adv.body.appendChild(inFlightRow.row);
+
+    // --- map → controls ----------------------------------------------------
+    const setSlider = (r: SliderRow, v: number, text: string): void => {
+      if (document.activeElement !== r.input) r.input.value = String(v);
+      r.value.textContent = text;
+    };
+    const sync = (): void => {
+      const o = map.getSplatsOptions();
+      const has = o.urlTemplate !== '';
+      if (document.activeElement !== urlRow.input) urlRow.input.value = o.urlTemplate;
+      controls.classList.toggle('hbd-studio-disabled', !has);
+      for (const el of controls.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button')) {
+        el.disabled = !has;
+      }
+      enableRow.input.checked = has && o.enabled;
+      imageryOnRow.input.checked = o.imageryTemplate !== null;
+      if (document.activeElement !== imageryRow.input) imageryRow.input.value = o.imageryTemplate ?? '';
+      imageryRow.input.placeholder = has ? imageryTemplateFrom(o.urlTemplate) : '(tile URL with .png)';
+      if (has && o.imageryTemplate === null) imageryRow.input.disabled = true;
+      setSlider(minZoomRow, o.minZoom, o.minZoom.toFixed(1));
+      setSlider(minTileRow, o.minTileZoom, `z${o.minTileZoom}`);
+      setSlider(maxTileRow, o.maxTileZoom, `z${o.maxTileZoom}`);
+      const bias = (v: number): string => (v > 0 ? `+${v}` : String(v));
+      setSlider(lodBiasRow, o.lodBias, bias(o.lodBias));
+      setSlider(lowLodBiasRow, o.lowTierLodBias, bias(o.lowTierLodBias));
+      setSlider(maxCamRow, o.maxCameraZoom, o.maxCameraZoom.toFixed(2));
+      setSlider(radiusRow, o.radius, `${2 * o.radius + 1}×${2 * o.radius + 1}`);
+      setSlider(budgetRow, o.maxSplats, formatCount(o.maxSplats));
+      setSlider(lowBudgetRow, o.lowTierMaxSplats, o.lowTierMaxSplats === 0 ? 'off' : formatCount(o.lowTierMaxSplats));
+      hideModes.forEach((m, i) => hideButtons[i].classList.toggle('primary', o.hideBasemap === m.value));
+      labelsRow.input.checked = o.keepLabels;
+      if (has && o.hideBasemap !== 'covered') labelsRow.input.disabled = true;
+      setSlider(levelFadeRow, o.levelFadeMs, o.levelFadeMs === 0 ? 'instant' : `${Math.round(o.levelFadeMs)} ms`);
+      governorRow.input.checked = o.governor;
+      setSlider(targetRow, o.targetFrameMs, `${Math.round(o.targetFrameMs)} ms · ${Math.round(1000 / o.targetFrameMs)} fps`);
+      if (has && !o.governor) targetRow.input.disabled = true;
+      setSlider(growthRow, o.budgetGrowth, o.budgetGrowth <= 1 ? 'off' : `${o.budgetGrowth.toFixed(2)}×`);
+      if (has && !o.governor) growthRow.input.disabled = true;
+      gradeRow.input.checked = o.neutralGrade;
+      unionRow.input.checked = o.roundedUnion.enabled;
+      setSlider(featherRow, o.roundedUnion.feather, o.roundedUnion.feather.toFixed(3));
+      setSlider(growRow, o.roundedUnion.growMs, `${Math.round(o.roundedUnion.growMs)} ms`);
+      if (has && !o.roundedUnion.enabled) {
+        featherRow.input.disabled = true;
+        growRow.input.disabled = true;
+      }
+      noneBtn.classList.toggle('primary', o.reveal.reveal === 'none');
+      rippleBtn.classList.toggle('primary', o.reveal.reveal === 'ripple');
+      setSlider(durationRow, o.reveal.durationMs, `${Math.round(o.reveal.durationMs)} ms`);
+      setSlider(speedRow, o.reveal.speedMps, `${Math.round(o.reveal.speedMps)} m/s`);
+      if (has && o.reveal.reveal === 'none') {
+        durationRow.input.disabled = true;
+        speedRow.input.disabled = true;
+      }
+      setSlider(stdDevRow, o.maxStdDev, o.maxStdDev.toFixed(2));
+      setSlider(sortRow, o.sortIntervalMs, `${Math.round(o.sortIntervalMs)} ms`);
+      setSlider(inFlightRow, o.maxInFlight, String(o.maxInFlight));
+      // The fold buttons are never disabled — only what is inside them.
+      adv.toggle.disabled = false;
+      refreshStats();
+    };
+
+    // Governor: the moving-frame time it works from and what it has taken.
+    const governorText = (g: ReturnType<HereBeDragons['getSplatsStats']>['governor']): string => {
+      if (!g.enabled) return '';
+      const frame = g.frameMs > 0 ? `${g.frameMs.toFixed(0)} / ${g.targetFrameMs.toFixed(0)} ms` : `target ${g.targetFrameMs.toFixed(0)} ms`;
+      const held = g.scale !== 1 || g.biasDrop > 0
+        ? ` → budget ×${g.scale.toFixed(2)}${g.biasDrop > 0 ? `, bias −${g.biasDrop}` : ''}`
+        : '';
+      return ` · governor ${frame}${held}`;
+    };
+    const refreshStats = (): void => {
+      const o = map.getSplatsOptions();
+      if (!o.urlTemplate) {
+        stats.textContent = 'No overlay — paste a {z}/{x}/{y}.spz tile URL template to create one.';
+        return;
+      }
+      const st = map.getSplatsStats();
+      const state = !o.enabled ? 'off' : map.getSplatsEnabled() ? 'on' : 'on (held off by the quality tier)';
+      stats.textContent =
+        `${state} · z${st.tileZoom} · ${st.tiles} tile${st.tiles === 1 ? '' : 's'} · ` +
+        `${st.splats.toLocaleString()} / ${st.maxSplats.toLocaleString()} splats · ` +
+        `reveal ${st.reveal}${st.basemapHidden ? ' · basemap hidden' : ''}` +
+        `${st.basemapCovered ? ' · basemap cut out' : ''}${governorText(st.governor)}`;
+    };
+
+    // --- controls → map ----------------------------------------------------
+    const apply = (patch: Parameters<HereBeDragons['setSplatsOptions']>[0]): void => {
+      map.setSplatsOptions(patch);
+      sync();
+    };
+    // Text fields commit on change (Enter / blur), not per keystroke: a new
+    // template rebuilds the layer.
+    urlRow.input.addEventListener('change', () => {
+      const next = urlRow.input.value.trim();
+      const o = map.getSplatsOptions();
+      if (next === o.urlTemplate) return;
+      if (next && !o.urlTemplate) {
+        // Creating the overlay: it arrives switched OFF (the toggle below
+        // reveals it), and — unless a style was chosen — set to ripple.
+        const patch: Parameters<HereBeDragons['setSplatsOptions']>[0] = {
+          urlTemplate: next,
+          enabled: false
+        };
+        if (!this.splatsRevealTouched && o.reveal.reveal === 'none') patch.reveal = { reveal: 'ripple' };
+        apply(patch);
+      } else {
+        apply({ urlTemplate: next });
+      }
+    });
+    enableRow.input.addEventListener('change', () => {
+      // No opts: plays the configured reveal from the current view centre.
+      map.setSplatsEnabled(enableRow.input.checked);
+      sync();
+    });
+    const applyImagery = (): void => {
+      const text = imageryRow.input.value.trim();
+      apply({ imageryTemplate: imageryOnRow.input.checked ? (text === '' ? undefined : text) : null });
+    };
+    imageryOnRow.input.addEventListener('change', applyImagery);
+    imageryRow.input.addEventListener('change', applyImagery);
+    minZoomRow.input.addEventListener('input', () => apply({ minZoom: Number(minZoomRow.input.value) }));
+    // Both bounds go together so the slider being dragged wins an inverted
+    // pair (and a legacy `zoomLevel` in the config stops mattering).
+    minTileRow.input.addEventListener('input', () => {
+      const lo = Number(minTileRow.input.value);
+      apply({ minTileZoom: lo, maxTileZoom: Math.max(lo, map.getSplatsOptions().maxTileZoom) });
+    });
+    maxTileRow.input.addEventListener('input', () => {
+      const hi = Number(maxTileRow.input.value);
+      apply({ maxTileZoom: hi, minTileZoom: Math.min(hi, map.getSplatsOptions().minTileZoom) });
+    });
+    lodBiasRow.input.addEventListener('input', () => apply({ lodBias: Number(lodBiasRow.input.value) }));
+    lowLodBiasRow.input.addEventListener('input', () =>
+      apply({ lowTierLodBias: Number(lowLodBiasRow.input.value) }));
+    maxCamRow.input.addEventListener('input', () => apply({ maxCameraZoom: Number(maxCamRow.input.value) }));
+    radiusRow.input.addEventListener('input', () => apply({ radius: Number(radiusRow.input.value) }));
+    budgetRow.input.addEventListener('input', () => apply({ maxSplats: Number(budgetRow.input.value) }));
+    lowBudgetRow.input.addEventListener('input', () =>
+      apply({ lowTierMaxSplats: Number(lowBudgetRow.input.value) }));
+    hideModes.forEach((m, i) =>
+      hideButtons[i].addEventListener('click', () => apply({ hideBasemap: m.value })));
+    labelsRow.input.addEventListener('change', () => apply({ keepLabels: labelsRow.input.checked }));
+    levelFadeRow.input.addEventListener('input', () => apply({ levelFadeMs: Number(levelFadeRow.input.value) }));
+    governorRow.input.addEventListener('change', () => apply({ governor: governorRow.input.checked }));
+    targetRow.input.addEventListener('input', () => apply({ targetFrameMs: Number(targetRow.input.value) }));
+    growthRow.input.addEventListener('input', () => apply({ budgetGrowth: Number(growthRow.input.value) }));
+    gradeRow.input.addEventListener('change', () => apply({ neutralGrade: gradeRow.input.checked }));
+    const unionValue = (): false | { feather: number; growMs: number } =>
+      unionRow.input.checked
+        ? { feather: Number(featherRow.input.value), growMs: Number(growRow.input.value) }
+        : false;
+    unionRow.input.addEventListener('change', () => apply({ roundedUnion: unionValue() }));
+    featherRow.input.addEventListener('input', () => apply({ roundedUnion: unionValue() }));
+    growRow.input.addEventListener('input', () => apply({ roundedUnion: unionValue() }));
+    const setReveal = (style: 'none' | 'ripple'): void => {
+      this.splatsRevealTouched = true;
+      apply({ reveal: { reveal: style } });
+    };
+    noneBtn.addEventListener('click', () => setReveal('none'));
+    rippleBtn.addEventListener('click', () => setReveal('ripple'));
+    durationRow.input.addEventListener('input', () =>
+      apply({ reveal: { durationMs: Number(durationRow.input.value) } }));
+    speedRow.input.addEventListener('input', () =>
+      apply({ reveal: { speedMps: Number(speedRow.input.value) } }));
+    stdDevRow.input.addEventListener('input', () => apply({ maxStdDev: Number(stdDevRow.input.value) }));
+    sortRow.input.addEventListener('input', () => apply({ sortIntervalMs: Number(sortRow.input.value) }));
+    inFlightRow.input.addEventListener('input', () => apply({ maxInFlight: Number(inFlightRow.input.value) }));
+
+    // Stats poll: light (2 Hz), and only while this fold is open.
+    const setPolling = (on: boolean): void => {
+      if (on && this.splatsStatsHandle === null && !this.destroyed) {
+        this.splatsStatsHandle = window.setInterval(() => {
+          if (this.panel.dataset.collapsed !== 'true') refreshStats();
+        }, 500);
+      } else if (!on && this.splatsStatsHandle !== null) {
+        window.clearInterval(this.splatsStatsHandle);
+        this.splatsStatsHandle = null;
+      }
+    };
+    fold.onToggle = (open) => {
+      setPolling(open);
+      if (open) sync();
+    };
+    setPolling(true);
+
+    sync();
+    this.resyncFns.push(sync);
+  }
 
   /** Build the collapsed-state trigger that, when clicked, expands the grid. */
   private buildThemeToggle(): HTMLButtonElement {
@@ -1495,6 +1986,10 @@ export class MapStudio implements MapStudioHandle {
       return;
     }
     const config = parsed as StudioConfig;
+    // A FILE is a whole config: an export leaves `tileReveal` out when it is
+    // at its defaults, so an absent key means "defaults" here (unlike a
+    // partial `setConfig()` call, which leaves the reveal alone).
+    if (config.tileReveal === undefined) config.tileReveal = true;
     const handled = this.onImport?.(config);
     if (handled === false) return;
     this.setConfig(config);
@@ -1523,6 +2018,100 @@ interface SliderRow {
   row: HTMLDivElement;
   input: HTMLInputElement;
   value: HTMLSpanElement;
+}
+
+interface InputRow {
+  row: HTMLDivElement;
+  input: HTMLInputElement;
+}
+
+/** `[label] [☑]` — the checkbox row every on/off control uses. */
+function makeCheckboxRow(labelText: string, checked: boolean): InputRow {
+  const row = document.createElement('div');
+  row.className = 'hbd-studio-row';
+  const label = document.createElement('label');
+  label.textContent = labelText;
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = checked;
+  row.appendChild(label);
+  row.appendChild(input);
+  return { row, input };
+}
+
+/** `[label] [text field]` — for URL templates. Callers listen for `change`. */
+function makeTextRow(labelText: string, value: string, placeholder = ''): InputRow {
+  const row = document.createElement('div');
+  row.className = 'hbd-studio-row';
+  const label = document.createElement('label');
+  label.textContent = labelText;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = value;
+  input.placeholder = placeholder;
+  input.spellcheck = false;
+  input.autocomplete = 'off';
+  // Enter commits (fires `change`) without submitting anything.
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') input.blur();
+  });
+  row.appendChild(label);
+  row.appendChild(input);
+  return { row, input };
+}
+
+interface Fold {
+  /** Section holding the clickable title. */
+  header: HTMLDivElement;
+  /** Section holding the content; `hidden` while folded. */
+  body: HTMLDivElement;
+  toggle: HTMLButtonElement;
+  /** Assign to hear open / close. */
+  onToggle: ((open: boolean) => void) | null;
+}
+
+/**
+ * A collapsible section: the usual uppercase section title as a button with
+ * a chevron, and a content section it shows / hides. `nested` renders it as
+ * a sub-fold inside another section (no divider, no section padding).
+ */
+function makeFold(title: string, open: boolean, nested = false): Fold {
+  const header = makeSection();
+  const body = makeSection();
+  if (nested) {
+    header.classList.add('hbd-studio-nested');
+    body.classList.add('hbd-studio-nested');
+  }
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'hbd-studio-fold';
+  const h = document.createElement('h4');
+  h.textContent = title;
+  const chev = document.createElement('span');
+  chev.className = 'hbd-studio-fold-chevron';
+  chev.setAttribute('aria-hidden', 'true');
+  chev.textContent = '▾';
+  toggle.appendChild(h);
+  toggle.appendChild(chev);
+  header.appendChild(toggle);
+  const fold: Fold = { header, body, toggle, onToggle: null };
+  const set = (o: boolean): void => {
+    toggle.setAttribute('aria-expanded', o ? 'true' : 'false');
+    body.hidden = !o;
+  };
+  set(open);
+  toggle.addEventListener('click', () => {
+    const next = toggle.getAttribute('aria-expanded') !== 'true';
+    set(next);
+    fold.onToggle?.(next);
+  });
+  return fold;
+}
+
+/** 1_200_000 → `1.20M`, 400_000 → `400k`. */
+function formatCount(v: number): string {
+  return v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)}M` : `${Math.round(v / 1000)}k`;
 }
 
 /**
@@ -1703,8 +2292,11 @@ function makeSliderRow(
   max: number,
   step: number,
   initial: number,
-  unit = ''
+  unit = '',
+  /** Custom number formatting for the value + range caption (default: by step). */
+  format?: (v: number) => string
 ): SliderRow {
+  const fmt = format ?? ((v: number): string => formatSliderValue(v, step));
   const row = document.createElement('div');
   row.className = 'hbd-studio-row';
   const lab = document.createElement('label');
@@ -1717,13 +2309,12 @@ function makeSliderRow(
   input.value = String(initial);
   const value = document.createElement('span');
   value.className = 'hbd-studio-value';
-  value.textContent = formatSliderValue(initial, step) + unit;
+  value.textContent = fmt(initial) + unit;
   // Static min/max caption — gives the user a sense of how far the slider can
   // move without having to drag it to either end.
   const range = document.createElement('span');
   range.className = 'hbd-studio-range';
-  range.textContent =
-    `${formatSliderValue(min, step)}${unit}–${formatSliderValue(max, step)}${unit}`;
+  range.textContent = `${fmt(min)}${unit}–${fmt(max)}${unit}`;
   row.appendChild(lab);
   row.appendChild(input);
   row.appendChild(value);

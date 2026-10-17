@@ -5,6 +5,9 @@ import { CloudsPass } from './CloudsPass.js';
 import { CloudCompositePass } from './CloudCompositePass.js';
 import { NoisePass } from './NoisePass.js';
 import { FxaaPass } from './FxaaPass.js';
+import { TiltShiftPass } from './TiltShiftPass.js';
+import { DissolvePass } from './DissolvePass.js';
+import { ReprojectPass } from './ReprojectPass.js';
 import { LABEL_THREE_LAYER } from '../layers/LabelsLayer.js';
 import { BUILDING_THREE_LAYER } from '../layers/BuildingsLayer.js';
 import { TREE_THREE_LAYER } from '../layers/TreesLayer.js';
@@ -12,6 +15,8 @@ import { GRASS_THREE_LAYER } from '../layers/GrassLayer.js';
 import { WAVES_THREE_LAYER } from '../layers/WavesLayer.js';
 import { SPORES_THREE_LAYER } from '../scene/SporesField.js';
 import { SIGNS_THREE_LAYER } from '../layers/SignsLayer.js';
+import { SPLAT_THREE_LAYER } from '../splats/SplatsLayer.js';
+import { type CoverageUniforms, patchCoverage } from '../materials/coverageShader.js';
 
 /**
  * Multi-pass renderer:
@@ -58,6 +63,35 @@ export class Composer {
    * never pay for this target. `null` until clouds are enabled.
    */
   private cloudHalfTarget: THREE.WebGLRenderTarget | null = null;
+  /** Tilt-shift targets — two at HALF resolution for the blur passes, one full-size for the
+   *  composite; lazily allocated the first time the effect is actually on (strength > 0), so
+   *  nobody pays for them otherwise. */
+  private tiltShiftTargets: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget, THREE.WebGLRenderTarget] | null = null;
+  readonly tiltShift = new TiltShiftPass();
+  /**
+   * Settle dissolve (see `DissolvePass`): `dissolveFrom` holds the captured frame (its own size —
+   * not resized with the canvas, so a 1× motion frame survives the switch back to 2×),
+   * `dissolveOut` the blend fed to FXAA. Both lazy, so nobody pays until a dissolve runs.
+   */
+  private readonly dissolve = new DissolvePass();
+  /** Reprojection of the last frame to a newer camera (see `presentReprojected`). */
+  private readonly reproject = new ReprojectPass();
+  private dissolveFrom: THREE.WebGLRenderTarget | null = null;
+  private dissolveOut: THREE.WebGLRenderTarget | null = null;
+  private dissolveActive = false;
+  private dissolveT = 0;
+  /** `dissolveFrom` holds a frame captured for REPROJECTION across a resize (see captureHeldFrame);
+   *  cleared by the next real render. */
+  private heldForWarp = false;
+  /** What the last `render()` fed the final pass, and whether it still holds that picture (a
+   *  resize reallocates the targets, so `present()` must not reuse it after one). */
+  private lastSceneTex: THREE.Texture | null = null;
+  private sceneTexValid = false;
+  /**
+   * Internal render scale (see `setRenderScale`): every target is sized `canvas × scale` and the
+   * final pass upscales into the unchanged canvas. 1 = the canvas resolution.
+   */
+  private renderScale = 1;
   /** Fraction of full resolution the clouds render at. 0.5 = half each axis. */
   private static readonly CLOUD_RES_SCALE = 0.5;
   /** MSAA sample count for the lazily-allocated normal target (matches the
@@ -171,6 +205,7 @@ export class Composer {
     });
 
     this.normalMaterial = new THREE.MeshNormalMaterial();
+    // (Tile reveal: see `setCoverageUniforms`.)
 
     this.outline = new OutlinePass();
     // Outline inputs (which include the lazily-allocated normalTarget) are
@@ -203,10 +238,49 @@ export class Composer {
     this.fxaa = new FxaaPass();
     this.fxaa.setInput(this.compositeTarget.texture);
     this.fxaa.setSize(w, h);
+
+    // Compile the present-time passes now, not on first use: the reprojection's first draw sat a
+    // gesture's first frame behind a 341 ms shader compile (measured). `compileAsync` links with
+    // KHR_parallel_shader_compile where available and never blocks; by the time a pass is first
+    // drawn, seconds later, the program is ready.
+    const three = renderer.three as THREE.WebGLRenderer & {
+      compileAsync?: (scene: THREE.Object3D, camera: THREE.Camera) => Promise<unknown>;
+    };
+    for (const pass of [this.reproject, this.dissolve]) {
+      if (typeof three.compileAsync === 'function') {
+        three.compileAsync(pass.scene, pass.camera).catch(() => undefined);
+      } else if (typeof three.compile === 'function') {
+        three.compile(pass.scene, pass.camera);
+      }
+    }
+  }
+
+  /**
+   * Render the scene internally at `scale` × the canvas resolution and let the final pass upscale
+   * into the canvas (dynamic resolution the way games do it). The canvas's own drawing buffer
+   * never changes size: measured on an Intel Iris, resizing it with the render targets at the
+   * start of a gesture cost ~20 ms of main thread on that first moving tick — the frame the user
+   * is waiting for. Spark sizes splats from the drawing buffer, so the splat overlay is told the
+   * scale too (`SplatsLayer.setRenderScale` → Spark's `focalAdjustment`).
+   */
+  setRenderScale(scale: number): void {
+    const s = Number.isFinite(scale) && scale > 0 ? Math.min(scale, 1) : 1;
+    if (s === this.renderScale) return;
+    this.renderScale = s;
+    this.resize(this.renderer.width, this.renderer.height);
+  }
+
+  getRenderScale(): number {
+    return this.renderScale;
+  }
+
+  /** Height of the internal render targets, device px (the splats' density LOD measures against it). */
+  internalHeight(): number {
+    return this.compositeTarget.height;
   }
 
   resize(width: number, height: number): void {
-    const pr = this.renderer.three.getPixelRatio();
+    const pr = this.renderer.three.getPixelRatio() * this.renderScale;
     const w = Math.max(1, Math.round(width * pr));
     const h = Math.max(1, Math.round(height * pr));
     this.colorTarget.setSize(w, h);
@@ -215,6 +289,10 @@ export class Composer {
     this.outlineTarget?.setSize(w, h);
     this.noiseTarget?.setSize(w, h);
     this.compositeTarget.setSize(w, h);
+    this.tiltShiftTargets?.[0].setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
+    this.tiltShiftTargets?.[1].setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
+    this.tiltShiftTargets?.[2].setSize(w, h);
+    this.tiltShift.setSize(w, h, pr);
     this.cloudHalfTarget?.setSize(
       Math.max(1, Math.round(w * Composer.CLOUD_RES_SCALE)),
       Math.max(1, Math.round(h * Composer.CLOUD_RES_SCALE))
@@ -224,6 +302,144 @@ export class Composer {
     this.outline.setTexel(width, height);
     this.fxaa.setSize(w, h);
     this.clouds.setAspect(w / h);
+    this.dissolveOut?.setSize(w, h);
+    this.sceneTexValid = false;
+  }
+
+  /**
+   * Capture the last rendered picture as the start of a settle dissolve. Until `endDissolve()`
+   * every presented frame is `mix(captured, live, t)` with `t` from `setDissolveT` (0 at first,
+   * so the screen does not change). False — and no dissolve — if there is no valid last picture
+   * (nothing rendered yet, or a resize since).
+   */
+  beginDissolve(): boolean {
+    if (!this.sceneTexValid || !this.lastSceneTex) return false;
+    const r = this.renderer.three;
+    const img = this.lastSceneTex.image as { width: number; height: number };
+    this.ensureDissolveFrom(Math.max(1, img.width), Math.max(1, img.height));
+    this.heldForWarp = false;
+    this.dissolve.configure(null, this.lastSceneTex, 1);
+    r.setRenderTarget(this.dissolveFrom);
+    r.render(this.dissolve.scene, this.dissolve.camera);
+    r.setRenderTarget(null);
+    this.dissolveActive = true;
+    this.dissolveT = 0;
+    return true;
+  }
+
+  /**
+   * Keep the last rendered picture for reprojection across a resize. A pixel-ratio change
+   * (dynamic resolution dropping at the start of a gesture) reallocates the render targets and
+   * with them the last frame's contents, so `presentReprojected` would have nothing to warp until
+   * the first moving frame has rendered — which the swap hold is holding. Measured: ~80 ms with
+   * nothing presented at the start of every gesture. One blit into the dissolve's capture target
+   * (they are never wanted at once: the dissolve runs at rest, the warp in motion). False if there
+   * is no valid last picture.
+   */
+  captureHeldFrame(): boolean {
+    if (!this.sceneTexValid || !this.lastSceneTex) return false;
+    const r = this.renderer.three;
+    const img = this.lastSceneTex.image as { width: number; height: number };
+    this.ensureDissolveFrom(Math.max(1, img.width), Math.max(1, img.height));
+    this.dissolve.configure(null, this.lastSceneTex, 1);
+    r.setRenderTarget(this.dissolveFrom);
+    r.render(this.dissolve.scene, this.dissolve.camera);
+    r.setRenderTarget(null);
+    this.heldForWarp = true;
+    return true;
+  }
+
+  private ensureDissolveFrom(w: number, h: number): THREE.WebGLRenderTarget {
+    if (!this.dissolveFrom) {
+      this.dissolveFrom = new THREE.WebGLRenderTarget(w, h, {
+        type: THREE.HalfFloatType,
+        format: THREE.RGBAFormat,
+        colorSpace: THREE.LinearSRGBColorSpace,
+        depthBuffer: false,
+        stencilBuffer: false
+      });
+    } else if (this.dissolveFrom.width !== w || this.dissolveFrom.height !== h) {
+      this.dissolveFrom.setSize(w, h);
+    }
+    return this.dissolveFrom;
+  }
+
+  /** Blend factor of the running dissolve: 0 = the captured frame, 1 = the live picture. */
+  setDissolveT(t: number): void {
+    this.dissolveT = Math.min(1, Math.max(0, t));
+  }
+
+  /** Stop blending; frames are presented straight again. */
+  endDissolve(): void {
+    this.dissolveActive = false;
+  }
+
+  get dissolving(): boolean {
+    return this.dissolveActive;
+  }
+
+  /**
+   * Present the last rendered picture warped to the CURRENT camera (see `ReprojectPass`): a tick
+   * that draws no real frame — GPU pacing held it back, or the splat overlay is holding for its
+   * motion-LoD swap — still shows the camera's motion. One full-screen pass plus FXAA; nothing of
+   * the scene is rendered. False if the last picture is gone (a resize since).
+   * @param invViewProj  inverse of the current camera's projection × view
+   * @param prevViewProj the camera the last frame was rendered with, projection × view
+   * @param camPos       the current camera position (world)
+   */
+  presentReprojected(invViewProj: THREE.Matrix4, prevViewProj: THREE.Matrix4, camPos: THREE.Vector3): boolean {
+    // The last picture, or — across a resize that destroyed it — the copy captureHeldFrame kept.
+    // Sampled by UV, so its size need not match the current targets.
+    const src = this.sceneTexValid && this.lastSceneTex
+      ? this.lastSceneTex
+      : this.heldForWarp && this.dissolveFrom ? this.dissolveFrom.texture : null;
+    if (!src) return false;
+    const r = this.renderer.three;
+    const out = this.ensureBlendTarget();
+    this.reproject.configure(src, invViewProj, prevViewProj, camPos, 0);
+    r.setRenderTarget(out);
+    r.render(this.reproject.scene, this.reproject.camera);
+    this.fxaa.setInput(out.texture);
+    r.setRenderTarget(null);
+    r.render(this.fxaa.scene, this.fxaa.camera);
+    return true;
+  }
+
+  /** The full-size scratch target the dissolve blend and the reprojection write before FXAA. */
+  private ensureBlendTarget(): THREE.WebGLRenderTarget {
+    if (!this.dissolveOut) {
+      this.dissolveOut = new THREE.WebGLRenderTarget(this.compositeTarget.width, this.compositeTarget.height, {
+        type: THREE.HalfFloatType,
+        format: THREE.RGBAFormat,
+        colorSpace: THREE.LinearSRGBColorSpace,
+        depthBuffer: false,
+        stencilBuffer: false
+      });
+    }
+    return this.dissolveOut;
+  }
+
+  /**
+   * Present again without rendering the scene: only the dissolve blend and the final pass, from
+   * the picture the last `render()` produced. This is what makes a dissolve frame cheap. False if
+   * that picture is gone (a resize since) — render instead.
+   */
+  present(): boolean {
+    if (!this.sceneTexValid || !this.lastSceneTex) return false;
+    const r = this.renderer.three;
+    let tex = this.lastSceneTex;
+    if (this.dissolveActive && this.dissolveFrom && this.dissolveT < 1) {
+      const out = this.ensureBlendTarget();
+      this.dissolve.configure(this.dissolveFrom.texture, tex, this.dissolveT);
+      r.setRenderTarget(out);
+      r.render(this.dissolve.scene, this.dissolve.camera);
+      tex = out.texture;
+    }
+    this.fxaa.setInput(tex);
+    // Pass 5: FXAA to the canvas (also performs linear→sRGB encode).
+    r.setRenderTarget(null);
+    r.render(this.fxaa.scene, this.fxaa.camera);
+    return true;
   }
 
   setMouseUv(u: number, v: number): void {
@@ -367,6 +583,20 @@ export class Composer {
   }
 
   /**
+   * Tile reveal: make the outline pass's normal override follow the basemap's
+   * rounded-union mask. Masked fragments write the ground's flat up-normal
+   * (not a discard — the override also draws the unmasked ground plane, so a
+   * hole would ring the union with a normal edge), so buildings the colour
+   * pass has masked out don't leave ghost outlines. Depth already comes from
+   * the colour pass, where the discard happens.
+   */
+  setCoverageUniforms(coverage: CoverageUniforms): void {
+    this.normalMaterial.onBeforeCompile = (shader) => patchCoverage(shader, coverage, 'flatNormal');
+    this.normalMaterial.customProgramCacheKey = () => 'hbd-normal:masked';
+    this.normalMaterial.needsUpdate = true;
+  }
+
+  /**
    * Toggle the sketch-outline pipeline (normal pass + outline shader). Off
    * on the `'low'` quality tier — skipping it drops a whole second scene
    * render plus a full-screen fragment shader, the single biggest fixed
@@ -444,6 +674,11 @@ export class Composer {
     return this.clouds;
   }
 
+  /** Whether the normal + outline passes currently run (false on the low tiers). */
+  get outlinesEnabled(): boolean {
+    return this.outlineEnabled;
+  }
+
   get outlinePass(): OutlinePass {
     return this.outline;
   }
@@ -451,11 +686,18 @@ export class Composer {
   render(): void {
     const r = this.renderer.three;
 
-    // Pass 1: color (stylized).
+    // Pass 1: color (stylized). Gaussian splats (SPLAT_THREE_LAYER) draw here
+    // via the single SparkRenderer mesh the splats overlay owns.
+    // Labels are held back while the miniature blur is running: they are UI, not scene, and a place
+    // name smeared into illegibility is a functional loss rather than a stylistic one. They are
+    // drawn sharp after the blur instead (see below). Nothing changes when the effect is off.
+    const deferLabels = this.tiltShift.getStrength() > 0.001;
     r.setRenderTarget(this.colorTarget);
     r.clear();
     this.scene.overrideMaterial = null;
+    if (deferLabels) this.camera.layers.disable(LABEL_THREE_LAYER);
     r.render(this.scene, this.camera);
+    if (deferLabels) this.camera.layers.enable(LABEL_THREE_LAYER);
 
     // `sceneTex` is whatever the post chain treats as "the rendered scene".
     // With the outline pipeline on it's `outlineTarget`; with it off (the
@@ -483,9 +725,14 @@ export class Composer {
       this.camera.layers.disable(WAVES_THREE_LAYER);
       this.camera.layers.disable(SPORES_THREE_LAYER);
       this.camera.layers.disable(SIGNS_THREE_LAYER);
+      // Gaussian splats are rasterized by Spark's own shader (a mesh on
+      // SPLAT_THREE_LAYER) — the normal override can't apply, and a Sobel
+      // outline around a point cloud is just noise. Always exclude them.
+      this.camera.layers.disable(SPLAT_THREE_LAYER);
       if (!this.buildingsInNormalPass) this.camera.layers.disable(BUILDING_THREE_LAYER);
       r.render(this.scene, this.camera);
       if (!this.buildingsInNormalPass) this.camera.layers.enable(BUILDING_THREE_LAYER);
+      this.camera.layers.enable(SPLAT_THREE_LAYER);
       this.camera.layers.enable(SIGNS_THREE_LAYER);
       this.camera.layers.enable(SPORES_THREE_LAYER);
       this.camera.layers.enable(WAVES_THREE_LAYER);
@@ -541,15 +788,72 @@ export class Composer {
       r.setRenderTarget(this.compositeTarget);
       r.clear();
       r.render(this.cloudComposite.scene, this.cloudComposite.camera);
-      this.fxaa.setInput(this.compositeTarget.texture);
-    } else {
-      // No clouds: feed the scene texture straight into FXAA.
-      this.fxaa.setInput(sceneTex);
+      sceneTex = this.compositeTarget.texture;
     }
 
-    // Pass 5: FXAA to the canvas (also performs linear→sRGB encode).
-    r.setRenderTarget(null);
-    r.render(this.fxaa.scene, this.fxaa.camera);
+    if (this.tiltShift.getStrength() > 0.001) {
+      // Tilt-shift miniature: horizontal blur → A and vertical blur → B at half resolution, then
+      // the full-res composite with the grade → C. Skipped entirely at strength 0, so it is free
+      // when off.
+      const [a, b, c] = this.ensureTiltShiftTargets();
+      this.tiltShift.configureBlur(sceneTex, 0);
+      r.setRenderTarget(a);
+      r.clear();
+      r.render(this.tiltShift.scene, this.tiltShift.camera);
+      this.tiltShift.configureBlur(a.texture, 1);
+      r.setRenderTarget(b);
+      r.clear();
+      r.render(this.tiltShift.scene, this.tiltShift.camera);
+      this.tiltShift.configureComposite(sceneTex, b.texture);
+      r.setRenderTarget(c);
+      r.clear();
+      r.render(this.tiltShift.scene, this.tiltShift.camera);
+      // The labels, sharp, over the blurred picture.
+      //
+      // `scene.background` MUST be detached first. three.js's background step sets `forceClear`
+      // whenever the background is a Color, and that clear runs even with `autoClear` off — so a
+      // second render would wipe the blurred picture to the sky colour and leave nothing but the
+      // labels on it. That is a whole-map blank from one line, and it is invisible to frame-time
+      // measurement; see docs/tilt-shift-labels.md for how it was tracked down.
+      //
+      // `c` has no depth attachment, so the labels' own `depthTest: true` always passes and they
+      // all land on top — which is what a map wants of its labels, and what the renderOrder 1000
+      // they already carry is asking for.
+      const bg = this.scene.background;
+      const labelMask = this.camera.layers.mask;
+      const autoClear = r.autoClear;
+      this.scene.background = null;
+      r.autoClear = false;
+      this.camera.layers.disableAll();
+      this.camera.layers.enable(LABEL_THREE_LAYER);
+      r.render(this.scene, this.camera);
+      r.autoClear = autoClear;
+      this.camera.layers.mask = labelMask;
+      this.scene.background = bg;
+      sceneTex = c.texture;
+    }
+    this.lastSceneTex = sceneTex;
+    this.sceneTexValid = true;
+    this.heldForWarp = false;
+    this.present();
+  }
+
+  private ensureTiltShiftTargets(): [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget, THREE.WebGLRenderTarget] {
+    if (!this.tiltShiftTargets) {
+      const w = this.compositeTarget.width;
+      const h = this.compositeTarget.height;
+      const make = (tw: number, th: number): THREE.WebGLRenderTarget =>
+        new THREE.WebGLRenderTarget(Math.max(1, tw), Math.max(1, th), {
+          type: THREE.HalfFloatType,
+          format: THREE.RGBAFormat,
+          colorSpace: THREE.LinearSRGBColorSpace,
+          depthBuffer: false,
+          stencilBuffer: false
+        });
+      this.tiltShiftTargets = [make(w >> 1, h >> 1), make(w >> 1, h >> 1), make(w, h)];
+      this.tiltShift.setSize(w, h, this.renderer.three.getPixelRatio() * this.renderScale);
+    }
+    return this.tiltShiftTargets;
   }
 
   dispose(): void {
@@ -559,6 +863,14 @@ export class Composer {
     this.noiseTarget?.dispose();
     this.compositeTarget.dispose();
     this.cloudHalfTarget?.dispose();
+    this.tiltShiftTargets?.[0].dispose();
+    this.tiltShiftTargets?.[1].dispose();
+    this.tiltShiftTargets?.[2].dispose();
+    this.tiltShift.dispose();
+    this.dissolveFrom?.dispose();
+    this.dissolveOut?.dispose();
+    this.dissolve.dispose();
+    this.reproject.dispose();
     this.depthTexture.dispose();
     this.normalMaterial.dispose();
     this.outline.dispose();

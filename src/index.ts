@@ -39,6 +39,65 @@ export type { StudioOptions, StudioConfig, MapStudio as MapStudioHandle } from '
 export type { PolygonOptions, PolygonHandle, PolygonPoint } from './polygons/types.js';
 export { makeRadiusPolygon } from './polygons/radius.js';
 export type { ParcelsConfig, ParcelClickEvent, ParcelClickListener } from './parcels/types.js';
+export type { SplatsConfig, SplatsStats, SplatsRevealOptions } from './splats/types.js';
+export {
+  SPLATS_DEFAULTS,
+  SPLATS_REBUILD_KEYS,
+  resolveSplatsOptions,
+  mergeSplatsOptions,
+  diffSplatsOptions,
+  planSplatsUpdate,
+  exportSplatsOptions,
+  splatsReplacePatch
+} from './splats/options.js';
+export type {
+  ResolvedSplatsOptions,
+  ResolvedSplatsReveal,
+  SplatsOptionKey,
+  SplatsUpdateKind,
+  SplatsUpdatePlan
+} from './splats/options.js';
+export { splatTileTransform, splatLocalToScene } from './splats/transform.js';
+export type { SplatTileTransform } from './splats/transform.js';
+export {
+  LOD_HYSTERESIS,
+  selectTileZoom,
+  lodFallbackOrder,
+  tileCoverRange,
+  tileScreenRelevance,
+  rankTilesByRelevance,
+  viewFocus
+} from './splats/lod.js';
+export type { TileLodParams, TileRange, ViewFrame } from './splats/lod.js';
+export { FrameGovernor, GOVERNOR_DEFAULTS } from './splats/governor.js';
+export type { GovernorParams, GovernorState } from './splats/governor.js';
+export { SPLATS_HIDDEN_BASEMAP_LAYERS } from './splats/SplatsLayer.js';
+export type { SplatCutoutSink } from './splats/SplatsLayer.js';
+export {
+  rippleFrontRadius,
+  rippleScale,
+  rippleOpacity,
+  rippleReveal,
+  rippleMaxRadius,
+  resolveRippleParams,
+  DEFAULT_RIPPLE_PARAMS
+} from './splats/ripple.js';
+export type { RippleParams, RippleDirection } from './splats/ripple.js';
+export {
+  roundedUnionDistance,
+  roundedUnionSigned,
+  roundedUnionMask,
+  unionGrowth,
+  unionBridgeWeight,
+  resolveRoundedUnion,
+  DEFAULT_UNION_FEATHER,
+  DEFAULT_UNION_GROW_MS
+} from './core/roundedUnion.js';
+export type { UnionWeights, RoundedUnionOptions } from './core/roundedUnion.js';
+export { CoverageField, resolveTileReveal, exportTileReveal } from './tiles/CoverageField.js';
+export type { TileRevealOptions, ResolvedTileReveal, CutoutTile, CutoutMode } from './tiles/CoverageField.js';
+export { tileWorldRect } from './core/TileId.js';
+export type { TileWorldRect } from './core/TileId.js';
 export type {
   BuildingInfo,
   BuildingPopupConfig,
@@ -47,3 +106,7 @@ export type {
 } from './buildings/types.js';
 
 export const VERSION = '0.1.0';
+export { TILT_SHIFT_DEFAULTS, resolveTiltShift, clampFocusY } from './rendering/TiltShiftPass.js';
+export type { TiltShiftSettings } from './rendering/TiltShiftPass.js';
+export { DURATION, EASE, approach, tauFor, progress, motionDuration, prefersReducedMotion } from './core/motion.js';
+export type { DurationName, EaseName } from './core/motion.js';
