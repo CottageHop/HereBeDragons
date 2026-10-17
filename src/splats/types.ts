@@ -115,10 +115,12 @@ export interface SplatsConfig {
    * as blobs and the satellite ground (NAIP, ~0.6 m) smears, so the camera is
    * kept out of that range (eased out if it is already closer when the overlay
    * comes on). The map's previous zoom limit returns when the overlay is
-   * disabled. Default 16.5: at a typical 62° tilt the near edge of the frame is
-   * then ~0.7 m per screen pixel, coarser than both the 0.45 m surfels and the
-   * ground texels, so nothing on screen is magnified (at 17 it was ~0.47 m/px:
-   * blurred roads and cars, visible surfel dots on roofs).
+   * disabled. Default 15 (was 16.5): closer, the surfels read as blobs, and the
+   * satellite stays a miniature seen from a height. 16.5 is about the closest
+   * the data holds up — at a typical 62° tilt the near edge of the frame is then
+   * ~0.7 m per screen pixel, coarser than both the 0.45 m surfels and the ground
+   * texels (at 17 it was ~0.47 m/px: blurred roads and cars, visible surfel dots
+   * on roofs).
    */
   maxCameraZoom?: number;
   /**
