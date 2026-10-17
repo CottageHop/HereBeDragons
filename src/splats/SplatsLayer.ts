@@ -118,6 +118,66 @@ const LOW_TIER_MAX_RADIUS = 1;
 const LOW_TIER_SORT_INTERVAL_MS = 250;
 /** Lite (motion-LoD) tile loads at once: they are small, but the full tiles come first. */
 const MOTION_LOD_MAX_IN_FLIGHT = 2;
+/** The slice of the 2D canvas API the flip test needs (OffscreenCanvas in browsers; faked in tests). */
+export interface FlipTestCanvas {
+  getContext(type: '2d'): {
+    fillStyle: string | CanvasGradient | CanvasPattern;
+    fillRect(x: number, y: number, w: number, h: number): void;
+    drawImage(image: ImageBitmap, x: number, y: number): void;
+    getImageData(x: number, y: number, w: number, h: number): { data: ArrayLike<number> };
+  } | null;
+}
+
+/**
+ * Does `createImageBitmap(…, { imageOrientation: 'flipY' })` actually flip? Decodes a 1×2 canvas
+ * whose top pixel is red and bottom pixel blue, draws the bitmap back and checks that the top is
+ * now blue. Pure (the APIs are passed in) so it is unit-tested; see `bitmapFlipSupported`.
+ */
+export async function detectBitmapFlip(
+  create: ((src: FlipTestCanvas, opts: ImageBitmapOptions) => Promise<ImageBitmap>) | undefined,
+  makeCanvas: ((w: number, h: number) => FlipTestCanvas) | undefined
+): Promise<boolean> {
+  try {
+    if (!create || !makeCanvas) return false;
+    const src = makeCanvas(1, 2);
+    const sctx = src.getContext('2d');
+    if (!sctx) return false;
+    sctx.fillStyle = '#ff0000';
+    sctx.fillRect(0, 0, 1, 1);
+    sctx.fillStyle = '#0000ff';
+    sctx.fillRect(0, 1, 1, 1);
+    const bmp = await create(src, { imageOrientation: 'flipY' });
+    const dctx = makeCanvas(1, 2).getContext('2d');
+    if (!dctx) return false;
+    dctx.drawImage(bmp, 0, 0);
+    bmp.close?.();
+    const top = dctx.getImageData(0, 0, 1, 1).data;
+    return top[2] > 200 && top[0] < 60; // the top pixel is now the blue one
+  } catch {
+    return false;
+  }
+}
+
+/** `detectBitmapFlip` with this page's APIs, run once and cached. False where they are missing.
+ *  Logs the path taken once, so a device check is one glance at the console. */
+let bitmapFlip: Promise<boolean> | null = null;
+export function bitmapFlipSupported(): Promise<boolean> {
+  bitmapFlip ??= detectBitmapFlip(
+    typeof createImageBitmap === 'function'
+      ? (src, opts) => createImageBitmap(src as unknown as ImageBitmapSource, opts)
+      : undefined,
+    typeof OffscreenCanvas === 'function'
+      ? (w, h) => new OffscreenCanvas(w, h) as unknown as FlipTestCanvas
+      : undefined
+  ).then((ok) => {
+    logger.info(ok
+      ? 'splat imagery: ImageBitmap uploads (createImageBitmap honours imageOrientation)'
+      : 'splat imagery: <img> uploads (createImageBitmap flipY not honoured here)');
+    return ok;
+  });
+  return bitmapFlip;
+}
+
 /** Longest the map holds its picture for a motion-LoD swap (see `holdForSwap`), ms. */
 const SWAP_HOLD_MAX_MS = 200;
 /** Time constant of a governor thinning step while moving, ms (settles in ~3x). */
@@ -2554,8 +2614,12 @@ export class SplatsLayer {
     // four of them bunching into 72 ms frames) — the landing hitch, not the splats (8 ms for
     // 22 MB of them). A bitmap is already in upload form; flipY is done in the decode so the
     // orientation is the one the <img> path gave (row 0 = the tile's north edge at v = 1).
+    // WebGL ignores UNPACK_FLIP_Y for ImageBitmaps, so a browser that does not honour the
+    // decode's `imageOrientation: 'flipY'` would show the imagery upside down: it gets the <img>
+    // path instead (see bitmapFlipSupported, tested once per page).
     if (typeof createImageBitmap === 'function' && typeof fetch === 'function') {
       return (async () => {
+        if (!(await bitmapFlipSupported())) return this.loadTextureViaImage(url, finish);
         try {
           const res = await fetch(url);
           if (!res.ok) return null;
@@ -2574,6 +2638,11 @@ export class SplatsLayer {
         }
       })();
     }
+    return this.loadTextureViaImage(url, finish);
+  }
+
+  /** The `<img>` path: TextureLoader, three's own flipY on upload. */
+  private loadTextureViaImage(url: string, finish: (tex: THREE.Texture) => THREE.Texture): Promise<THREE.Texture | null> {
     return new Promise((resolve) => {
       new THREE.TextureLoader().load(
         url,
