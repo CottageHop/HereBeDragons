@@ -40,8 +40,8 @@
   },
   "author": "Robert Catmull <robert.catmull@realtorhop.com>",
   "peerDependencies": {
-    "three": ">=0.170.0 <1.0.0",
-    "@sparkjsdev/spark": "^2.2.0"
+    "@sparkjsdev/spark": "^2.2.0",
+    "three": ">=0.170.0 <1.0.0"
   },
   "peerDependenciesMeta": {
     "@sparkjsdev/spark": {
@@ -55,7 +55,7 @@
     "pmtiles": "^4.4.1"
   },
   "devDependencies": {
-    "@sparkjsdev/spark": "^2.2.0",
+    "@sparkjsdev/spark": "^2.3.1",
     "@types/earcut": "^3.0.0",
     "@types/node": "^22.19.18",
     "@types/three": "^0.184.0",
