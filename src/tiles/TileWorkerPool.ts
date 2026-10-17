@@ -14,6 +14,8 @@ import type {
 // runtime. Inlining makes the package self-contained for every consumer.
 // `?worker&inline` is typed by `vite/client` (already in tsconfig types).
 import DecodeWorker from './worker/decode.worker.ts?worker&inline';
+import { logger } from '../util/log.js';
+import { workerPoolFatalMessage, workerPoolPartialMessage } from './workerPoolErrors.js';
 
 interface Pending {
   /**
@@ -53,10 +55,24 @@ export class TileWorkerPool {
     const detected = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 2;
     const n = Math.max(1, options.size ?? Math.min(4, (detected ?? 2) - 1));
     for (let i = 0; i < n; i++) {
-      const worker = new DecodeWorker();
+      let worker: Worker;
+      try {
+        worker = new DecodeWorker();
+      } catch (err) {
+        // The usual cause is a Content-Security-Policy without `worker-src`. The raw failure is a
+        // bare `SecurityError: Refused to create a worker`, which says nothing about the map or
+        // about what to change — and it surfaces as a rejection from `createHereBeDragons`, far
+        // from the policy that caused it.
+        if (this.workers.length === 0) {
+          throw new Error(workerPoolFatalMessage(err), { cause: err });
+        }
+        // Some workers already started: run with fewer rather than failing outright.
+        logger.warn(workerPoolPartialMessage(n, this.workers.length, err));
+        break;
+      }
       worker.onmessage = (e: MessageEvent<WorkerMessageOut>) => this.onMessage(e.data);
       worker.onerror = (e) => {
-        console.error('[HereBeDragons] worker error', e.message);
+        logger.error('worker error', e.message);
       };
       this.workers.push(worker);
     }
