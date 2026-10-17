@@ -465,15 +465,18 @@ picture, so `densityLod` stays at 2.
 
 ## 10. What is still open
 
-- A gesture that starts while the map is still landing tiles after the previous one: the landings
-  redraw the full set at rest (~80–90 ms a frame at 2×) and the next gesture's first frames wait
-  behind them. Smaller now (the density LOD took 28–54 % off those frames; reprojection fills the
-  held ticks), still visible in one run of four. Candidate: keep the lite set until the whole
-  picture has settled, not just the camera.
+- Spark's one-time initialisation: ~175 ms of main thread on the overlay's first frame, once per
+  page (the same on Spark 2.2.0 and 2.3.1).
+- First-render frames when the splat set changes: a load or the motion-LoD swap still costs a few
+  40–90 ms frames on this machine — three's and Spark's own first-draw work for the new mapping.
+  Batched landings at rest (§12) make that one episode per load instead of one per tile.
+- A gesture that starts while tiles are still landing waits behind one heavy frame (one frame in
+  flight, §12: worst 50–67 ms). Candidate: keep the lite set until the whole picture has settled,
+  not just the camera.
 - The first gesture after a page load pays ~19 ms once on its first moving tick (the lite meshes'
   first generation / program). A pre-warm of the lite graph would remove it.
-- At the capped zoom (15) the z16 window wants 9 tiles and the budget holds 3, so the satellite
-  shows as an island and every pan churns tiles. A lower `lodBias` (z15 at zoom 15) would fill the
-  frame with the same splat count — a product decision, not a performance one.
-- The stall itself (Spark's blocking readback) is now one frame long; shorter means a cheaper
-  frame or a sort that does not read back (Spark). A real phone measurement, as before.
+- The sort readback (Spark's, blocking) is ~4 ms mean with one frame in flight. Shorter needs a
+  sort that does not read back, and Spark 2.3.0 / 2.3.1 (checked 2026-10-17) still read back
+  synchronously, so this stays with Spark.
+- Real devices: Safari (the `createImageBitmap` flip test picks the imagery upload path and logs
+  it) and a real phone, as before.

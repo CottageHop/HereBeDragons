@@ -147,7 +147,8 @@ export interface SplatsConfig {
   /** Cap on concurrent tile fetch + decodes. Default `4` — Spark decodes in a pool of four
    *  workers, so four in flight lets fetches overlap decodes; at `1` every tile loaded strictly in
    *  series (measured: the first detail tile of a view started 700 ms after the first fetch and
-   *  three detail tiles landed 380 ms apart). Landings stay one per frame regardless. */
+   *  three detail tiles landed 380 ms apart). Landings are batched at rest (one re-sort for the
+   *  batch) and one per frame in motion. */
   maxInFlight?: number;
   /**
    * Resident-splat budget for the `'high'` tier. Every resident splat is
