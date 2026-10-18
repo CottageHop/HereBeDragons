@@ -77,6 +77,7 @@ import {
   unionTileValues
 } from '../core/roundedUnion.js';
 import { MOTION_THIN_LADDER, THIN_GLSL, THIN_RAMP_BAND, clampThinKeep, densityFor } from './thin.js';
+import { BACKFACE_GLSL } from './backface.js';
 import { approach } from '../core/motion.js';
 
 /**
@@ -629,6 +630,10 @@ export class SplatsLayer {
   /** Cover level (`splats.cover`): the next coarser level is kept resident under the detail
    *  window, outside the budget — see coverZ(). */
   private cover: boolean;
+  /** `splats.cullBackFaces`: see `backface.ts`. */
+  private cullBackFaces: boolean;
+  /** Shared 1/0 uniform of `cullBackFaces` for every tile's modifier. */
+  private backfaceDyno: DynoUniformLike<number> | null = null;
   /** Screen-space density LOD (`splats.densityLod`): target spacing in device px (0 = off), the
    *  shared `(focal / target)²` uniform, the camera position it was last synced for, and scratch. */
   private densityLod: number;
@@ -897,6 +902,7 @@ export class SplatsLayer {
     this.keepLabels = o.keepLabels;
     this.densityLod = o.densityLod;
     this.cover = o.cover;
+    this.cullBackFaces = o.cullBackFaces;
     this.governor = new FrameGovernor({
       targetFrameMs: o.targetFrameMs,
       maxScale: o.budgetGrowth,
@@ -1199,6 +1205,14 @@ export class SplatsLayer {
     this.syncThin();
     this.densityLod = o.densityLod;
     this.tickDensityLod();
+    if (o.cullBackFaces !== this.cullBackFaces) {
+      this.cullBackFaces = o.cullBackFaces;
+      if (this.backfaceDyno && this.backfaceDyno.value !== (o.cullBackFaces ? 1 : 0)) {
+        this.backfaceDyno.value = o.cullBackFaces ? 1 : 0;
+        for (const tile of this.tiles.values()) this.bumpTile(tile);
+      }
+      this.tickDensityLod();
+    }
     if (o.cover !== this.cover) {
       // The wanted set changes: cover tiles become old-level tiles (they dissolve out once the
       // detail over them has settled) or start loading on the next tick.
@@ -1481,7 +1495,8 @@ export class SplatsLayer {
       d.value = density;
       for (const tile of this.tiles.values()) this.bumpTile(tile);
     }
-    if (density <= 0 || !cam) return;
+    // The object-space camera feeds the density LOD AND the back-face test.
+    if ((density <= 0 && !this.cullBackFaces) || !cam) return;
     cam.updateMatrixWorld();
     const moved = !cam.position.equals(this.lodCamPos);
     if (moved) this.lodCamPos.copy(cam.position);
@@ -3237,25 +3252,28 @@ export class SplatsLayer {
     this.zeroBandDyno ??= d.dynoFloat(0);
     this.densityDyno ??= d.dynoFloat(0);
     const density = this.densityDyno;
+    this.backfaceDyno ??= d.dynoFloat(this.cullBackFaces ? 1 : 0);
+    const cull = this.backfaceDyno;
     // Density LOD needs the camera in object space; without a vec3 uniform it is simply off.
     const cam = d.dynoVec3 ? d.dynoVec3(new THREE.Vector3()) : null;
     // Two graphs over the SAME tile uniforms (union, fade, quadrants): the full mesh's and the lite
     // mesh's, which differ only in their thinning inputs.
     const build = (keep: DynoUniformLike<number>, band: DynoUniformLike<number>): DynoNode =>
       d.dynoBlock({ gsplat: d.Gsplat }, { gsplat: d.Gsplat }, ({ gsplat }) => {
-      const { center, scales, opacity, index, flags } = d.splitGsplat(gsplat).outputs;
+      const { center, scales, quaternion, opacity, index, flags } = d.splitGsplat(gsplat).outputs;
       const node = new DynoCtor({
         inTypes: {
           center: 'vec3', edge: 'vec4', corner: 'vec4', edgeG: 'vec4', cornerG: 'vec4', g: 'float',
           feather: 'float', fade: 'float', quad: 'vec4', index: 'int', flags: 'uint', keep: 'float',
-          band: 'float', scales: 'vec3', density: 'float', ...(cam ? { cam: 'vec3' } : {})
+          band: 'float', scales: 'vec3', density: 'float', quaternion: 'vec4', cull: 'float',
+          ...(cam ? { cam: 'vec3' } : {})
         },
         outTypes: { scale: 'float', alpha: 'float', flags: 'uint' },
         inputs: {
           center, edge, corner, edgeG, cornerG, g, feather, fade, quad, index, flags, keep, band, scales, density,
-          ...(cam ? { cam } : {})
+          quaternion, cull, ...(cam ? { cam } : {})
         },
-        globals: () => [ROUNDED_UNION_GLSL, THIN_GLSL],
+        globals: () => [ROUNDED_UNION_GLSL, THIN_GLSL, BACKFACE_GLSL],
         statements: ({ inputs, outputs }) => [
           `vec2 hbdUv = ${inputs.center}.xy * ${invSize};`,
           `float hbdMask = ${inputs.feather} >= 0.0 ? hbdRoundedUnionMask(hbdUv, ` +
@@ -3272,9 +3290,11 @@ export class SplatsLayer {
           // flag); the kept ones grow by 1/sqrt(keep) so the surface stays covered.
           `float hbdKeepD = ${cam ? `hbdDensityKeep(${inputs.center}, ${inputs.cam}, ${inputs.scales}, ${inputs.density})` : '1.0'};`,
           `vec2 hbdThinW = hbdThin(${inputs.index}, ${inputs.keep} * hbdKeepD, ${inputs.band});`,
-          `${outputs.alpha} = hbdMask * hbdFade * hbdThinW.y;`,
+          // The far side of a building (a surfel facing away, see backface.ts) leaves too.
+          `float hbdFront = ${cam ? `${inputs.cull} > 0.5 ? hbdFrontFacing(${inputs.center}, ${inputs.scales}, ${inputs.quaternion}, ${inputs.cam}) : 1.0` : '1.0'};`,
+          `${outputs.alpha} = hbdMask * hbdFade * hbdThinW.y * hbdFront;`,
           // Fully faded (a parent quadrant under a landed child) leaves the sort and draw too.
-          `${outputs.flags} = (hbdThinW.x > 0.0 && hbdFade > 0.0) ? ${inputs.flags} : 0u;`,
+          `${outputs.flags} = (hbdThinW.x > 0.0 && hbdFade > 0.0 && hbdFront > 0.0) ? ${inputs.flags} : 0u;`,
           `${outputs.scale} = hbdThinW.x * hbdMask * mix(${LEVEL_FADE_MIN_SCALE.toFixed(2)}, 1.0, hbdFade);`
         ]
       }).outputs;

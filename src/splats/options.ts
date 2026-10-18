@@ -73,6 +73,7 @@ export const SPLATS_DEFAULTS = Object.freeze({
   densityLod: 2,
   miniature: true,
   cover: true,
+  cullBackFaces: true,
   governor: true,
   targetFrameMs: 33,
   budgetGrowth: 1,
@@ -151,6 +152,7 @@ export interface ResolvedSplatsOptions {
   densityLod: number;
   miniature: boolean;
   cover: boolean;
+  cullBackFaces: boolean;
   governor: boolean;
   targetFrameMs: number;
   budgetGrowth: number;
@@ -323,6 +325,7 @@ export function resolveSplatsOptions(
     densityLod: nonNegativeOr(c.densityLod, SPLATS_DEFAULTS.densityLod),
     miniature: c.miniature !== false,
     cover: c.cover !== false,
+    cullBackFaces: c.cullBackFaces !== false,
     governor: c.governor !== false,
     targetFrameMs: isNum(c.targetFrameMs) && c.targetFrameMs >= MIN_TARGET_FRAME_MS
       ? c.targetFrameMs
@@ -409,7 +412,7 @@ export function diffSplatsOptions(
   const scalar = [
     'urlTemplate', 'lowTierUrlTemplate', 'enabled', 'minZoom', 'minTileZoom', 'maxTileZoom', 'lodBias', 'lowTierLodBias',
     'maxCameraZoom', 'maxCameraTilt', 'radius', 'maxInFlight', 'maxSplats', 'lowTierMaxSplats', 'maxStdDev',
-    'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'visibleFirst', 'splatMaxDistance', 'lowTierSplatMaxDistance', 'splatFadeMs', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'governor', 'targetFrameMs', 'budgetGrowth',
+    'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'visibleFirst', 'splatMaxDistance', 'lowTierSplatMaxDistance', 'splatFadeMs', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'governor', 'targetFrameMs', 'budgetGrowth',
     'levelFadeMs', 'transitionOvershoot', 'prefetchBand', 'levelSelection', 'resolutionMargin', 'resolutionTiltAware'
   ] as const;
   for (const k of scalar) if (prev[k] !== next[k]) changed.push(k);
@@ -504,6 +507,7 @@ export function exportSplatsOptions(o: ResolvedSplatsOptions): SplatsConfig | un
   if (!near(o.densityLod, D.densityLod)) out.densityLod = o.densityLod;
   if (o.miniature !== D.miniature) out.miniature = o.miniature;
   if (o.cover !== D.cover) out.cover = o.cover;
+  if (o.cullBackFaces !== D.cullBackFaces) out.cullBackFaces = o.cullBackFaces;
   if (o.governor !== D.governor) out.governor = o.governor;
   if (o.targetFrameMs !== D.targetFrameMs) out.targetFrameMs = o.targetFrameMs;
   if (!near(o.budgetGrowth, D.budgetGrowth)) out.budgetGrowth = o.budgetGrowth;
@@ -531,7 +535,7 @@ export function exportSplatsOptions(o: ResolvedSplatsOptions): SplatsConfig | un
 const LITERAL_KEYS: ReadonlyArray<Exclude<keyof SplatsConfig, 'clock'>> = [
   'urlTemplate', 'imageryTemplate', 'enabled', 'minZoom', 'zoomLevel', 'minTileZoom', 'maxTileZoom',
   'lodBias', 'lowTierLodBias', 'maxCameraZoom', 'maxCameraTilt', 'radius', 'maxInFlight', 'maxSplats', 'lowTierMaxSplats',
-  'maxStdDev', 'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'governor', 'targetFrameMs', 'budgetGrowth',
+  'maxStdDev', 'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'governor', 'targetFrameMs', 'budgetGrowth',
   'levelFadeMs', 'transitionOvershoot', 'prefetchBand', 'roundedUnion', 'reveal',
   'levelSelection', 'resolutionMargin', 'resolutionTiltAware'
 ];

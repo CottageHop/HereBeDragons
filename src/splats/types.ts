@@ -437,6 +437,15 @@ export interface SplatsConfig {
    */
   cover?: boolean;
   /**
+   * Skip surfels facing away from the camera (default `true`). SplatMap writes every wall and roof
+   * surfel flat with its thin axis on the OUTWARD normal, so one whose normal points away is the
+   * far side of a closed building, hidden behind its near walls and roof: it leaves Spark's sort
+   * and draw. Blobs (crowns, trunks) are never skipped. In Lower Manhattan, where tower walls
+   * fill the frame, this halves the overdraw. Turn it off for splat sources whose surfels carry no
+   * outward orientation (photogrammetry captures).
+   */
+  cullBackFaces?: boolean;
+  /**
    * Animation clock used by the reveal animations (milliseconds, monotonic).
    * Defaults to `performance.now`. Injectable so tools and tests can freeze or
    * scrub the ripple.

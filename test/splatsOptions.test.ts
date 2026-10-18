@@ -63,6 +63,7 @@ describe('resolveSplatsOptions', () => {
       densityLod: 2,
       miniature: true,
       cover: true,
+      cullBackFaces: true,
       governor: true,
       targetFrameMs: 33,
       budgetGrowth: 1,

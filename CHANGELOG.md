@@ -6,6 +6,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Splats: surfels facing away from the camera are skipped — `splats.cullBackFaces` (default
+  `true`).** SplatMap writes every wall and roof surfel flat with its thin axis on the outward
+  normal, so one facing away is the far side of a closed building, hidden behind its near walls
+  and roof; it now leaves Spark's sort and draw like a thinned splat (`splats/backface.ts`, the
+  GLSL test plus a JS mirror). Blobs (crowns, trunks) have no side and are never skipped. On the
+  CdA demo: drawn splats 390k -> 337k at rest, the picture unchanged except the back walls'
+  soft tops no longer bleed above roof edges. Lower Manhattan (lidar towers, with SplatMap's
+  hidden-wall pruning): at rest 30 -> 60 fps, a pan's presented p95 48 -> 21 ms and drawn
+  splats 178k -> 112k. Turn it off for splat sources without outward-oriented surfels.
 - **Splats: detail stays put in motion.** With a cover level, every detail tile but the one under
   the view focus used to hide while the camera moved (its coarse cover parent showing instead)
   and dissolve back in at rest — so every touch of the map turned two thirds of the detail
