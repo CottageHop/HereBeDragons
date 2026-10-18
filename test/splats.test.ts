@@ -3197,7 +3197,7 @@ describe('lowTierUrlTemplate', () => {
   });
 
   it('motion LoD: each resident tile also holds its lite version and draws it while the camera moves', async () => {
-    const h = makeLayer({ lowTierUrlTemplate: LITE });
+    const h = makeLayer({ lowTierUrlTemplate: LITE, motionLod: true });
     await h.layer.open();
     await drain(h, 16);
     const urls = h.fetchTile.mock.calls.map((c) => c[0]);
@@ -3228,7 +3228,7 @@ describe('lowTierUrlTemplate', () => {
   });
 
   it('motion detail: the end of a glide draws the full meshes, density rising to every splat', async () => {
-    const h = makeLayer({ lowTierUrlTemplate: LITE });
+    const h = makeLayer({ lowTierUrlTemplate: LITE, motionLod: true });
     await h.layer.open();
     await drain(h, 16);
     const roots = h.scene.getObjectsByProperty('name', 'hbd-splats')[0]?.children ?? [];
@@ -3258,7 +3258,7 @@ describe('lowTierUrlTemplate', () => {
   });
 
   it('motion detail: lite → full mid-glide cross-fades (full in over opaque lite, then lite out)', async () => {
-    const h = makeLayer({ lowTierUrlTemplate: LITE });
+    const h = makeLayer({ lowTierUrlTemplate: LITE, motionLod: true });
     await h.layer.open();
     await drain(h, 16);
     const sr = h.scene.children.find((c) => c instanceof FakeSparkRenderer) as FakeSparkRenderer & {
@@ -3296,7 +3296,7 @@ describe('lowTierUrlTemplate', () => {
 
   it('motion LoD swap hold: primes Spark without drawing, holds until the lite set is sorted, bounded', async () => {
     const camera = new THREE.PerspectiveCamera();
-    const h = makeLayer({ lowTierUrlTemplate: LITE }, { getCamera: () => camera });
+    const h = makeLayer({ lowTierUrlTemplate: LITE, motionLod: true }, { getCamera: () => camera });
     await h.layer.open();
     await drain(h, 16);
     const sr = h.scene.children.find((c) => c instanceof FakeSparkRenderer) as FakeSparkRenderer & {
@@ -3467,7 +3467,7 @@ describe('SplatsLayer cover level', () => {
   });
 
   it('in motion, every detail tile stays drawn (lite) over its cover parent; nothing to bring back at rest', async () => {
-    const h = makeLayer({ cover: true, lowTierUrlTemplate: LITE });
+    const h = makeLayer({ cover: true, lowTierUrlTemplate: LITE, motionLod: true });
     h.view.zoom = 16.5;
     h.setTime(1000);
     await h.layer.open();

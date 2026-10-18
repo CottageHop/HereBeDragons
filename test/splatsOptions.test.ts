@@ -58,7 +58,7 @@ describe('resolveSplatsOptions', () => {
       keepLabels: true,
       neutralGrade: true,
       leanMap: true,
-      motionLod: true,
+      motionLod: false,
       motionThin: true,
       densityLod: 2,
       miniature: false,

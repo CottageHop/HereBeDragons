@@ -381,12 +381,15 @@ export interface SplatsConfig {
    */
   leanMap?: boolean;
   /**
-   * Motion LoD. With a lite pyramid (`lowTierUrlTemplate`) on the `'high'` tier, every resident
-   * tile also loads its lite version and draws it while the camera moves, back to full detail
-   * once the map settles — a visibility flip, nothing refetched. The frame cost is per splat,
-   * not per pixel, so fewer splats in motion is what keeps a pan smooth: measured on an Intel
-   * Iris, one full z16 tile pans at 28 fps, one lite tile at 52–58. Costs ~45 % more splat
-   * memory per tile. Default `true`; `false` draws the full tiles throughout.
+   * Motion LoD twins. With a lite pyramid (`lowTierUrlTemplate`) on the `'high'` tier, every
+   * resident tile also loads its lite version and draws it while the camera moves, back to full
+   * detail once the map settles. Default `false` (opt-in) since 0.12: with reprojection, frame
+   * pacing and the density LOD in place the twins cost more than they save — drags over Lower
+   * Manhattan on an Intel Iris at 2× were smoother WITHOUT them in Chromium (mean 28–60 vs
+   * 48–82 ms) and the same in WebKit — and loading them is what trips a JavaScriptCore deadlock
+   * in WebKit (the page froze on 6 of 12 loads with twins, 0 of 12 without). Without twins the
+   * lite pyramid still feeds the cover level, and each tile skips ~45 % more splat memory, its
+   * fetches and its decodes. `true` brings the twins back.
    */
   motionLod?: boolean;
   /**
@@ -453,8 +456,8 @@ export interface SplatsConfig {
    * — leaves near the camera, merged parents far away — within `engineLodSplats`, so the frame
    * cost is that budget, not the resident count. Trees are not built in the browser (measured:
    * ~6 s per 300k-splat tile on an Intel i5, and WebKit froze under it); tiles without one draw as
-   * before. The density LOD steps aside, and `motionLod` halves the budget while the camera moves
-   * instead of swapping to the lite tiles. Default `false`.
+   * before. The density LOD steps aside, and the budget halves while the camera moves (Spark
+   * re-picks the set each frame anyway). Default `false`.
    */
   engineLod?: boolean;
   /**

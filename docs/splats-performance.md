@@ -148,6 +148,13 @@ Not fill-bound: a quarter of the pixels changes nothing, so half-resolution spla
 vertex work and the depth-sort readback that waits behind it): the same pan with one LITE tile
 (~170k splats, the 0.7 m pyramid) runs at 52–58 fps, p50 17 ms; two lite tiles (340k) at 32.
 
+> **2026-10-18 — off by default since 0.12.** Re-measured over Lower Manhattan on the same Intel
+> Iris at 2×, with reprojection, one frame in flight and the density LOD in place: drags were
+> smoother WITHOUT the twins in Chromium (mean 28–60 vs 48–82 ms, p95 67–150 vs 100–200) and
+> the same in WebKit, and loading the twins is what trips a JavaScriptCore GC/JIT-worklist
+> deadlock in WebKit (the page froze on 6 of 12 loads with them, 0 of 12 without). The lite
+> pyramid still feeds the cover level. The section below is the measurement that introduced them.
+
 So the lever is fewer splats in motion. `splats.motionLod` (default on, needs
 `lowTierUrlTemplate`): every resident tile also loads its lite version (after the full one, at
 rest, two at a time), shares the full mesh's modifier graph (union mask, level fade, distance

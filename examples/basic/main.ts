@@ -170,8 +170,8 @@ const splats = splatsTemplate
       // `&leanMap=0` keeps the map's outlines / clouds / tilt-shift / ambient animation
       // running while splats are on (the default switches them off — see `leanMap`).
       leanMap: url.searchParams.get('leanMap') === '0' ? false : undefined,
-      // `&motionLod=0` draws the full tiles while moving too (A/B for motion LoD).
-      motionLod: url.searchParams.get('motionLod') === '0' ? false : undefined,
+      // `&motionLod=1` brings back the lite twins in motion (off by default since 0.12).
+      motionLod: url.searchParams.get('motionLod') === '1' ? true : url.searchParams.get('motionLod') === '0' ? false : undefined,
       governor: url.searchParams.get('governor') === '0' ? false : undefined,
       targetFrameMs: numParam('targetFrameMs'),
       // Level cross-dissolve: `&levelFadeMs=0` swaps instantly (the old

@@ -6,6 +6,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Splats: motion LoD twins are opt-in (`splats.motionLod`, default `false`).** With a lite
+  pyramid every resident tile also loaded its lite twin to draw while the camera moved. Measured
+  today over Lower Manhattan on an Intel Iris at 2×, with reprojection, one frame in flight and
+  the density LOD in place, the twins no longer pay: drags were smoother without them in Chromium
+  (mean 28–60 vs 48–82 ms a frame) and the same in WebKit — and loading them is what trips a
+  JavaScriptCore deadlock (GC ↔ JIT worklist) in WebKit: the page froze on 6 of 12 loads with
+  them, 0 of 12 without — the likeliest cause of buildings "disappearing" in Safari (a frozen tab
+  is killed and reloaded with the overlay off). Without twins each tile also skips ~45 % more
+  splat memory, its fetches and its decodes; the lite pyramid still feeds the cover level.
+  `motionLod: true` brings them back.
 - **Splats fade out toward `minZoom` instead of blinking out.** Below `minZoom` (default 13) the
   overlay is dropped; zooming out used to make every building vanish in one frame — and Safari's
   wheel steps cross a whole zoom level in a flick. The splats and their imagery ground now ease

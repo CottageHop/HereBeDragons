@@ -208,7 +208,7 @@ const MAX_PREFETCHED = 2;
  *  vector map takes over) instead of vanishing at the threshold — Safari's wheel steps cross a
  *  whole zoom level in a flick, and the 3D buildings blinked out at once. */
 const MIN_ZOOM_FADE_BAND = 0.4;
-/** Share of Spark's LoD budget drawn while the camera moves (`engineLod` + `motionLod`). */
+/** Share of Spark's LoD budget drawn while the camera moves (`engineLod`). */
 const ENGINE_LOD_MOTION_SCALE = 0.5;
 /** Imagery ground sits this far (scene metres) above the vector ground. */
 const GROUND_LIFT = 0.05;
@@ -1584,11 +1584,11 @@ export class SplatsLayer {
    */
   setCameraMoving(moving: boolean): void {
     this.cameraMoving = moving;
-    // Spark's LoD (engineLod): a moving picture draws half the budget — the same trade as the lite
-    // twins, without a second set of tiles resident or a swap to show. Back to all of it at rest.
+    // Spark's LoD (engineLod): a moving picture draws half the budget — the trade the lite twins
+    // made, without a second set of tiles resident or a swap to show. Back to all of it at rest.
     const sr = this.sparkRenderer;
     if (this.engineLod && sr) {
-      const scale = moving && this.motionLod ? ENGINE_LOD_MOTION_SCALE : 1;
+      const scale = moving ? ENGINE_LOD_MOTION_SCALE : 1;
       if (sr.lodSplatScale !== scale) sr.lodSplatScale = scale;
     }
   }
