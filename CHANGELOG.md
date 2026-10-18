@@ -4,7 +4,7 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.11.0 — sharper, steadier splats
 
 - **Splats: the miniature look is now opt-in (`splats.miniature`, default `false`).** Its
   tilt-shift kept a sharp band on the camera's target and blurred everything above and below it —
