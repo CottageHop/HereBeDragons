@@ -4,7 +4,7 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.11.1 — quiet at rest, sharp when zooming out
 
 - **Fixed: a map standing still redrew everything once a second while splats were on.** The
   ambient layers (trees, grass, waves) are frozen while splats are resident, but a frozen layer is
