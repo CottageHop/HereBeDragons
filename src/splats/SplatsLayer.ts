@@ -506,6 +506,12 @@ interface SplatTile {
   /** The splats were released after the fade-out; only the imagery ground
    *  lingers (in `groundGhosts`) until the level over it is opaque. */
   meshGone: boolean;
+  /** Loaded from the lite pyramid as COVER (see `loadTile`). A zoom-out promotes the cover level
+   *  to detail, and such a tile then still holds only the lite splats: `loadFull` brings the full
+   *  ones and keeps these as the tile's motion-LoD twin. */
+  fromLite: boolean;
+  /** `loadFull`'s progress for a `fromLite` tile. */
+  upgrade: 'none' | 'loading' | 'missing';
 }
 
 interface RippleState {
@@ -516,6 +522,12 @@ interface RippleState {
 
 /** Scratch for one tile's 16 union values (weights ×8, bridge growths ×8). */
 const SCRATCH = new Float64Array(16);
+
+/** The full version of a tile whose lite version holds `liteSplats`: the budget's guess before it
+ *  is fetched (SplatMap's lite sets keep 43-53 % of a tile; the real count replaces this on landing). */
+function fullGuess(liteSplats: number, estimate: number): number {
+  return Math.max(estimate, 2 * liteSplats);
+}
 
 function defaultPrefersReducedMotion(): boolean {
   try {
@@ -1634,6 +1646,82 @@ export class SplatsLayer {
   }
 
   /**
+   * The full version of a `fromLite` tile — a cover tile, loaded from the lite pyramid, that a
+   * zoom-out promoted to the detail level. Before this it stayed lite for as long as the level
+   * held: a zoom from 15 to 14 over Lower Manhattan drew 80k-splat z15 tiles where the full ones
+   * hold 150k, the blurriest data the layer had, at the moment the user looked closer at the
+   * wider view. The full mesh takes the tile's own modifier graph and the lite one becomes its
+   * motion-LoD twin (its own graph), so the ground, imagery, union mask and fades carry on
+   * untouched; the swap lands with the other landings (at rest), like a tile does.
+   */
+  private async loadFull(tile: SplatTile): Promise<void> {
+    const spark = this.spark;
+    if (!spark) return;
+    tile.upgrade = 'loading';
+    this.inFlight++;
+    let mesh: SparkSplatMeshLike | null = null;
+    const stale = (): boolean =>
+      this.disposed || tile.disposed || tile.meshGone || tile.evicting || this.tiles.get(tile.key) !== tile ||
+      this.isCoverTile(tile);
+    try {
+      const url = expandTileUrl(this.activeUrlTemplate(), tile.z, tile.tileX, tile.tileY);
+      const data = await this.fetchTile(url);
+      if (!data || stale()) {
+        tile.upgrade = data ? 'none' : 'missing';
+        return;
+      }
+      const fileType = this.fileType
+        ? (spark.SplatFileType?.[this.fileType.toUpperCase()] ?? this.fileType)
+        : undefined;
+      mesh = new spark.SplatMesh({ fileBytes: data, fileType, fileName: url });
+      mesh.name = `splat-tile:${tile.key}`;
+      mesh.layers.set(SPLAT_THREE_LAYER);
+      mesh.maxSh = 0;
+      if (tile.objectModifier) mesh.objectModifier = tile.objectModifier;
+      if (tile.rippleOn && this.rippleDyno) mesh.worldModifier = this.rippleDyno.modifier;
+      await mesh.initialized;
+      if (stale()) {
+        tile.upgrade = 'none';
+        return;
+      }
+      const full = mesh;
+      mesh = null;
+      this.applyQueue.push(() => {
+        if (stale()) {
+          full.dispose();
+          tile.upgrade = 'none';
+          return;
+        }
+        const liteMesh = tile.mesh;
+        tile.root.remove(liteMesh);
+        liteMesh.name = `splat-tile-lite:${tile.key}`;
+        const liteModifier = tile.liteModifier ?? tile.objectModifier;
+        if (liteModifier && liteModifier !== tile.objectModifier) {
+          liteMesh.objectModifier = liteModifier;
+          liteMesh.updateGenerator?.();
+        }
+        tile.mesh = full;
+        tile.lite = liteMesh;
+        tile.liteState = 'ready';
+        tile.fromLite = false;
+        tile.upgrade = 'none';
+        tile.splats = full.numSplats ?? full.packedSplats?.numSplats ?? tile.splats;
+        tile.root.add(full);
+        tile.root.add(liteMesh);
+        this.applyMeshVisibility(tile);
+        this.onSceneChange();
+      });
+      this.onSceneChange();
+    } catch (err) {
+      tile.upgrade = 'missing';
+      logger.warn(`splat tile ${tile.key} full version failed:`, err instanceof Error ? err.message : String(err));
+    } finally {
+      mesh?.dispose();
+      this.inFlight = Math.max(0, this.inFlight - 1);
+    }
+  }
+
+  /**
    * Motion-LoD swap hold — the map asks before each render and skips drawing while this is true.
    *
    * Showing or hiding meshes changes Spark's splat MAPPING, and Spark keeps drawing the previous
@@ -1688,9 +1776,12 @@ export class SplatsLayer {
    *  and back at every touch, most visibly across tile borders, for no measurable frame gain. */
   private applyMeshVisibility(tile: SplatTile): void {
     const show = tile.cullDraw;
-    const fading = this.swapFade !== null && !!tile.lite;
-    const lite = (this.drawingLite || fading) && !!tile.lite;
-    const full = !this.drawingLite || !tile.lite || fading;
+    // A cover tile holding both versions (a detail tile the level switched away from, or one
+    // `loadFull` upgraded) draws the lite one: cover is coarse, mostly far, and outside the budget.
+    const coverLite = !!tile.lite && this.isCoverTile(tile);
+    const fading = this.swapFade !== null && !!tile.lite && !coverLite;
+    const lite = coverLite || ((this.drawingLite || fading) && !!tile.lite);
+    const full = !coverLite && (!this.drawingLite || !tile.lite || fading);
     if (tile.mesh.visible !== (show && full)) tile.mesh.visible = show && full;
     if (tile.lite && tile.lite.visible !== (show && lite)) tile.lite.visible = show && lite;
   }
@@ -2001,6 +2092,8 @@ export class SplatsLayer {
     // not when its fetch starts, so they keep the picture whole meanwhile.
     let projected = this.committedSplats() - this.oldLevelSplats() + this.pending.size * estimate;
     for (const p of this.parked.values()) projected += p.tile.splats;
+    // Full versions on their way to promoted lite tiles (see loadFull) hold their room already.
+    for (const t of this.tiles.values()) if (t.upgrade === 'loading') projected += fullGuess(t.splats, estimate) - t.splats;
     // Most relevant first: by where each tile falls on SCREEN, not by grid
     // distance from the centre tile — the budget goes where the camera looks.
     // Candidates come from `desiredTiles()`, so when the cut is on they span several levels and
@@ -2027,6 +2120,19 @@ export class SplatsLayer {
       // A decoded tile is already waiting for room: don't decode more.
       if (this.inFlight >= this.maxInFlight || this.parked.size > 0) break;
       const key = tileKey(cz, x, y);
+      // A promoted cover tile (a zoom-out made its level the detail level) still holds the lite
+      // splats: fetch the full ones, budget permitting, in the same relevance order as any load.
+      const resident = this.tiles.get(key);
+      if (resident?.fromLite && cz !== coverZ) {
+        if (resident.upgrade === 'none' && !resident.evicting && !resident.meshGone) {
+          const extra = fullGuess(resident.splats, estimate) - resident.splats;
+          if (projected + extra > budget) break;
+          projected += extra;
+          started++;
+          void this.loadFull(resident);
+        }
+        continue;
+      }
       if (
         this.tiles.has(key) ||
         this.queuedTiles.has(key) ||
@@ -2185,8 +2291,12 @@ export class SplatsLayer {
       // Camera moved far away while the fetch was in flight — drop it.
       if (!this.isInKeepZone(z, x, y)) return dropEarly();
       const tile = await this.buildTile(z, x, y, key, data, url);
-      // Loaded lite already: no motion-LoD twin to fetch, it IS the lite version.
-      if (coverLite) tile.liteState = 'missing';
+      // Loaded lite already: no motion-LoD twin to fetch, it IS the lite version — until a
+      // zoom-out makes it a detail tile, when `loadFull` brings the full one.
+      if (coverLite) {
+        tile.liteState = 'missing';
+        tile.fromLite = true;
+      }
       tile.preTexture = early;
       early = null;
       // Re-check: a disable / zoom-out / eviction may have raced the decode.
@@ -2501,7 +2611,8 @@ export class SplatsLayer {
       evicting: false,
       appear: 'grow', fade: createFade(1, 0), groundFade: createFade(1, 0), fadeU,
       fadeDyno: dyno?.fade ?? null, quadDyno: dyno?.quad ?? null,
-      imageryDone: false, preTexture: null, disposed: false, meshGone: false
+      imageryDone: false, preTexture: null, disposed: false, meshGone: false,
+      fromLite: false, upgrade: 'none'
     };
     // A tile that lands while a ripple is playing joins the current front:
     // the modifier's uniforms are shared, so it needs no catch-up state.
@@ -2741,6 +2852,8 @@ export class SplatsLayer {
         this.disposeTile(key, tile);
       }
     }
+    // Cover and detail roles moved: a tile holding both versions draws the one its role wants.
+    for (const tile of this.tiles.values()) this.applyMeshVisibility(tile);
     this.onSceneChange();
   }
 

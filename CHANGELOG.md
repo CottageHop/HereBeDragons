@@ -23,6 +23,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   at 1× (dynamic resolution) for the rest of the session while the picture at rest keeps the full
   ratio (the settle dissolve brings it back). Measured on the same machine: pans ~45 → ~30 ms a
   frame (p50 44 → 27–29 ms). `setDynamicResolution()` takes over from it.
+- **Fixed: zooming out drew the coarsest data the layer had.** With a lite pyramid, the cover
+  level (one coarser than the detail) loads from the lite tiles. A zoom-out makes the cover level
+  the detail level — and its tiles, already resident, were kept as they were: a zoom from 15 to
+  14 over Lower Manhattan drew 80k-splat lite z15 tiles where the full ones hold 150k, smeared
+  towers at exactly the moment the user looked at the wider view (and stayed so until the page
+  was reloaded). Such a tile now fetches its full version (`loadFull`, budget permitting, in
+  relevance order like any load); the full mesh takes the tile's modifier graph and the lite one
+  becomes its motion-LoD twin, so the ground, imagery and reveal mask carry on untouched. Back
+  in, a cover tile holding both versions draws the lite one (cover sits outside the budget).
 
 ## 0.11.0 — sharper, steadier splats
 

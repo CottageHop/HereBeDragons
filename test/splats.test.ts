@@ -3455,4 +3455,43 @@ describe('SplatsLayer cover level', () => {
     expect(l[15]).toBe(9);
     expect(l[16]).toBeUndefined();
   });
+
+  it('zooming out with a lite pyramid: the promoted cover tiles get their FULL versions, the lite ones stay as their motion twins; back in, the cover draws lite', async () => {
+    const h = makeLayer({ cover: true, lowTierUrlTemplate: LITE, prefetchBand: 0 });
+    // lite tiles hold 4 "splats", full ones 10
+    h.fetchTile.mockImplementation(async (u: string) => new ArrayBuffer(u.startsWith('https://lite.test/') ? 4 : 10));
+    h.view.zoom = 16.5;
+    h.setTime(1000);
+    await h.layer.open();
+    await drain(h, 40);
+    h.view.zoom = 15.5;
+    await drain(h, 40);
+    h.setTime(1000 + FADE);
+    await drain(h, 6);
+    h.setTime(1000 + 2 * FADE);
+    await drain(h, 6);
+    type T = { mesh: { name: string; visible: boolean; numSplats: number }; lite: { name: string; visible: boolean } | null; fromLite: boolean; splats: number };
+    const tiles = (h.layer as unknown as { tiles: Map<string, T> }).tiles;
+    const z15 = [...tiles.entries()].filter(([k]) => k.startsWith('15/'));
+    expect(z15.length).toBe(9);
+    for (const [k, t] of z15) {
+      // the detail level draws the full splats now (before: the lite cover data, for good)
+      expect(t.fromLite).toBe(false);
+      expect(t.splats).toBe(10);
+      expect(t.mesh.name).toBe(`splat-tile:${k}`);
+      expect(t.mesh.visible).toBe(true);
+      expect(t.lite?.name).toBe(`splat-tile-lite:${k}`);
+    }
+    const urls = h.fetchTile.mock.calls.map(([u]) => u);
+    // each z15 tile fetched twice in all: lite as cover, full as detail — no loop
+    expect(urls.filter((u) => u.includes('/15/') && u.startsWith('https://lite.test/')).length).toBe(9);
+    expect(urls.filter((u) => u.includes('/15/') && u.startsWith('https://tiles.test/')).length).toBe(9);
+    expect(new Set(urls).size).toBe(urls.length);
+    // back in: z15 is the cover again and draws its lite version (cover sits outside the budget)
+    h.view.zoom = 16.5;
+    await drain(h, 40);
+    const back = (h.layer as unknown as { tiles: Map<string, T> }).tiles.get(z15[0][0]);
+    expect(back?.lite?.visible).toBe(true);
+    expect(back?.mesh.visible).toBe(false);
+  });
 });
