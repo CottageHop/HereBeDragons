@@ -1,4 +1,5 @@
 import { GOVERNOR_DEFAULTS } from '../src/splats/governor.js';
+import { makeHbdb } from './helpers/hbdb.js';
 import { MOTION_THIN_LADDER } from '../src/splats/thin.js';
 import { describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
@@ -3383,6 +3384,36 @@ describe('SplatsLayer engineLod (Spark\'s own level of detail)', () => {
     expect(sr(h).enableLod).toBe(false);
     h.layer.setCameraMoving(true);
     expect(sr(h).lodSplatScale).toBe(1);
+  });
+});
+
+describe('SplatsLayer buildingMeshes (buildings as textured meshes)', () => {
+  const buildingNames = (h: Harness): string[] => {
+    const out: string[] = [];
+    h.scene.getObjectByName('hbd-splats')?.traverse((o) => { if (o.name.startsWith('splat-tile-buildings:')) out.push(o.name); });
+    return out;
+  };
+
+  it('loads each tile\'s .bldg beside its .spz onto the tile, and drops it with the tile', async () => {
+    const h = makeLayer({ buildingMeshes: true });
+    h.fetchTile.mockImplementation(async (u: string) => (u.endsWith('.bldg') ? makeHbdb() : new ArrayBuffer(10)));
+    await h.layer.open();
+    await drain(h, 30);
+    const tiles = h.layer.getStats().tiles;
+    expect(tiles).toBeGreaterThan(0);
+    expect(buildingNames(h).length).toBe(tiles);
+    expect(h.fetchTile.mock.calls.filter(([u]) => u.endsWith('.bldg')).length).toBe(tiles);
+    h.view.zoom = 5; // below minZoom: every tile goes, its buildings with it
+    h.layer.update();
+    expect(buildingNames(h)).toEqual([]);
+  });
+
+  it('off (the default) asks for no .bldg', async () => {
+    const h = makeLayer();
+    await h.layer.open();
+    await drain(h, 20);
+    expect(h.fetchTile.mock.calls.some(([u]) => u.endsWith('.bldg'))).toBe(false);
+    expect(buildingNames(h)).toEqual([]);
   });
 });
 

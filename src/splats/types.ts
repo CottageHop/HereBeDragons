@@ -466,6 +466,16 @@ export interface SplatsConfig {
    */
   engineLodSplats?: number;
   /**
+   * EXPERIMENTAL — buildings as textured meshes instead of surfels. Each tile's `{y}.bldg` beside
+   * its `.spz` (SplatMap `--building-meshes`: the tile's buildings as triangles, the splat file
+   * keeps the trees) is drawn opaque under one shader: roofs take the tile's imagery, walls a
+   * procedural facade (storeys, window bays, trim) whose windows fade to their average colour
+   * below a pixel. No sort, no per-frame regeneration: a tower is a few dozen triangles instead
+   * of tens of thousands of splats, and stays sharp at any distance. Tiles without a `.bldg` are
+   * unaffected. Default `false`.
+   */
+  buildingMeshes?: boolean;
+  /**
    * Animation clock used by the reveal animations (milliseconds, monotonic).
    * Defaults to `performance.now`. Injectable so tools and tests can freeze or
    * scrub the ripple.

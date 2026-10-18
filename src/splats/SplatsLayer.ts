@@ -67,6 +67,13 @@ import {
   setSplatGroundMap
 } from './groundMaterial.js';
 import {
+  buildingGeometry,
+  createBuildingMaterial,
+  inflateBuildingMesh,
+  parseBuildingMesh,
+  setBuildingImagery
+} from './buildingMesh.js';
+import {
   type ResolvedRoundedUnion,
   ROUNDED_UNION_GLSL,
   type UnionPresence,
@@ -516,6 +523,9 @@ interface SplatTile {
   preTexture: Promise<THREE.Texture | null> | null;
   /** Set by `disposeTile` — a late `preTexture` frees itself. */
   disposed: boolean;
+  /** The tile's buildings as a textured mesh (`splats.buildingMeshes`), null until / unless loaded. */
+  buildings: THREE.Mesh | null;
+  buildingMaterial: THREE.ShaderMaterial | null;
   /** The splats were released after the fade-out; only the imagery ground
    *  lingers (in `groundGhosts`) until the level over it is opaque. */
   meshGone: boolean;
@@ -672,6 +682,8 @@ export class SplatsLayer {
   /** Spark's own LoD (see `splats.engineLod`): tiles load with an LoD tree, Spark draws a budget. */
   private engineLod: boolean;
   private engineLodSplats: number;
+  /** Buildings as textured meshes (see `splats.buildingMeshes`). */
+  private buildingMeshes: boolean;
   private densityDyno: DynoUniformLike<number> | null = null;
   private readonly lodCamPos = new THREE.Vector3(Number.NaN, 0, 0);
   private readonly lodMat = new THREE.Matrix4();
@@ -940,6 +952,7 @@ export class SplatsLayer {
     this.densityLod = o.densityLod;
     this.engineLod = o.engineLod;
     this.engineLodSplats = o.engineLodSplats;
+    this.buildingMeshes = o.buildingMeshes;
     this.cover = o.cover;
     this.cullBackFaces = o.cullBackFaces;
     this.governor = new FrameGovernor({
@@ -1246,6 +1259,7 @@ export class SplatsLayer {
     this.densityLod = o.densityLod;
     this.engineLod = o.engineLod;
     this.engineLodSplats = o.engineLodSplats;
+    this.buildingMeshes = o.buildingMeshes;
     this.tickDensityLod();
     if (o.cullBackFaces !== this.cullBackFaces) {
       this.cullBackFaces = o.cullBackFaces;
@@ -2668,12 +2682,44 @@ export class SplatsLayer {
       appear: 'grow', fade: createFade(1, 0), groundFade: createFade(1, 0), fadeU,
       fadeDyno: dyno?.fade ?? null, quadDyno: dyno?.quad ?? null,
       imageryDone: false, preTexture: null, disposed: false, meshGone: false,
-      fromLite: false, upgrade: 'none'
+      fromLite: false, upgrade: 'none', buildings: null, buildingMaterial: null
     };
     // A tile that lands while a ripple is playing joins the current front:
     // the modifier's uniforms are shared, so it needs no catch-up state.
     if (this.ripple && this.rippleDyno) this.applyRippleModifier(tile, true);
+    if (this.buildingMeshes) void this.loadBuildings(tile, url);
     return tile;
+  }
+
+  /**
+   * The tile's buildings as a textured mesh (`splats.buildingMeshes`): `{y}.bldg` beside the
+   * tile's `.spz`, SplatMap's triangles in the tile's own local frame — added to the tile root,
+   * so the splat tile's transform places it. Roofs take the tile's imagery once it lands. A tile
+   * without one (a lite cover tile, an older pyramid) simply has none.
+   */
+  private async loadBuildings(tile: SplatTile, url: string): Promise<void> {
+    const bldgUrl = url.replace(/\.(spz|ply)(?=$|[?#])/, '.bldg');
+    if (bldgUrl === url) return;
+    try {
+      const raw = await this.fetchTile(bldgUrl);
+      if (!raw || tile.disposed) return;
+      const data = parseBuildingMesh(await inflateBuildingMesh(raw));
+      if (tile.disposed || data.vertices === 0) return;
+      const mat = createBuildingMaterial(data, tile.fadeU?.uLevelFade ?? null);
+      const mesh = new THREE.Mesh(buildingGeometry(data), mat);
+      mesh.name = `splat-tile-buildings:${tile.key}`;
+      mesh.layers.set(SPLAT_THREE_LAYER);
+      // after the imagery ground, before the (transparent) splats: they depth-test against it
+      mesh.renderOrder = -1;
+      if (tile.groundTexture) setBuildingImagery(mat, tile.groundTexture);
+      tile.buildings = mesh;
+      tile.buildingMaterial = mat;
+      tile.root.add(mesh);
+      tile.root.updateMatrixWorld(true);
+      this.onSceneChange();
+    } catch (err) {
+      logger.warn(`splat tile ${tile.key} buildings failed:`, err instanceof Error ? err.message : String(err));
+    }
   }
 
   /** Load the tile's imagery and swap it onto the ground plane when it lands. */
@@ -2703,6 +2749,7 @@ export class SplatsLayer {
         return;
       }
       tile.groundTexture = landed;
+      if (tile.buildingMaterial) setBuildingImagery(tile.buildingMaterial, landed);
       setSplatGroundMap(tile.groundMaterial, landed);
       tile.imageryDone = true;
       this.onSceneChange();
@@ -3267,6 +3314,10 @@ export class SplatsLayer {
     tile.groundMaterial?.dispose();
     tile.groundTexture?.dispose();
     tile.groundTexture = null;
+    tile.buildings?.geometry.dispose();
+    tile.buildingMaterial?.dispose();
+    tile.buildings = null;
+    tile.buildingMaterial = null;
   }
 
   private clearTiles(): void {
@@ -4006,6 +4057,7 @@ export class SplatsLayer {
       }
       // The imagery plane follows the FRUSTUM test only — it is what keeps a distant tile drawn.
       if (tile.ground && tile.ground.visible !== visible) tile.ground.visible = visible;
+      if (tile.buildings && tile.buildings.visible !== visible) tile.buildings.visible = visible;
     }
     if (changed) this.onSceneChange();
   }

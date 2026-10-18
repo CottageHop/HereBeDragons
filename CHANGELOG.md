@@ -4,6 +4,17 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+- **Experimental: `splats.buildingMeshes` — buildings as textured meshes.** SplatMap can now write
+  each tile's buildings as triangles (`{y}.bldg`, `--building-meshes`) and keep only the trees as
+  splats. The layer draws them opaque under one shader: roofs from the tile's imagery, walls
+  SplatMap's procedural facade (storeys, window bays, trim) re-implemented on the GPU with each
+  pattern fading to its average colour as it drops below a pixel — no shimmer, no sort, no
+  per-frame regeneration. Lower Manhattan: a tile's buildings went from ~200k splats (3 MB) to
+  ~3.5k triangles (63 KB); towers are crisp edged with legible window grids at zoom 15. Off by
+  default; demo: `&buildingMeshes=1` (and `&cover=0`, `&maxSplats=` to size the tree budget).
+
 ## 0.12.0 — steady in Safari
 
 - **Splats: motion LoD twins are opt-in (`splats.motionLod`, default `false`).** With a lite

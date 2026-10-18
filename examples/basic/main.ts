@@ -145,6 +145,10 @@ const splats = splatsTemplate
       // draws `&lodSplats=` splats a frame across all of them (0 / absent = Spark's default).
       ...(url.searchParams.get('engineLod') === '1' ? { engineLod: true } : {}),
       engineLodSplats: numParam('lodSplats'),
+      // `&buildingMeshes=1` (experimental): buildings as textured meshes from `{y}.bldg` tiles.
+      // `&cover=0` drops the coarse cover level under the detail window.
+      ...(url.searchParams.get('cover') === '0' ? { cover: false } : {}),
+      ...(url.searchParams.get('buildingMeshes') === '1' ? { buildingMeshes: true } : {}),
       // `&sortIntervalMs=` spaces Spark's depth re-sorts (default 100; the low tiers use >= 250)
       sortIntervalMs: numParam('sortIntervalMs'),
       // `&budgetGrowth=2` lets the governor grow the budget past `maxSplats` on a device

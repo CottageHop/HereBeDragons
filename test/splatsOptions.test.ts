@@ -66,6 +66,7 @@ describe('resolveSplatsOptions', () => {
       cullBackFaces: true,
       engineLod: false,
       engineLodSplats: 0,
+      buildingMeshes: false,
       governor: true,
       targetFrameMs: 33,
       budgetGrowth: 1,
