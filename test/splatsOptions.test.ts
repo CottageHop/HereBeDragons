@@ -61,7 +61,7 @@ describe('resolveSplatsOptions', () => {
       motionLod: true,
       motionThin: true,
       densityLod: 2,
-      miniature: true,
+      miniature: false,
       cover: true,
       cullBackFaces: true,
       governor: true,

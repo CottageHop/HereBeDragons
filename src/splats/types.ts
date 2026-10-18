@@ -416,13 +416,14 @@ export interface SplatsConfig {
    */
   densityLod?: number;
   /**
-   * Miniature look while satellite tiles are on screen (default `true`): the map's tilt-shift
+   * Miniature look while satellite tiles are on screen (default `false` — opt in; it blurred the
+   * buildings away from the focus band, and towers fill that part of the frame): the map's tilt-shift
    * runs with an imagery preset (`MINIATURE_IMAGERY_TILT_SHIFT`: the same shallow focus band on
    * the point the camera looks at, a calmer grade than the vector map's), eased in as the first
    * tile lands and out when the last one goes, whatever the map's own `tiltShift` setting. The
    * lean map, which otherwise parks the blur while splats show, makes way for it. Settings given
-   * to `setTiltShift({ … })` are honoured instead of the preset. `false` leaves the tilt-shift to
-   * the map's own setting.
+   * to `setTiltShift({ … })` are honoured instead of the preset. `false` (the default) leaves the
+   * tilt-shift to the map's own setting (off unless `tiltShift` is set).
    */
   miniature?: boolean;
   /**

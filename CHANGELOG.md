@@ -6,6 +6,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Splats: the miniature look is now opt-in (`splats.miniature`, default `false`).** Its
+  tilt-shift kept a sharp band on the camera's target and blurred everything above and below it —
+  with Lower Manhattan's towers filling the frame, most of the buildings. `miniature: true` brings
+  it back; the map's own `tiltShift` option is unchanged (off by default).
 - **Splats: surfels facing away from the camera are skipped — `splats.cullBackFaces` (default
   `true`).** SplatMap writes every wall and roof surfel flat with its thin axis on the outward
   normal, so one facing away is the far side of a closed building, hidden behind its near walls
