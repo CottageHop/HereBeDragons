@@ -127,9 +127,12 @@ const VERT = /* glsl */ `
   varying float vStyle;
   varying vec3 vRoof;
   varying vec3 vViewPos;
+  varying vec2 vTileUv;
+  uniform float uTileSize;
   #include <fog_pars_vertex>
   void main() {
     vUv = uv;
+    vTileUv = position.xy / uTileSize;
     vWall = aWall;
     vKind = aKind;
     vStyle = aStyle;
@@ -149,6 +152,8 @@ const FRAG = /* glsl */ `
   uniform vec3 uSunDir;
   uniform float uRoofDetail;
   uniform float uLevelFade;
+  uniform vec4 uQuad;
+  varying vec2 vTileUv;
   varying vec2 vUv;
   varying vec2 vWall;
   varying float vKind;
@@ -219,7 +224,11 @@ const FRAG = /* glsl */ `
   }
 
   void main() {
-    if (uLevelFade < 0.999 && uLevelFade <= bayer4(gl_FragCoord.xy)) discard;
+    // the tile's own fade, and per quadrant (SW, SE, NW, NE) how far a finer child tile has
+    // dissolved in over it — a cover tile's buildings give way where the detail has landed
+    float q = vTileUv.y >= 0.5 ? (vTileUv.x >= 0.5 ? uQuad.w : uQuad.z) : (vTileUv.x >= 0.5 ? uQuad.y : uQuad.x);
+    float fade = min(uLevelFade, 1.0 - q);
+    if (fade < 0.999 && fade <= bayer4(gl_FragCoord.xy)) discard;
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     if (n.z < 0.0) n = -n;                                   // towards the camera
     vec3 sun = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
@@ -243,11 +252,14 @@ export const BUILDING_SUN_DIR = new THREE.Vector3(-0.45, 0.78, 0.43).normalize()
 
 /**
  * One tile's building material. `levelFade`: the tile's ground fade uniform, shared by reference,
- * so the buildings dissolve (dithered — they are opaque) with the tile.
+ * so the buildings dissolve (dithered — they are opaque) with the tile; `quad`: the tile's
+ * per-quadrant child dissolve (the splat modifier's vector, shared), so a cover tile's buildings
+ * give way under landed detail exactly like its splats.
  */
 export function createBuildingMaterial(
   d: BuildingMeshData,
-  levelFade: { value: number } | null = null
+  levelFade: { value: number } | null = null,
+  quad: THREE.Vector4 | null = null
 ): THREE.ShaderMaterial {
   const mat = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([
@@ -257,7 +269,8 @@ export function createBuildingMaterial(
         uHasImagery: { value: 0 },
         uStyles: { value: styleTable(d) },
         uSunDir: { value: BUILDING_SUN_DIR.clone() },
-        uRoofDetail: { value: 0.65 }
+        uRoofDetail: { value: 0.65 },
+        uTileSize: { value: d.tileSize }
       }
     ]),
     vertexShader: VERT,
@@ -266,6 +279,7 @@ export function createBuildingMaterial(
     side: THREE.DoubleSide
   });
   mat.uniforms.uLevelFade = levelFade ?? { value: 1 };
+  mat.uniforms.uQuad = { value: quad ?? new THREE.Vector4(0, 0, 0, 0) };
   mat.name = 'hbd-splats:buildings';
   return mat;
 }

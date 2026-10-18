@@ -31,6 +31,9 @@ describe('building meshes (HBDB)', () => {
     const fade = { value: 0.5 };
     const mat = createBuildingMaterial(d, fade);
     expect(mat.uniforms.uLevelFade).toBe(fade); // shared with the tile's ground fade
+    const quad = new THREE.Vector4(0, 1, 0, 0);
+    expect(createBuildingMaterial(d, fade, quad).uniforms.uQuad.value).toBe(quad); // the splats' quadrant vector
+    expect(mat.uniforms.uTileSize.value).toBeCloseTo(611.5, 3);
     expect(mat.uniforms.uHasImagery.value).toBe(0);
     const tex = new THREE.Texture();
     setBuildingImagery(mat, tex);

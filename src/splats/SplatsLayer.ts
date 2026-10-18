@@ -2710,7 +2710,7 @@ export class SplatsLayer {
       if (!raw || tile.disposed) return;
       const data = parseBuildingMesh(await inflateBuildingMesh(raw));
       if (tile.disposed || data.vertices === 0) return;
-      const mat = createBuildingMaterial(data, tile.fadeU?.uLevelFade ?? null);
+      const mat = createBuildingMaterial(data, tile.fadeU?.uLevelFade ?? null, tile.quadDyno?.value ?? null);
       const mesh = new THREE.Mesh(buildingGeometry(data), mat);
       mesh.name = `splat-tile-buildings:${tile.key}`;
       mesh.layers.set(SPLAT_THREE_LAYER);
