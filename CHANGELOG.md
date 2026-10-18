@@ -4,6 +4,16 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+- **Fixed: a map standing still redrew everything once a second while splats were on.** The
+  ambient layers (trees, grass, waves) are frozen while splats are resident, but a frozen layer is
+  still ticked once a second for its zoom gate — and its `update(0)` reported "dirty" whenever it
+  was shown, so every second the whole scene was rendered again: every resident splat at the full
+  pixel ratio, 160–220 ms in WebKit and 70–170 ms in Chromium on an Intel Iris at 2× (1.7 M
+  splats over Lower Manhattan) — a hitch every second on a map nobody was touching, and a busy GPU.
+  A tick that advances no time now reports only a zoom-gate flip. Measured at rest: 1 render a
+  second → none, no long frames.
 ## 0.11.0 — sharper, steadier splats
 
 - **Splats: the miniature look is now opt-in (`splats.miniature`, default `false`).** Its

@@ -11,6 +11,11 @@ import {
 import { enumerateTileWindow } from '../src/splats/transform.js';
 import { LayerRegistry } from '../src/scene/LayerRegistry.js';
 import type { Layer } from '../src/layers/Layer.js';
+import * as THREE from 'three';
+import { GrassLayer } from '../src/layers/GrassLayer.js';
+import { TreesLayer } from '../src/layers/TreesLayer.js';
+import { WavesLayer } from '../src/layers/WavesLayer.js';
+import { StylizedMaterials } from '../src/materials/StylizedMaterials.js';
 
 /** Feed `ms` of frames of `dt` each; returns how often a knob moved. */
 function run(g: FrameGovernor, clock: { now: number }, dt: number, ms: number): number {
@@ -471,6 +476,31 @@ describe('LayerRegistry.setThrottle — ambient animations while splats share th
     for (let k = 0; k < 125; k++) if (reg.update(1 / 60)) dirty++;
     expect(dirty).toBe(2);
     expect(calls).toEqual([0, 0]);
+  });
+
+  it('a frozen ambient layer asks for a render only when its zoom gate flips', () => {
+    // The real layers: a frozen tick (dt = 0) used to report dirty whenever the layer was
+    // shown, forcing a full redraw of every resident splat once a second at rest.
+    let zoom = 16;
+    const materials = new StylizedMaterials();
+    const opts = { getCameraZoom: () => zoom };
+    const layers = { grass: new GrassLayer(materials, opts), trees: new TreesLayer(materials, opts),
+      waves: new WavesLayer(materials, opts) } as const;
+    const reg = new LayerRegistry();
+    for (const [name, layer] of Object.entries(layers)) {
+      (layer as unknown as { meshes: Set<THREE.Mesh> }).meshes.add(new THREE.Mesh());
+      reg.register(name as 'grass' | 'trees' | 'waves', layer);
+    }
+    expect(reg.update(1 / 60)).toBe(true); // first tick: the gates open, time runs
+    for (const name of ['grass', 'trees', 'waves'] as const) reg.setThrottle(name, 1000, false);
+    let dirty = 0;
+    for (let k = 0; k < 250; k++) if (reg.update(1 / 60)) dirty++;
+    expect(dirty).toBe(0); // four frozen ticks, nothing on screen changed
+    zoom = 10; // below every layer's minZoom: they hide, which IS a change
+    for (let k = 0; k < 61; k++) if (reg.update(1 / 60)) dirty++;
+    expect(dirty).toBe(1);
+    for (const layer of Object.values(layers)) layer.dispose();
+    materials.dispose();
   });
 });
 

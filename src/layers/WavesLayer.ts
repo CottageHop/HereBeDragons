@@ -112,6 +112,10 @@ export class WavesLayer extends Layer {
       for (const m of this.meshes) m.visible = shouldShow;
     }
     if (!this.shown || this.meshes.size === 0) return gateFlipped;
+    // A tick that advances no time — a frozen ambient layer's gate check (LayerRegistry
+    // setThrottle advance: false) — changes nothing on screen. Reporting it dirty forced a
+    // full redraw of every resident splat once a second on a map standing still.
+    if (!(dt > 0)) return gateFlipped;
     this.time += dt;
     this.material.uniforms.uTime.value = this.time;
     return true;
