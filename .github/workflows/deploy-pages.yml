@@ -14,13 +14,14 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
-# The demo's "3D Satellite" layer: Coeur d'Alene splat tiles plus that area's basemap, kept out of
-# git as a release asset (built by SplatMap's scripts/pack-tiles.sh) and served from this site.
-# The example's 3D Satellite button opens the region (VITE_SPLATS_REGION) and turns the layer on.
+# The demo's "3D Satellite" layer: Lower Manhattan splat tiles (lidar heights), kept out of git
+# as a release asset (built by SplatMap's scripts/build-region.sh + scripts/pack-tiles.sh) and
+# served from this site. They cover the example's default view, so the 3D Satellite button works
+# where the page opens; from anywhere else it jumps back to the region (VITE_SPLATS_REGION).
 env:
-  DEMO_TILES_RELEASE: demo-tiles-cda-v1
-  DEMO_TILES_ASSET: demo-tiles-cda.tar.gz
-  DEMO_TILES_SHA256: fe29aaa84567c04b3484cc3d39e7fa4c0c7d7065759df4a37ff525ef7d55b565
+  DEMO_TILES_RELEASE: demo-tiles-manhattan-v1
+  DEMO_TILES_ASSET: demo-tiles-manhattan.tar.gz
+  DEMO_TILES_SHA256: aa9915cc94d4e35176bdf6bc0e2c43eac212d7fc009b6e5578dc83e3c98b8eb5
 
 jobs:
   build:
@@ -48,9 +49,9 @@ jobs:
         env:
           VITE_SPLATS_TEMPLATE: /HereBeDragons/tiles/full/{z}/{x}/{y}.spz
           VITE_SPLATS_LITE_TEMPLATE: /HereBeDragons/tiles/lite/{z}/{x}/{y}.spz
-          VITE_SPLATS_REGION: 47.7079,-116.7709,15,cda.pmtiles
+          VITE_SPLATS_REGION: 40.7065,-74.009,15
 
-      - name: Add the tiles and basemap to the site
+      - name: Add the tiles to the site
         run: tar -xzf demo-tiles.tar.gz -C dist
 
       - uses: actions/configure-pages@v5
