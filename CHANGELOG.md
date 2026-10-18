@@ -6,6 +6,14 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Splats: detail stays put in motion.** With a cover level, every detail tile but the one under
+  the view focus used to hide while the camera moved (its coarse cover parent showing instead)
+  and dissolve back in at rest — so every touch of the map turned two thirds of the detail
+  blurry and back, and across a tile border the focus tile flipped as the centre crossed it
+  (`probe_border.mjs`: 18 hide/show changes per tile in six 40 px nudges). Detail tiles now
+  stay drawn, lite in motion. It cost nothing measurable any more: interleaved pans presented
+  57.6/57.6 fps (p95 21/21 ms) with the hiding and 57.9/57.7 fps (p95 19/28 ms) without — the
+  density LOD, one frame in flight and reprojection had taken over what hiding used to buy.
 - **Fixed: a page that awaits `createHereBeDragons()` at module top level hung when splats were
   configured** — the GitHub Pages demo did. `init()` waited for Spark's lazy import, and with
   `three` bundled into the entry chunk, Spark's chunk imports it from there: the entry cannot finish

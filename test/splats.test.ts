@@ -3406,7 +3406,7 @@ describe('SplatsLayer cover level', () => {
     expect(new Set(urls).size).toBe(urls.length);
   });
 
-  it('in motion, detail away from the view focus hides and the cover parent shows; it dissolves back in at rest', async () => {
+  it('in motion, every detail tile stays drawn (lite) over its cover parent; nothing to bring back at rest', async () => {
     const h = makeLayer({ cover: true, lowTierUrlTemplate: LITE });
     h.view.zoom = 16.5;
     h.setTime(1000);
@@ -3420,30 +3420,21 @@ describe('SplatsLayer cover level', () => {
       for (const r of roots) for (const c of r.children) if (c.name.startsWith(prefix)) out[c.name.slice(prefix.length)] = c.visible;
       return out;
     };
-    // moving: lite detail only under the focus (ORIGIN's z16 tile); the other 8 hide
+    // moving: all 9 detail tiles draw their lite mesh — none gives way to the cover
     h.layer.setCameraMoving(true);
     h.layer.setMotionDetail(0);
     h.layer.update();
     const lite = vis('splat-tile-lite:');
-    expect(lite['16/11614/23927']).toBe(true);
-    expect(Object.entries(lite).filter(([k, v]) => k.startsWith('16/') && v).length).toBe(1);
-    expect(Object.entries(lite).filter(([k, v]) => k.startsWith('16/') && !v).length).toBe(8);
-    // the parent's quadrants under hidden children are back to showing the parent
+    expect(Object.entries(lite).filter(([k, v]) => k.startsWith('16/') && v).length).toBe(9);
+    // the parent's quadrants stay handed to its children (1 = that child's detail covers it)
     let st = h.layer.getTransitionState();
-    const parent = st.tiles.find((t) => t.key === '15/5807/11963')!;
-    expect(parent.quad.filter((q) => q === 0).length).toBe(3);     // 3 of its 4 children hidden
-    // at rest: everything comes back, dissolving in from 0 over the parent
+    expect(st.tiles.find((t) => t.key === '15/5807/11963')!.quad).toEqual([1, 1, 1, 1]);
+    // at rest: the full meshes are back with no dissolve to wait for
     h.layer.setCameraMoving(false);
     h.layer.update();
     st = h.layer.getTransitionState();
-    const periph = st.tiles.find((t) => t.key === '16/11613/23927')!;
-    expect(periph.fade).toBeLessThan(0.5);
-    expect(vis('splat-tile:')['16/11613/23927']).toBe(true);
-    h.setTime(1000 + 3 * FADE);
-    await drain(h, 2);
-    st = h.layer.getTransitionState();
     expect(st.tiles.find((t) => t.key === '16/11613/23927')!.fade).toBe(1);
-    expect(st.tiles.find((t) => t.key === '15/5807/11963')!.quad).toEqual([1, 1, 1, 1]);
+    expect(vis('splat-tile:')['16/11613/23927']).toBe(true);
   });
 
   it('zooming out hands over: the cover level becomes the detail level, a new cover loads beneath, the old detail dissolves out', async () => {

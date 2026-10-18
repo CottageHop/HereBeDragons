@@ -458,9 +458,6 @@ interface SplatTile {
   camSet: boolean;
   /** The culling verdict (frustum + distance fade): whether a splat mesh is drawn at all. */
   cullDraw: boolean;
-  /** Motion LoD with a cover level: a detail tile away from the view focus hides while the camera
-   *  moves (its landed cover parent shows instead) and dissolves back in at rest. */
-  motionHidden: boolean;
   /** Imagery ground plane (null when imagery is off). */
   ground: THREE.Mesh | null;
   groundMaterial: THREE.ShaderMaterial | null;
@@ -1536,7 +1533,6 @@ export class SplatsLayer {
     if (this.disposed) return;
     const active = this.motionLodActive();
     const useLite = active && this.cameraMoving && this.motionDetail <= 0;
-    this.syncMotionHidden(useLite);
     if (useLite !== this.drawingLite) {
       this.drawingLite = useLite;
       // Lite → full while still moving (the detail ramp at the end of a glide): cross-fade rather
@@ -1671,47 +1667,12 @@ export class SplatsLayer {
     return false;
   }
 
-  /**
-   * Motion with a cover level: spend the moving frame's splats where the camera looks. While the
-   * lite set is drawn, a detail tile OTHER than the one under the view focus whose cover parent has
-   * landed is hidden — the parent (coarse, mostly blurred by the miniature in motion) shows there
-   * instead — and comes back at rest dissolving in from 0, so detail returns from the centre out.
-   * Measured without this: the cover's resident splats (even inactive ones) scale Spark's generate
-   * and depth passes, and a pan lost a quarter of its drawn frames; with it, motion carries the
-   * cover plus ONE lite detail tile, about what it carried before the cover existed.
-   */
-  private syncMotionHidden(useLite: boolean): void {
-    const cz = this.coverZ();
-    const za = this.activeZ;
-    let changed = false;
-    const now = this.clock();
-    const focus = za !== null && this.hasCenter ? this.centreAt(za) : null;
-    for (const tile of this.tiles.values()) {
-      let hide = false;
-      if (useLite && cz !== null && za !== null && tile.z === za && focus) {
-        const isFocus = tile.tileX === focus.x && tile.tileY === focus.y;
-        hide = !isFocus && this.isLanded(tileKey(cz, tile.tileX >> 1, tile.tileY >> 1));
-      }
-      if (hide === tile.motionHidden) continue;
-      tile.motionHidden = hide;
-      // Back at rest: dissolve in over the parent's quadrant rather than pop.
-      if (!hide && !tile.evicting) tile.fade = createFade(0, now);
-      this.applyMeshVisibility(tile);
-      changed = true;
-    }
-    if (changed) {
-      // The parents' quadrant fades follow the hidden set NOW, in the same frame as the hide —
-      // the level fade already ran this tick, and a quadrant with neither child nor parent drawn
-      // is a hole for a frame.
-      this.tickLevelFade();
-      this.onSceneChange();
-    }
-  }
-
-  /** Which of a tile's two meshes is drawn: the culling verdict, motion hiding, then motion LoD
-   *  (both meshes while the lite → full cross-fade runs). */
+  /** Which of a tile's two meshes is drawn: the culling verdict, then motion LoD (both meshes
+   *  while the lite → full cross-fade runs). Detail tiles stay drawn in motion, lite. They used to
+   *  give way to their cover parent away from the view focus, which flipped detail to the cover
+   *  and back at every touch, most visibly across tile borders, for no measurable frame gain. */
   private applyMeshVisibility(tile: SplatTile): void {
-    const show = tile.cullDraw && !tile.motionHidden;
+    const show = tile.cullDraw;
     const fading = this.swapFade !== null && !!tile.lite;
     const lite = (this.drawingLite || fading) && !!tile.lite;
     const full = !this.drawingLite || !tile.lite || fading;
@@ -2516,7 +2477,6 @@ export class SplatsLayer {
     const tile: SplatTile = {
       key, root, mesh, lite: null, liteState: 'none', objectModifier: dyno?.block ?? null,
       liteModifier: dyno?.liteBlock ?? null, camDyno: dyno?.cam ?? null, camSet: false, cullDraw: true,
-      motionHidden: false,
       ground, groundMaterial, groundTexture: null, splats,
       worldSize: tileMercator * t.scale,
       distFade: 1, lastSplatFade: 1, lastGroundFade: 1,
@@ -3509,8 +3469,7 @@ export class SplatsLayer {
           for (let cy = tile.tileY * 2; cy <= tile.tileY * 2 + 1; cy++) {
             const ck = tileKey(za, cx, cy);
             const child = this.tiles.get(ck);
-            // a child hidden for the motion (syncMotionHidden) leaves its quadrant to the parent
-            if (!child || !this.isLanded(ck) || child.motionHidden) continue;
+            if (!child || !this.isLanded(ck)) continue;
             const qi = childQuadrant(ref, { z: za, x: cx, y: cy });
             if (qi >= 0) quad[qi] = fadeValue(fadeProgress(child.fade, now, ms));
           }
