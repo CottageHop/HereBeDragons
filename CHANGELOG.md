@@ -4,6 +4,21 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+- **Splats fade out toward `minZoom` instead of blinking out.** Below `minZoom` (default 13) the
+  overlay is dropped; zooming out used to make every building vanish in one frame — and Safari's
+  wheel steps cross a whole zoom level in a flick. The splats and their imagery ground now ease
+  out over the 0.4 zoom levels above the threshold (and back in), so the vector map takes over.
+- **Experimental: `splats.engineLod` — Spark's own level of detail.** With tiles built with
+  Spark's LoD trees (SplatMap `scripts/build-lod-tiles.sh`, i.e. Spark's `build-lod`), Spark
+  picks one global set of splats per frame across all tiles by on-screen size, within
+  `engineLodSplats` — the frame cost is that budget, not the resident count (the technique game
+  engines use for virtualised geometry). Trees are not built in the browser: measured ~6 s per
+  300k-splat tile on an Intel i5, and WebKit froze under it. The density LOD steps aside and
+  `motionLod` halves the budget while the camera moves instead of swapping to the lite tiles.
+  Off by default.
+
 ## 0.11.1 — quiet at rest, sharp when zooming out
 
 - **Fixed: a map standing still redrew everything once a second while splats were on.** The

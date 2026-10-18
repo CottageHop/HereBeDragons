@@ -204,6 +204,12 @@ const RERANK_TILT_DEG = 10;
 const RERANK_ZOOM = 0.5;
 /** Most tiles held decoded-but-unattached by the prefetch. */
 const MAX_PREFETCHED = 2;
+/** Zoom levels above `minZoom` over which the overlay fades out (splats AND imagery ground, so the
+ *  vector map takes over) instead of vanishing at the threshold — Safari's wheel steps cross a
+ *  whole zoom level in a flick, and the 3D buildings blinked out at once. */
+const MIN_ZOOM_FADE_BAND = 0.4;
+/** Share of Spark's LoD budget drawn while the camera moves (`engineLod` + `motionLod`). */
+const ENGINE_LOD_MOTION_SCALE = 0.5;
 /** Imagery ground sits this far (scene metres) above the vector ground. */
 const GROUND_LIFT = 0.05;
 /**
@@ -305,6 +311,8 @@ export interface SparkSplatMeshOptions {
   fileBytes: ArrayBuffer | Uint8Array;
   fileType?: string;
   fileName?: string;
+  /** Build Spark's LoD tree for these splats on load (in its worker pool). */
+  lod?: boolean | number;
 }
 
 /** The subset of Spark's `SparkRenderer` this layer relies on. */
@@ -327,6 +335,9 @@ export interface SparkRendererLike extends THREE.Object3D {
   /** When the latest depth sort STARTED (Spark runs one at a time, so a new value means the one
    *  before it has landed). */
   lastSortTime?: number;
+  /** Live: Spark's LoD budget and its multiplier (see `splats.engineLod`). */
+  lodSplatCount?: number;
+  lodSplatScale?: number;
   dispose(): void;
 }
 
@@ -341,6 +352,8 @@ export interface SparkRendererOptionsLike {
   lodRenderScale?: number;
   /** Spark's level-of-detail driver (default on). */
   enableLod?: boolean;
+  /** Splats Spark's LoD draws per frame, across every LoD'd mesh (platform default). */
+  lodSplatCount?: number;
 }
 
 /** Shape of the (lazily imported) Spark module. */
@@ -529,6 +542,13 @@ function fullGuess(liteSplats: number, estimate: number): number {
   return Math.max(estimate, 2 * liteSplats);
 }
 
+/** Splats a tile holds resident under `engineLod`: its LoD tree (leaves and merged parents) — a
+ *  pre-built LoD file carries only the tree, a runtime build keeps the source splats beside it. */
+function lodTreeSplats(mesh: SparkSplatMeshLike): number {
+  const ps = mesh.packedSplats as { numSplats?: number; lodSplats?: { numSplats?: number } } | undefined;
+  return (ps?.numSplats ?? 0) + (ps?.lodSplats?.numSplats ?? 0) || mesh.numSplats || 0;
+}
+
 function defaultPrefersReducedMotion(): boolean {
   try {
     return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -649,6 +669,9 @@ export class SplatsLayer {
   /** Screen-space density LOD (`splats.densityLod`): target spacing in device px (0 = off), the
    *  shared `(focal / target)²` uniform, the camera position it was last synced for, and scratch. */
   private densityLod: number;
+  /** Spark's own LoD (see `splats.engineLod`): tiles load with an LoD tree, Spark draws a budget. */
+  private engineLod: boolean;
+  private engineLodSplats: number;
   private densityDyno: DynoUniformLike<number> | null = null;
   private readonly lodCamPos = new THREE.Vector3(Number.NaN, 0, 0);
   private readonly lodMat = new THREE.Matrix4();
@@ -858,6 +881,8 @@ export class SplatsLayer {
   private lowTierSplatMaxDistance: number;
   private splatFadeMs: number;
   private lastCullMs = 0;
+  /** Fade-out toward `minZoom` (see MIN_ZOOM_FADE_BAND): 1 above the band, 0 at the threshold. */
+  private zoomFade = 1;
   private readonly cullCentre = new THREE.Vector3();
   private readonly cullFrustum = new THREE.Frustum();
   private readonly cullBox = new THREE.Box3();
@@ -913,6 +938,8 @@ export class SplatsLayer {
     this.hideBasemap = o.hideBasemap;
     this.keepLabels = o.keepLabels;
     this.densityLod = o.densityLod;
+    this.engineLod = o.engineLod;
+    this.engineLodSplats = o.engineLodSplats;
     this.cover = o.cover;
     this.cullBackFaces = o.cullBackFaces;
     this.governor = new FrameGovernor({
@@ -981,7 +1008,8 @@ export class SplatsLayer {
         // Our tiles are plain .spz with no LoD trees (the pyramid IS the level of detail).
         // Spark's LoD driver would still run on every update and hand an empty job to a
         // dedicated LoD worker each frame — a thread woken per frame for nothing.
-        enableLod: false
+        enableLod: this.engineLod,
+        ...(this.engineLod && this.engineLodSplats > 0 ? { lodSplatCount: this.engineLodSplats } : {})
       });
       sr.name = 'hbd-splats:spark-renderer';
       sr.layers.set(SPLAT_THREE_LAYER);
@@ -1216,6 +1244,8 @@ export class SplatsLayer {
     this.governor.setThinLadder(o.motionThin ? MOTION_THIN_LADDER : []);
     this.syncThin();
     this.densityLod = o.densityLod;
+    this.engineLod = o.engineLod;
+    this.engineLodSplats = o.engineLodSplats;
     this.tickDensityLod();
     if (o.cullBackFaces !== this.cullBackFaces) {
       this.cullBackFaces = o.cullBackFaces;
@@ -1244,6 +1274,7 @@ export class SplatsLayer {
     this.sortIntervalMs = o.sortIntervalMs;
     if (this.sparkRenderer) {
       this.sparkRenderer.maxStdDev = this.maxStdDev;
+      this.syncEngineLod();
       this.sparkRenderer.minSortIntervalMs = this.currentSortIntervalMs();
     }
 
@@ -1492,7 +1523,8 @@ export class SplatsLayer {
     if (!d || this.disposed) return;
     const cam = this.getCamera?.() as (THREE.Camera & { fov?: number }) | null | undefined;
     let density = 0;
-    if (this.densityLod > 0 && cam && typeof cam.fov === 'number') {
+    // Spark's own LoD (engineLod) already sizes detail to the screen: the density LOD steps aside.
+    if (this.densityLod > 0 && !this.engineLod && cam && typeof cam.fov === 'number') {
       let heightPx = this.renderHeightPx?.() ?? 0;
       if (!(heightPx > 0) && typeof this.renderer.getDrawingBufferSize === 'function') {
         this.renderer.getDrawingBufferSize(this.lodSize);
@@ -1522,6 +1554,19 @@ export class SplatsLayer {
     }
   }
 
+  /** Spark's LoD driver follows `engineLod`; its budget follows `engineLodSplats` (0 = Spark's). */
+  private syncEngineLod(): void {
+    const sr = this.sparkRenderer as (SparkRendererLike & { enableLod?: boolean; enableDriveLod?: boolean }) | null;
+    if (!sr) return;
+    if (sr.enableLod !== this.engineLod) {
+      sr.enableLod = this.engineLod;
+      sr.enableDriveLod = this.engineLod;
+    }
+    if (this.engineLod && this.engineLodSplats > 0 && sr.lodSplatCount !== this.engineLodSplats) {
+      sr.lodSplatCount = this.engineLodSplats;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Motion LoD
   // -------------------------------------------------------------------------
@@ -1539,6 +1584,13 @@ export class SplatsLayer {
    */
   setCameraMoving(moving: boolean): void {
     this.cameraMoving = moving;
+    // Spark's LoD (engineLod): a moving picture draws half the budget — the same trade as the lite
+    // twins, without a second set of tiles resident or a swap to show. Back to all of it at rest.
+    const sr = this.sparkRenderer;
+    if (this.engineLod && sr) {
+      const scale = moving && this.motionLod ? ENGINE_LOD_MOTION_SCALE : 1;
+      if (sr.lodSplatScale !== scale) sr.lodSplatScale = scale;
+    }
   }
 
   /**
@@ -1553,7 +1605,8 @@ export class SplatsLayer {
   }
 
   private motionLodActive(): boolean {
-    return this.motionLod && !!this.lowTierUrlTemplate && !this.lowTier && this.isActive();
+    // Under Spark's own LoD the motion detail rides on its budget instead (see setCameraMoving).
+    return this.motionLod && !!this.lowTierUrlTemplate && !this.lowTier && !this.engineLod && this.isActive();
   }
 
   private tickMotionLod(): void {
@@ -1705,7 +1758,7 @@ export class SplatsLayer {
         tile.liteState = 'ready';
         tile.fromLite = false;
         tile.upgrade = 'none';
-        tile.splats = full.numSplats ?? full.packedSplats?.numSplats ?? tile.splats;
+        tile.splats = this.engineLod ? lodTreeSplats(full) : (full.numSplats ?? full.packedSplats?.numSplats ?? tile.splats);
         tile.root.add(full);
         tile.root.add(liteMesh);
         this.applyMeshVisibility(tile);
@@ -1974,6 +2027,7 @@ export class SplatsLayer {
     this.tickCulling();
     if (!this.isActive() || !this.opened) return;
     const view = this.camera.getView();
+    this.syncZoomFade(view.zoom);
     if (view.zoom < this.minZoom) {
       // Zoomed back out below the threshold — drop everything so we don't
       // keep megabytes of splat textures resident off-screen.
@@ -2598,7 +2652,9 @@ export class SplatsLayer {
     }
     root.updateMatrixWorld(true);
 
-    const splats = mesh.numSplats ?? mesh.packedSplats?.numSplats ?? 0;
+    // With an LoD tree (engineLod) Spark's numSplats is what the LoD driver picked last; what the
+    // tile holds resident is its tree (see lodTreeSplats).
+    const splats = this.engineLod ? lodTreeSplats(mesh) : (mesh.numSplats ?? mesh.packedSplats?.numSplats ?? 0);
     const tile: SplatTile = {
       key, root, mesh, lite: null, liteState: 'none', objectModifier: dyno?.block ?? null,
       liteModifier: dyno?.liteBlock ?? null, camDyno: dyno?.cam ?? null, camSet: false, cullDraw: true,
@@ -3440,7 +3496,9 @@ export class SplatsLayer {
     tile.lastGroundFade = ground;
     // The distance cutoff rides on top of the level fade, and only on the SPLATS — the imagery
     // ground plane keeps drawing out there, which is the whole point of the cutoff.
-    splat *= tile.distFade;
+    splat *= tile.distFade * this.zoomFade;
+    // …and the fade toward `minZoom` takes the ground too: below it the vector map is all there is.
+    ground *= this.zoomFade;
     if (tile.fadeDyno && tile.fadeDyno.value !== splat) {
       tile.fadeDyno.value = splat;
       bump = true;
@@ -3887,6 +3945,16 @@ export class SplatsLayer {
     const candidates = [this.splatMaxDistance, this.governor.splatMaxDistance, tierFloor]
       .filter((d) => d > 0);
     return candidates.length ? Math.min(...candidates) : 0;
+  }
+
+  /** Ease the overlay out over the band above `minZoom` (and back in): splats and ground. */
+  private syncZoomFade(zoom: number): void {
+    const t = Math.min(1, Math.max(0, (zoom - this.minZoom) / MIN_ZOOM_FADE_BAND));
+    const want = t * t * (3 - 2 * t);
+    if (Math.abs(want - this.zoomFade) < 1e-3) return;
+    this.zoomFade = want;
+    for (const tile of this.tiles.values()) this.writeFade(tile, tile.lastSplatFade, tile.lastGroundFade);
+    this.onSceneChange();
   }
 
   /** Per-frame step of the distance fade (see `splatFadeMs`). */

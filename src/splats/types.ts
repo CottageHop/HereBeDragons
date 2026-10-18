@@ -447,6 +447,22 @@ export interface SplatsConfig {
    */
   cullBackFaces?: boolean;
   /**
+   * EXPERIMENTAL — Spark's own level of detail instead of drawing every resident splat. Tiles
+   * built with Spark's LoD trees (SplatMap `scripts/build-lod-tiles.sh`, Spark's `build-lod`)
+   * draw through them: every frame Spark picks one global set across all tiles by on-screen size
+   * — leaves near the camera, merged parents far away — within `engineLodSplats`, so the frame
+   * cost is that budget, not the resident count. Trees are not built in the browser (measured:
+   * ~6 s per 300k-splat tile on an Intel i5, and WebKit froze under it); tiles without one draw as
+   * before. The density LOD steps aside, and `motionLod` halves the budget while the camera moves
+   * instead of swapping to the lite tiles. Default `false`.
+   */
+  engineLod?: boolean;
+  /**
+   * Splats Spark's LoD draws per frame, across all tiles (`engineLod`). `0` (the default) leaves
+   * Spark's platform default.
+   */
+  engineLodSplats?: number;
+  /**
    * Animation clock used by the reveal animations (milliseconds, monotonic).
    * Defaults to `performance.now`. Injectable so tools and tests can freeze or
    * scrub the ripple.

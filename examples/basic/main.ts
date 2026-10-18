@@ -139,6 +139,12 @@ const splats = splatsTemplate
         };
       })(),
       maxSplats: numParam('maxSplats'),
+      // `&maxInFlight=` caps concurrent tile fetches + decodes (default 4).
+      maxInFlight: numParam('maxInFlight'),
+      // `&engineLod=1` (experimental): Spark's own LoD — tiles load with an LoD tree and Spark
+      // draws `&lodSplats=` splats a frame across all of them (0 / absent = Spark's default).
+      ...(url.searchParams.get('engineLod') === '1' ? { engineLod: true } : {}),
+      engineLodSplats: numParam('lodSplats'),
       // `&sortIntervalMs=` spaces Spark's depth re-sorts (default 100; the low tiers use >= 250)
       sortIntervalMs: numParam('sortIntervalMs'),
       // `&budgetGrowth=2` lets the governor grow the budget past `maxSplats` on a device
@@ -237,8 +243,12 @@ const map = await createHereBeDragons(container, {
   pixelRatio,
   dynamicResolution,
   msaa,
-  // `&framePacing=0` submits a frame every tick even while splats are resident (A/B only).
-  ...(url.searchParams.get('framePacing') === '0' ? { performance: { framePacing: false } } : {})
+  // `&framePacing=0` submits a frame every tick even while splats are resident (A/B only);
+  // `&workers=N` sizes the vector-tile worker pool (default min(4, cores − 1)).
+  performance: {
+    ...(url.searchParams.get('framePacing') === '0' ? { framePacing: false } : {}),
+    ...(numParam('workers') ? { workerPoolSize: numParam('workers') } : {})
+  }
 });
 
 // --- live HUD: FPS + active quality tier + pixelRatio --------------------

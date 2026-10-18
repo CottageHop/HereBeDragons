@@ -74,6 +74,8 @@ export const SPLATS_DEFAULTS = Object.freeze({
   miniature: false,
   cover: true,
   cullBackFaces: true,
+  engineLod: false,
+  engineLodSplats: 0,
   governor: true,
   targetFrameMs: 33,
   budgetGrowth: 1,
@@ -153,6 +155,8 @@ export interface ResolvedSplatsOptions {
   miniature: boolean;
   cover: boolean;
   cullBackFaces: boolean;
+  engineLod: boolean;
+  engineLodSplats: number;
   governor: boolean;
   targetFrameMs: number;
   budgetGrowth: number;
@@ -326,6 +330,8 @@ export function resolveSplatsOptions(
     miniature: c.miniature === true,
     cover: c.cover !== false,
     cullBackFaces: c.cullBackFaces !== false,
+    engineLod: c.engineLod === true,
+    engineLodSplats: nonNegativeOr(c.engineLodSplats, SPLATS_DEFAULTS.engineLodSplats),
     governor: c.governor !== false,
     targetFrameMs: isNum(c.targetFrameMs) && c.targetFrameMs >= MIN_TARGET_FRAME_MS
       ? c.targetFrameMs
@@ -400,7 +406,9 @@ export const SPLATS_REBUILD_KEYS: ReadonlySet<SplatsOptionKey> = new Set<SplatsO
   'urlTemplate',
   'lowTierUrlTemplate',
   'imageryTemplate',
-  'roundedUnion.enabled'
+  'roundedUnion.enabled',
+  // tiles carry an LoD tree only when loaded with one
+  'engineLod'
 ]);
 
 /** Which options differ between two resolved configs. */
@@ -412,7 +420,7 @@ export function diffSplatsOptions(
   const scalar = [
     'urlTemplate', 'lowTierUrlTemplate', 'enabled', 'minZoom', 'minTileZoom', 'maxTileZoom', 'lodBias', 'lowTierLodBias',
     'maxCameraZoom', 'maxCameraTilt', 'radius', 'maxInFlight', 'maxSplats', 'lowTierMaxSplats', 'maxStdDev',
-    'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'visibleFirst', 'splatMaxDistance', 'lowTierSplatMaxDistance', 'splatFadeMs', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'governor', 'targetFrameMs', 'budgetGrowth',
+    'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'visibleFirst', 'splatMaxDistance', 'lowTierSplatMaxDistance', 'splatFadeMs', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'engineLod', 'engineLodSplats', 'governor', 'targetFrameMs', 'budgetGrowth',
     'levelFadeMs', 'transitionOvershoot', 'prefetchBand', 'levelSelection', 'resolutionMargin', 'resolutionTiltAware'
   ] as const;
   for (const k of scalar) if (prev[k] !== next[k]) changed.push(k);
@@ -508,6 +516,8 @@ export function exportSplatsOptions(o: ResolvedSplatsOptions): SplatsConfig | un
   if (o.miniature !== D.miniature) out.miniature = o.miniature;
   if (o.cover !== D.cover) out.cover = o.cover;
   if (o.cullBackFaces !== D.cullBackFaces) out.cullBackFaces = o.cullBackFaces;
+  if (o.engineLod !== D.engineLod) out.engineLod = o.engineLod;
+  if (o.engineLodSplats !== D.engineLodSplats) out.engineLodSplats = o.engineLodSplats;
   if (o.governor !== D.governor) out.governor = o.governor;
   if (o.targetFrameMs !== D.targetFrameMs) out.targetFrameMs = o.targetFrameMs;
   if (!near(o.budgetGrowth, D.budgetGrowth)) out.budgetGrowth = o.budgetGrowth;
@@ -535,7 +545,7 @@ export function exportSplatsOptions(o: ResolvedSplatsOptions): SplatsConfig | un
 const LITERAL_KEYS: ReadonlyArray<Exclude<keyof SplatsConfig, 'clock'>> = [
   'urlTemplate', 'imageryTemplate', 'enabled', 'minZoom', 'zoomLevel', 'minTileZoom', 'maxTileZoom',
   'lodBias', 'lowTierLodBias', 'maxCameraZoom', 'maxCameraTilt', 'radius', 'maxInFlight', 'maxSplats', 'lowTierMaxSplats',
-  'maxStdDev', 'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'governor', 'targetFrameMs', 'budgetGrowth',
+  'maxStdDev', 'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'engineLod', 'engineLodSplats', 'governor', 'targetFrameMs', 'budgetGrowth',
   'levelFadeMs', 'transitionOvershoot', 'prefetchBand', 'roundedUnion', 'reveal',
   'levelSelection', 'resolutionMargin', 'resolutionTiltAware'
 ];

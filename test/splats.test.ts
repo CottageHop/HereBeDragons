@@ -420,6 +420,15 @@ class FakeSplatMesh extends THREE.Object3D {
 }
 class FakeSparkRenderer extends THREE.Object3D {
   disposed = false;
+  enableLod?: boolean;
+  lodSplatCount?: number;
+  lodSplatScale?: number;
+  constructor(opts?: { enableLod?: boolean; lodSplatCount?: number }) {
+    super();
+    this.enableLod = opts?.enableLod;
+    this.lodSplatCount = opts?.lodSplatCount;
+    this.lodSplatScale = 1;
+  }
   dispose(): void {
     this.disposed = true;
   }
@@ -642,6 +651,26 @@ describe('SplatsLayer', () => {
     h.view.zoom = 14;
     h.layer.update();
     expect(h.layer.getStats().tiles).toBe(0);
+  });
+
+  it('fades splats and imagery out over the band above minZoom instead of blinking out', async () => {
+    const h = makeLayer({ minZoom: 15, zoomLevel: 16 }); // one level throughout: the fade alone
+    await h.layer.open();
+    h.view.zoom = 16;
+    await drain(h);
+    type T = { fadeDyno: { value: number } | null; fadeU: { uLevelFade: { value: number } } | null };
+    const tiles = (h.layer as unknown as { tiles: Map<string, T> }).tiles;
+    const one = (): T => [...tiles.values()][0];
+    expect(one().fadeDyno!.value).toBe(1);
+    h.view.zoom = 15.2; // halfway down the 0.4-level band: smoothstep(0.5) = 0.5
+    h.layer.update();
+    expect(h.layer.getStats().tiles).toBe(9); // still resident — fading, not gone
+    expect(one().fadeDyno!.value).toBeCloseTo(0.5, 5);
+    expect(one().fadeU!.uLevelFade.value).toBeCloseTo(0.5, 5); // the imagery ground fades with it
+    h.view.zoom = 15.5; // back above the band
+    h.layer.update();
+    expect(one().fadeDyno!.value).toBe(1);
+    expect(one().fadeU!.uLevelFade.value).toBe(1);
   });
 
   it('loads the z16 window at the fixed authored zoom and places each tile', async () => {
@@ -3325,6 +3354,37 @@ describe('lowTierUrlTemplate', () => {
   });
 });
 
+
+describe('SplatsLayer engineLod (Spark\'s own level of detail)', () => {
+  const LITE = 'https://lite.test/{z}/{x}/{y}.spz';
+  type SR = { enableLod?: boolean; lodSplatCount?: number; lodSplatScale?: number };
+  const sr = (h: Harness): SR => (h.layer as unknown as { sparkRenderer: SR }).sparkRenderer;
+
+  it('turns Spark\'s LoD driver on with the budget, halves it while moving, and swaps to no lite tiles', async () => {
+    const h = makeLayer({ engineLod: true, engineLodSplats: 500_000, lowTierUrlTemplate: LITE });
+    await h.layer.open();
+    expect(sr(h)).toMatchObject({ enableLod: true, lodSplatCount: 500_000, lodSplatScale: 1 });
+    h.view.zoom = 16.5;
+    await drain(h, 30);
+    h.layer.setCameraMoving(true);
+    expect(sr(h).lodSplatScale).toBe(0.5);
+    await drain(h, 10);
+    h.layer.setCameraMoving(false);
+    expect(sr(h).lodSplatScale).toBe(1);
+    await drain(h, 10);
+    // the motion detail rides on the budget: no lite twins fetched, none drawn
+    expect(h.fetchTile.mock.calls.some(([u]) => u.startsWith('https://lite.test/'))).toBe(false);
+    expect(h.meshes().some((m) => m.name.startsWith('splat-tile-lite:'))).toBe(false);
+  });
+
+  it('off (the default) leaves Spark\'s LoD driver off and the lite twins in charge of motion', async () => {
+    const h = makeLayer({ lowTierUrlTemplate: LITE });
+    await h.layer.open();
+    expect(sr(h).enableLod).toBe(false);
+    h.layer.setCameraMoving(true);
+    expect(sr(h).lodSplatScale).toBe(1);
+  });
+});
 
 describe('SplatsLayer cover level', () => {
   const FADE = 350;
