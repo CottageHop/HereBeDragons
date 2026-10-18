@@ -76,6 +76,12 @@ import * as THREE from 'three';
 import { MINIATURE_IMAGERY_TILT_SHIFT, resolveTiltShift, type TiltShiftSettings } from './rendering/TiltShiftPass.js';
 import { approach, prefersReducedMotion, tauFor, DURATION, EASE, progress } from './core/motion.js';
 import { logger } from './util/log.js';
+import {
+  AUTO_MOTION_RES_FRAME_MS,
+  createAutoMotionResState,
+  stepAutoMotionResolution,
+  type AutoMotionResState
+} from './rendering/autoMotionResolution.js';
 
 type EventMap = {
   ready: HereBeDragonsEventPayload;
@@ -408,6 +414,13 @@ class HereBeDragonsImpl implements HereBeDragons {
   /** Consecutive over-budget frames since the warmup ended. */
   private autoDowngradeStreak = 0;
   /**
+   * Auto motion resolution (see rendering/autoMotionResolution): the gentle step before the
+   * auto-downgrade. Null when it may not act — a pinned quality, an explicit
+   * `dynamicResolution` / `pixelRatio`, or `setDynamicResolution()` called.
+   */
+  private autoMotionRes: AutoMotionResState | null = null;
+  private readonly autoMotionResFrameMs: number;
+  /**
    * Whether the RAF loop is allowed to call `setQualityTier('high')` after
    * observing sustained fast frames on `'low'`. True for `quality: 'auto'`
    * starts (the default), false for explicit `'low'` / `'high'`. Reset to
@@ -693,6 +706,12 @@ class HereBeDragonsImpl implements HereBeDragons {
     // better trade-off than continuing to crawl. Much more lenient than
     // `frameBudgetMs` (22 ms, ~45 FPS) which only throttles tile loading.
     this.autoDowngradeFrameMs = options.performance?.autoDowngradeFrameMs ?? 67;
+    // Before any of that: a slow GPU behind a HiDPI screen first renders its MOVING frames at 1×
+    // (the picture at rest stays crisp). Only when nobody chose — see autoMotionResolution.ts.
+    this.autoMotionRes = isAuto && options.dynamicResolution === undefined && options.pixelRatio === undefined
+      ? createAutoMotionResState()
+      : null;
+    this.autoMotionResFrameMs = options.performance?.autoMotionResFrameMs ?? AUTO_MOTION_RES_FRAME_MS;
 
     this.source = new PMTilesSource(options.pmtiles_url);
     this.workerPool = new TileWorkerPool({ size: options.performance?.workerPoolSize });
@@ -1545,6 +1564,25 @@ class HereBeDragonsImpl implements HereBeDragons {
           now - this.lastCameraMotionMs < HereBeDragonsImpl.SPLATS_MOTION_WINDOW_MS
         );
 
+        // Auto motion resolution: judged on the PLAIN map's moving frames (the splats overlay
+        // runs dynamic resolution already). Once it fires, the flat 'low' tier is judged afresh
+        // on the cheaper frames.
+        if (this.autoMotionRes && !this.leanMapActive && !this.dynamicResolutionEnabled
+          && now - this.lastCameraMotionMs < HereBeDragonsImpl.SPLATS_MOTION_WINDOW_MS
+          && stepAutoMotionResolution(this.autoMotionRes, this.smoothedFrameMs, this.autoMotionResFrameMs)) {
+          this.autoMotionRes = null;
+          if (this.effectivePixelRatio > HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP) {
+            logger.info(
+              `auto motion resolution: smoothed moving frame ${this.smoothedFrameMs.toFixed(1)} ms ≥ ` +
+              `${this.autoMotionResFrameMs} ms → moving frames render at ` +
+              `${HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP}×, the picture at rest stays ${this.effectivePixelRatio}×`
+            );
+            this.applyDynamicResolution(true);
+            this.autoDowngradeFrameCount = 0;
+            this.autoDowngradeStreak = 0;
+          }
+        }
+
         // Auto-upgrade: 'auto' mode starts on 'low' and promotes once we
         // see sustained fast frames AFTER the warmup. Counters advance only
         // on rendering frames so the warmup is "120 frames of real work,"
@@ -1909,6 +1947,12 @@ class HereBeDragonsImpl implements HereBeDragons {
   }
 
   setDynamicResolution(on: boolean): void {
+    // The app decides from here on: the auto step (autoMotionResolution) stands down.
+    this.autoMotionRes = null;
+    this.applyDynamicResolution(on);
+  }
+
+  private applyDynamicResolution(on: boolean): void {
     // A pinned `pixelRatio` means "exactly this, always" — honour it.
     if (this.pixelRatioExplicit !== undefined) return;
     if (on === this.dynamicResolutionEnabled) return;
@@ -2471,7 +2515,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       this.cloudsEnabled = false;
       this.composer.setCloudsEnabled(false);
       this.composer.setOutlineEnabled(false);
-      this.setDynamicResolution(true);
+      this.applyDynamicResolution(true);
     } else {
       const saved = this.leanSaved;
       this.leanSaved = null;
@@ -2479,7 +2523,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       if (saved) {
         this.cloudsEnabled = saved.clouds;
         this.composer.setCloudsEnabled(saved.clouds);
-        this.setDynamicResolution(saved.dynamicResolution);
+        this.applyDynamicResolution(saved.dynamicResolution);
       }
     }
     // The neutral grade's base saturation depends on whether outlines run.

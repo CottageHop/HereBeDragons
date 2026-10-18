@@ -432,6 +432,17 @@ export interface HereBeDragonsOptions {
      * renderer) but the machine is genuinely too slow for the desktop tier.
      */
     autoDowngradeFrameMs?: number;
+    /**
+     * Smoothed MOVING-frame threshold (ms) of the plain map above which moving frames switch to
+     * 1× rendering (dynamic resolution) for the rest of the session, while the picture at rest
+     * keeps the full pixel ratio. Default 25 ms (≈ 40 FPS). The gentle first step for a slow GPU
+     * behind a HiDPI screen — e.g. an Intel Iris MacBook in Safari, which redacts the GPU name so
+     * `quality: 'auto'` starts it on `'high'` — before the `autoDowngradeFrameMs` fall to the
+     * flat `'low'` tier. Fires once, only under `quality: 'auto'` with neither
+     * `dynamicResolution` nor `pixelRatio` given, and only on a display above 1×.
+     * `setDynamicResolution()` takes over from it.
+     */
+    autoMotionResFrameMs?: number;
   };
 }
 

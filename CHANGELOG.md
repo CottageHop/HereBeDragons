@@ -14,6 +14,16 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   splats over Lower Manhattan) — a hitch every second on a map nobody was touching, and a busy GPU.
   A tick that advances no time now reports only a zoom-gate flip. Measured at rest: 1 render a
   second → none, no long frames.
+- **Slow GPU behind a HiDPI screen: moving frames drop to 1× before anything else
+  (`performance.autoMotionResFrameMs`, default 25 ms).** Safari reports every Mac's GPU as
+  "Apple GPU", so `quality: 'auto'` started an Intel Iris MacBook on `'high'`: the plain map at
+  2× panned at ~45 ms a frame (WebKit), and the only automatic answer was the fall to the flat
+  `'low'` tier below 15 fps. Now, under `'auto'` with neither `dynamicResolution` nor `pixelRatio`
+  given, once the plain map's moving frames stay slower than the threshold, moving frames render
+  at 1× (dynamic resolution) for the rest of the session while the picture at rest keeps the full
+  ratio (the settle dissolve brings it back). Measured on the same machine: pans ~45 → ~30 ms a
+  frame (p50 44 → 27–29 ms). `setDynamicResolution()` takes over from it.
+
 ## 0.11.0 — sharper, steadier splats
 
 - **Splats: the miniature look is now opt-in (`splats.miniature`, default `false`).** Its
