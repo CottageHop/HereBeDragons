@@ -35,9 +35,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   `init()` without blocking it; the overlay already does nothing until Spark is in, so the map's
   promise (and `ready`) no longer wait for it.
 - **Demo:** the GitHub Pages build serves Lower Manhattan's splat tiles (lidar heights; release
-  asset `demo-tiles-manhattan-v1`, built by SplatMap). They cover the example's default view, so
+  asset `demo-tiles-manhattan-v2`, built by SplatMap). They cover the example's default view, so
   the "3D Satellite" button works where the page opens; pressed anywhere else it jumps back to
-  the region with the layer on (`VITE_SPLATS_REGION`, `?satellite=1`).
+  the region with the layer on (`VITE_SPLATS_REGION`, `?satellite=1`). The tiles hold at most
+  300k splats each: v1's 450k tower tiles let only two detail tiles into the high tier's 1.2M
+  budget, so the rest of the foreground drew from the coarse cover level and looked soft; four
+  fit now, at the same 60 fps.
 
 ## 0.10.1 — late `ready` listeners fire
 

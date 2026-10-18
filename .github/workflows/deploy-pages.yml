@@ -19,9 +19,9 @@ concurrency:
 # served from this site. They cover the example's default view, so the 3D Satellite button works
 # where the page opens; from anywhere else it jumps back to the region (VITE_SPLATS_REGION).
 env:
-  DEMO_TILES_RELEASE: demo-tiles-manhattan-v1
-  DEMO_TILES_ASSET: demo-tiles-manhattan.tar.gz
-  DEMO_TILES_SHA256: aa9915cc94d4e35176bdf6bc0e2c43eac212d7fc009b6e5578dc83e3c98b8eb5
+  DEMO_TILES_RELEASE: demo-tiles-manhattan-v2
+  DEMO_TILES_ASSET: demo-tiles-manhattan-v2.tar.gz
+  DEMO_TILES_SHA256: 1882006427e58cbe7543ab83443b0103d8af79b6a5148f738abdecb37142b0a5
 
 jobs:
   build:
