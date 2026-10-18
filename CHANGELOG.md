@@ -4,7 +4,7 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.12.0 — steady in Safari
 
 - **Splats: motion LoD twins are opt-in (`splats.motionLod`, default `false`).** With a lite
   pyramid every resident tile also loaded its lite twin to draw while the camera moved. Measured
