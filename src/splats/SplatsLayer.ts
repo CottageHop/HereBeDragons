@@ -1431,7 +1431,9 @@ export class SplatsLayer {
   /** Budget in effect: the quality tier's, times the governor's scale. */
   private currentMaxSplats(): number {
     const base = this.lowTier ? this.lowTierMaxSplats : this.maxSplats;
-    return Math.round(base * this.governor.scale);
+    // With building meshes the splats are the trees: the governor thins them (thinKeep, the
+    // distance cutoff) instead of taking tiles away — a tile it drops takes its buildings along.
+    return Math.round(base * (this.buildingMeshes ? 1 : this.governor.scale));
   }
 
   /** Fade length in effect: the configured one, or 0 under reduced motion.
@@ -1504,7 +1506,10 @@ export class SplatsLayer {
 
   /** LOD bias in effect: the quality tier's, less the governor's reduction. */
   private currentLodBias(): number {
-    return (this.lowTier ? this.lowTierLodBias : this.lodBias) - this.governor.biasDrop;
+    // …and it never steps a level down under building meshes: the coarser level's splats are the
+    // blurriest data there is (measured in Safari on an Intel Iris: z16 → z15 with no detail tile
+    // left, and no recovery — that needs 4 s of moving frames under 23 ms).
+    return (this.lowTier ? this.lowTierLodBias : this.lodBias) - (this.buildingMeshes ? 0 : this.governor.biasDrop);
   }
 
   /** The ACTIVE pyramid level — the `{z}` being requested (`maxTileZoom`

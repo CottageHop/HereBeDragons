@@ -3408,6 +3408,25 @@ describe('SplatsLayer buildingMeshes (buildings as textured meshes)', () => {
     expect(buildingNames(h)).toEqual([]);
   });
 
+  it('the frame governor thins the trees but never takes tiles or a level away from building meshes', async () => {
+    const h = makeLayer({ buildingMeshes: true, maxSplats: 600 });
+    await h.layer.open();
+    type L = { governor: { scaleV: number; biasDropV: number }; currentMaxSplats(): number; currentLodBias(): number };
+    const l = h.layer as unknown as L;
+    const bias = l.currentLodBias();
+    l.governor.scaleV = 0.25;   // a slow GPU: the governor at its floor…
+    l.governor.biasDropV = 1;   // …and a level down
+    expect(l.currentMaxSplats()).toBe(600);
+    expect(l.currentLodBias()).toBe(bias);
+    const plain = makeLayer({ maxSplats: 600 });
+    await plain.layer.open();
+    const p = plain.layer as unknown as L;
+    p.governor.scaleV = 0.25;
+    p.governor.biasDropV = 1;
+    expect(p.currentMaxSplats()).toBe(150); // splat buildings: the governor's cuts apply as before
+    expect(p.currentLodBias()).toBe(bias - 1);
+  });
+
   it('off (the default) asks for no .bldg', async () => {
     const h = makeLayer();
     await h.layer.open();
