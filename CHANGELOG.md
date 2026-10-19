@@ -6,6 +6,10 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Splat tiles' ground imagery without colour fringes.** Aerial imagery's colour bands are a little
+  misregistered, so every shadow edge carried a purple / green halo that showed once the camera
+  came close (it can now, under `buildingMeshes`). The ground keeps its luminance sharp and takes
+  its colour from two mip levels softer.
 - **Building meshes: houses.** Homes are meshes now too (SplatMap HBDB version 3), keeping the roof
   structure the roof analysis found — gable, hip and shed planes — carried past the walls as
   eaves and rakes with fascia boards, and laid with roofing along each plane: shingle courses,

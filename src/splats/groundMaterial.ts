@@ -125,6 +125,13 @@ const FRAG = /* glsl */ `
   ${ROUNDED_UNION_GLSL}
   void main() {
     vec4 tex = texture2D(map, vUv);
+    // Aerial imagery's colour bands are a little misregistered: every shadow edge has a colour
+    // fringe, purple and green halos once the camera is close. Keep the luminance sharp and take
+    // the colour from two mip levels softer (a bias, so it scales with the view).
+    vec3 soft = texture2D(map, vUv, 2.0).rgb;
+    float luma = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
+    float softLuma = dot(soft, vec3(0.299, 0.587, 0.114));
+    tex.rgb = clamp(soft * min(luma / max(softLuma, 0.02), 4.0), 0.0, 1.0);
     vec3 color = mix(uFallback, tex.rgb, uHasMap);
     float alpha = 1.0;
     if (uActive > 0.5) {
