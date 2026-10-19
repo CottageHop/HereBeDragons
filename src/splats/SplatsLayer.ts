@@ -526,6 +526,8 @@ interface SplatTile {
   /** The tile's buildings as a textured mesh (`splats.buildingMeshes`), null until / unless loaded. */
   buildings: THREE.Mesh | null;
   buildingMaterial: THREE.ShaderMaterial | null;
+  /** World height of the tallest of `buildings` (0 until they load). */
+  buildingTop: number;
   /** The splats were released after the fade-out; only the imagery ground
    *  lingers (in `groundGhosts`) until the level over it is opaque. */
   meshGone: boolean;
@@ -1376,6 +1378,14 @@ export class SplatsLayer {
   /** Splat tiles are resident (whatever the `hideBasemap` mode). */
   hasTiles(): boolean {
     return this.tiles.size > 0;
+  }
+
+  /** World height of the tallest resident building mesh (`buildingMeshes`), 0 with none — how
+   *  far above the ground a reprojected frame must look for rooftops (see ReprojectPass). */
+  tallestBuilding(): number {
+    let top = 0;
+    for (const t of this.tiles.values()) if (t.buildings && t.buildingTop > top) top = t.buildingTop;
+    return top;
   }
 
   /**
@@ -2687,7 +2697,7 @@ export class SplatsLayer {
       appear: 'grow', fade: createFade(1, 0), groundFade: createFade(1, 0), fadeU,
       fadeDyno: dyno?.fade ?? null, quadDyno: dyno?.quad ?? null,
       imageryDone: false, preTexture: null, disposed: false, meshGone: false,
-      fromLite: false, upgrade: 'none', buildings: null, buildingMaterial: null
+      fromLite: false, upgrade: 'none', buildings: null, buildingMaterial: null, buildingTop: 0
     };
     // A tile that lands while a ripple is playing joins the current front:
     // the modifier's uniforms are shared, so it needs no catch-up state.
@@ -2721,6 +2731,8 @@ export class SplatsLayer {
       tile.buildingMaterial = mat;
       tile.root.add(mesh);
       tile.root.updateMatrixWorld(true);
+      mesh.geometry.computeBoundingBox();
+      tile.buildingTop = new THREE.Vector3(0, 0, mesh.geometry.boundingBox!.max.z).applyMatrix4(mesh.matrixWorld).y;
       this.onSceneChange();
     } catch (err) {
       logger.warn(`splat tile ${tile.key} buildings failed:`, err instanceof Error ? err.message : String(err));

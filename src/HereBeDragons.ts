@@ -1676,8 +1676,11 @@ class HereBeDragonsImpl implements HereBeDragons {
           cam.updateMatrixWorld();
           this.scratchViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
           if (!this.scratchViewProj.equals(this.renderedViewProj)) {
-            this.scratchViewProj.invert();
-            if (this.composer.presentReprojected(this.scratchViewProj, this.renderedViewProj, cam.position)) {
+            // How high the warp also looks for rooftops: the tallest building meshes, else half the
+            // camera's height up to a skyscraper's (houses converge from the ground seed anyway).
+            const tallest = this.splats.tallestBuilding();
+            const seedHeight = tallest > 0 ? tallest : Math.min(400, 0.5 * cam.position.y);
+            if (this.composer.presentReprojected(this.scratchViewProj, this.renderedViewProj, cam.position, seedHeight)) {
               rs.reprojected++;
               this.tagsManager.update();
             }

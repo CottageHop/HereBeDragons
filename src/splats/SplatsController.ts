@@ -38,6 +38,8 @@ export interface SplatsLayerLike {
   isHidingBasemap?(): boolean;
   /** Splat tiles are resident. */
   hasTiles?(): boolean;
+  /** World height of the tallest resident building mesh, 0 with none. */
+  tallestBuilding?(): number;
   /** Tiles are landing or dissolving (see `SplatsLayer.isLandingOrFading`). */
   isLandingOrFading?(): boolean;
   /** The governor's smoothed moving-frame time, ms (0 before any sample). */
@@ -277,6 +279,11 @@ export class SplatsController {
   /** Splat tiles are resident (any `hideBasemap` mode). */
   hasTiles(): boolean {
     return this.current?.hasTiles?.() ?? false;
+  }
+
+  /** World height of the tallest resident building mesh (`buildingMeshes`), 0 with none. */
+  tallestBuilding(): number {
+    return this.current?.tallestBuilding?.() ?? 0;
   }
 
   /** Splat tiles are landing or dissolving (see `SplatsLayer.isLandingOrFading`). */

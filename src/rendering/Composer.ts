@@ -382,12 +382,16 @@ export class Composer {
    * Present the last rendered picture warped to the CURRENT camera (see `ReprojectPass`): a tick
    * that draws no real frame — GPU pacing held it back, or the splat overlay is holding for its
    * motion-LoD swap — still shows the camera's motion. One full-screen pass plus FXAA; nothing of
-   * the scene is rendered. False if the last picture is gone (a resize since).
-   * @param invViewProj  inverse of the current camera's projection × view
+   * the scene is rendered. The warp is refined with the last picture's own depth while that is
+   * still in the depth texture (no resize since), so buildings land where they stand, not where the
+   * ground behind them would. False if the last picture is gone (a resize since).
+   * @param viewProj     the current camera's projection × view
    * @param prevViewProj the camera the last frame was rendered with, projection × view
    * @param camPos       the current camera position (world)
+   * @param seedHeight   world height near the tall buildings' tops — where the warp also looks
+   *                     for them (see ReprojectPass)
    */
-  presentReprojected(invViewProj: THREE.Matrix4, prevViewProj: THREE.Matrix4, camPos: THREE.Vector3): boolean {
+  presentReprojected(viewProj: THREE.Matrix4, prevViewProj: THREE.Matrix4, camPos: THREE.Vector3, seedHeight = 0): boolean {
     // The last picture, or — across a resize that destroyed it — the copy captureHeldFrame kept.
     // Sampled by UV, so its size need not match the current targets.
     const src = this.sceneTexValid && this.lastSceneTex
@@ -396,7 +400,8 @@ export class Composer {
     if (!src) return false;
     const r = this.renderer.three;
     const out = this.ensureBlendTarget();
-    this.reproject.configure(src, invViewProj, prevViewProj, camPos, 0);
+    const depth = src === this.lastSceneTex ? this.depthTexture : null;
+    this.reproject.configure(src, viewProj, prevViewProj, camPos, out, depth, seedHeight);
     r.setRenderTarget(out);
     r.render(this.reproject.scene, this.reproject.camera);
     this.fxaa.setInput(out.texture);

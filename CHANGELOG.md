@@ -6,6 +6,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Held frames land tall buildings where they stand.** A tick held back by GPU pacing shows the
+  last frame reprojected to the current camera; the warp assumed everything was on the ground, so
+  towers — building meshes most of all — shook back and forth while panning or orbiting (about
+  45 % of mid-drag frames are warped). The warp is now refined against that frame's own depth,
+  from three seeds (ground, half and all of the tallest building) with the nearest converged
+  candidate winning, so occluding edges hold too. Lower Manhattan, 2° of orbit: mean difference
+  from a real render 33.7 → 6.3. Held ticks only; no measurable change in drag frame times.
 - **Experimental: `splats.buildingMeshes` — buildings as textured meshes.** SplatMap can now write
   each tile's buildings as triangles (`{y}.bldg`, `--building-meshes`) and keep only the trees as
   splats. The layer draws them opaque under one shader: roofs from the tile's imagery, walls
