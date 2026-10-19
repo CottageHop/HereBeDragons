@@ -6,6 +6,17 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Building meshes: houses.** Homes are meshes now too (SplatMap HBDB version 3), keeping the roof
+  structure the roof analysis found — gable, hip and shed planes — carried past the walls as
+  eaves and rakes with fascia boards, and laid with roofing along each plane: shingle courses,
+  standing-seam metal (it catches the sun), clay tile or a membrane, in the measured roof colour
+  (dehazed and white-balanced by SplatMap) with the photograph's own detail and a ridge cap; the
+  underside of an overhang is a soffit. Walls are lap siding, brick in running bond, stucco or a
+  stone veneer base over a foundation strip, with framed windows (sills, meeting rails, grilles on
+  some houses, shutters, glass with sky and curtains), a panelled garage door where the driveway
+  meets the house, a front door beside it, and contact and eave shadows. Under `buildingMeshes`
+  the camera caps default to zoom 18 and 60° tilt (meshes stay sharp up close); the demo takes
+  `&maxCameraTilt=`. Versions 1 and 2 still load.
 - **Held frames land tall buildings where they stand.** A tick held back by GPU pacing shows the
   last frame reprojected to the current camera; the warp assumed everything was on the ground, so
   towers — building meshes most of all — shook back and forth while panning or orbiting (about

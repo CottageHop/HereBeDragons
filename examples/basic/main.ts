@@ -164,6 +164,7 @@ const splats = splatsTemplate
       maxTileZoom: numParam('maxTileZoom'),
       lodBias: numParam('lodBias'),
       maxCameraZoom: numParam('maxCameraZoom'),
+      maxCameraTilt: numParam('maxCameraTilt'),
       hideBasemap:
         url.searchParams.get('hideBasemap') === '0'
           ? false

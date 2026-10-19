@@ -120,11 +120,13 @@ export interface SplatsConfig {
    * the data holds up — at a typical 62° tilt the near edge of the frame is then
    * ~0.7 m per screen pixel, coarser than both the 0.45 m surfels and the ground
    * texels (at 17 it was ~0.47 m/px: blurred roads and cars, visible surfel dots
-   * on roofs).
+   * on roofs). Under `buildingMeshes` the default is 18: the buildings are meshes, sharp up close,
+   * and their facades are drawn to be seen from the street.
    */
   maxCameraZoom?: number;
   /**
-   * Camera tilt cap while the overlay is on, degrees from straight down (default `45`; values
+   * Camera tilt cap while the overlay is on, degrees from straight down (default `45`, `60` under
+   * `buildingMeshes`; values
    * ≥ 89 = none). Laid over the map's own tilt range like `maxCameraZoom` over its zoom range;
    * a camera tilted further when the overlay arrives is eased up to it, and the range is put back
    * when the overlay goes. Seen from steeper angles the satellite layer runs into its far field —

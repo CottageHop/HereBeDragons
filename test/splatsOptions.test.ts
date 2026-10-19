@@ -7,8 +7,7 @@ import {
   planSplatsUpdate,
   resolveRevealCall,
   resolveSplatsOptions,
-  splatsReplacePatch
-} from '../src/splats/options.js';
+  splatsReplacePatch, BUILDING_MESH_CAMERA } from '../src/splats/options.js';
 import { SplatsController, type SplatsLayerLike } from '../src/splats/SplatsController.js';
 import { selectTileZoom } from '../src/splats/lod.js';
 import type { SplatsConfig, SplatsRevealOptions, SplatsStats } from '../src/splats/types.js';
@@ -100,6 +99,15 @@ describe('resolveSplatsOptions', () => {
     expect(o.sortIntervalMs).toBe(100);
     expect(o.roundedUnion).toEqual({ enabled: true, feather: 0.25, growMs: 700 });
     expect(o.reveal).toEqual({ reveal: 'none', durationMs: 1800, speedMps: 250, origin: { lat: 1, lon: 2 } });
+  });
+
+  it('lets the camera nearer and lower with building meshes, unless the caps are given', () => {
+    const plain = resolveSplatsOptions({ urlTemplate: URL_A });
+    expect([plain.maxCameraZoom, plain.maxCameraTilt]).toEqual([15, 45]);
+    const meshes = resolveSplatsOptions({ urlTemplate: URL_A, buildingMeshes: true });
+    expect([meshes.maxCameraZoom, meshes.maxCameraTilt]).toEqual([BUILDING_MESH_CAMERA.zoom, BUILDING_MESH_CAMERA.tilt]);
+    const given = resolveSplatsOptions({ urlTemplate: URL_A, buildingMeshes: true, maxCameraZoom: 16, maxCameraTilt: 50 });
+    expect([given.maxCameraZoom, given.maxCameraTilt]).toEqual([16, 50]);
   });
 });
 

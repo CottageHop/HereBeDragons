@@ -30,6 +30,10 @@ import type { SplatsConfig, SplatsRevealOptions } from './types.js';
  */
 
 /** Documented defaults of `SplatsConfig` (see types.ts). */
+/** The camera caps under `buildingMeshes` when none are given: meshes are crisp where surfels
+ *  read as blobs, so houses can be seen from the street (their facades are drawn for it). */
+export const BUILDING_MESH_CAMERA = { zoom: 18, tilt: 60 } as const;
+
 export const SPLATS_DEFAULTS = Object.freeze({
   enabled: true,
   minZoom: 13,
@@ -275,8 +279,11 @@ export function resolveSplatsOptions(
 
     resolutionTiltAware: c.resolutionTiltAware !== false,
     lowTierLodBias: isNum(c.lowTierLodBias) ? c.lowTierLodBias : SPLATS_DEFAULTS.lowTierLodBias,
-    maxCameraZoom: positiveOr(c.maxCameraZoom, SPLATS_DEFAULTS.maxCameraZoom),
-    maxCameraTilt: isNum(c.maxCameraTilt) && c.maxCameraTilt >= 0 ? Math.min(c.maxCameraTilt, 89) : SPLATS_DEFAULTS.maxCameraTilt,
+    // building meshes stay sharp up close and from the side: the camera may come nearer
+    maxCameraZoom: positiveOr(c.maxCameraZoom, c.buildingMeshes === true ? BUILDING_MESH_CAMERA.zoom : SPLATS_DEFAULTS.maxCameraZoom),
+    maxCameraTilt: isNum(c.maxCameraTilt) && c.maxCameraTilt >= 0
+      ? Math.min(c.maxCameraTilt, 89)
+      : c.buildingMeshes === true ? BUILDING_MESH_CAMERA.tilt : SPLATS_DEFAULTS.maxCameraTilt,
     radius: isNum(c.radius) ? Math.max(0, Math.floor(c.radius)) : SPLATS_DEFAULTS.radius,
     maxInFlight: isNum(c.maxInFlight) ? Math.max(1, Math.floor(c.maxInFlight)) : SPLATS_DEFAULTS.maxInFlight,
     maxSplats: positiveOr(c.maxSplats, SPLATS_DEFAULTS.maxSplats),
