@@ -14,14 +14,16 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
-# The demo's "3D Satellite" layer: Lower Manhattan splat tiles (lidar heights), kept out of git
-# as a release asset (built by SplatMap's scripts/build-region.sh + scripts/pack-tiles.sh) and
-# served from this site. They cover the example's default view, so the 3D Satellite button works
-# where the page opens; from anywhere else it jumps back to the region (VITE_SPLATS_REGION).
+# The demo's "3D Satellite" layer: Lower Manhattan and Coeur d'Alene tiles (lidar heights) with
+# their buildings as textured meshes and the trees as splats, kept out of git as a release asset
+# (built by SplatMap, packed by its scripts/pack-tiles.sh) and served from this site. Manhattan
+# covers the example's default view, so the 3D Satellite button works where the page opens; from
+# anywhere else it jumps to the nearest region (VITE_SPLATS_REGION; Coeur d'Alene brings its
+# basemap). The splat-buildings set it replaced is release demo-tiles-manhattan-v2.
 env:
-  DEMO_TILES_RELEASE: demo-tiles-manhattan-v2
-  DEMO_TILES_ASSET: demo-tiles-manhattan-v2.tar.gz
-  DEMO_TILES_SHA256: 1882006427e58cbe7543ab83443b0103d8af79b6a5148f738abdecb37142b0a5
+  DEMO_TILES_RELEASE: demo-tiles-mesh-v1
+  DEMO_TILES_ASSET: demo-tiles-mesh-v1.tar.gz
+  DEMO_TILES_SHA256: 2fdf16518f6c2fbf8cfe831fc68462e1492cc2c444a3bea77066f3c59a224384
 
 jobs:
   build:
@@ -48,8 +50,8 @@ jobs:
       - run: npm run build:demo
         env:
           VITE_SPLATS_TEMPLATE: /HereBeDragons/tiles/full/{z}/{x}/{y}.spz
-          VITE_SPLATS_LITE_TEMPLATE: /HereBeDragons/tiles/lite/{z}/{x}/{y}.spz
-          VITE_SPLATS_REGION: 40.7065,-74.009,15
+          VITE_SPLATS_REGION: 40.7065,-74.009,15;47.7058,-116.7712,17,cda.pmtiles
+          VITE_SPLATS_BUILDING_MESHES: '1'
 
       - name: Add the tiles to the site
         run: tar -xzf demo-tiles.tar.gz -C dist

@@ -6,6 +6,11 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Demo: building meshes on GitHub Pages.** The example's 3D Satellite layer now serves release
+  `demo-tiles-mesh-v1`: Lower Manhattan's towers and Coeur d'Alene's homes as textured meshes, the
+  trees as splats. `VITE_SPLATS_REGION` takes several regions (`;`-separated; the button opens the
+  nearest) and `VITE_SPLATS_BUILDING_MESHES=1` turns the meshes on by default
+  (`&buildingMeshes=0` turns them off).
 - **Splat tiles' ground imagery without colour fringes.** Aerial imagery's colour bands are a little
   misregistered, so every shadow edge carried a purple / green halo that showed once the camera
   came close (it can now, under `buildingMeshes`). The ground keeps its luminance sharp and takes

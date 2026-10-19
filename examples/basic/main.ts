@@ -84,17 +84,23 @@ const splatsLiteTemplate =
   (import.meta.env.VITE_SPLATS_LITE_TEMPLATE as string | undefined)?.trim() ||
   undefined;
 // Where the build-time tiles are: `VITE_SPLATS_REGION` = "lat,lon,zoom" or "lat,lon,zoom,<basemap>"
-// (a .pmtiles file next to the page — the GitHub Pages demo ships Coeur d'Alene's tiles and basemap).
-// Pressing "3D Satellite" far from it opens the region with the overlay on (`?satellite=1`)
-// instead of switching on an overlay with nothing to show.
-const splatsRegion = ((): { lat: number; lon: number; zoom: number; basemap?: string } | null => {
+// (a .pmtiles file next to the page), several separated by ";" — the GitHub Pages demo ships Lower
+// Manhattan and Coeur d'Alene. Pressing "3D Satellite" far from all of them opens the nearest
+// with the overlay on (`?satellite=1`) instead of switching on an overlay with nothing to show.
+type SplatsRegion = { lat: number; lon: number; zoom: number; basemap?: string };
+const splatsRegions: SplatsRegion[] = ((): SplatsRegion[] => {
   const raw = (import.meta.env.VITE_SPLATS_REGION as string | undefined)?.trim();
-  if (!raw) return null;
-  const [la, lo, zo, basemap] = raw.split(',').map((v) => v.trim());
-  const region = { lat: Number(la), lon: Number(lo), zoom: Number(zo) };
-  if (![region.lat, region.lon, region.zoom].every(Number.isFinite)) return null;
-  return basemap ? { ...region, basemap } : region;
+  if (!raw) return [];
+  return raw.split(';').flatMap((part): SplatsRegion[] => {
+    const [la, lo, zo, basemap] = part.split(',').map((v) => v.trim());
+    const region = { lat: Number(la), lon: Number(lo), zoom: Number(zo) };
+    if (![region.lat, region.lon, region.zoom].every(Number.isFinite)) return [];
+    return [basemap ? { ...region, basemap } : region];
+  });
 })();
+// `VITE_SPLATS_BUILDING_MESHES=1`: the build-time tiles carry building meshes (`{y}.bldg`), so
+// the overlay draws them (the URL's `&buildingMeshes=0|1` still decides).
+const envBuildingMeshes = (import.meta.env.VITE_SPLATS_BUILDING_MESHES as string | undefined)?.trim() === '1';
 const satelliteOn = url.searchParams.get('satellite') === '1';
 /** Great-circle-ish distance in km — plenty for "is the view anywhere near the region". */
 const kmBetween = (a: { lat: number; lon: number }, b: { lat: number; lon: number }): number => {
@@ -145,10 +151,15 @@ const splats = splatsTemplate
       // draws `&lodSplats=` splats a frame across all of them (0 / absent = Spark's default).
       ...(url.searchParams.get('engineLod') === '1' ? { engineLod: true } : {}),
       engineLodSplats: numParam('lodSplats'),
-      // `&buildingMeshes=1` (experimental): buildings as textured meshes from `{y}.bldg` tiles.
-      // `&cover=0` drops the coarse cover level under the detail window.
+      // `&buildingMeshes=1|0` (experimental): buildings as textured meshes from `{y}.bldg` tiles
+      // (default: VITE_SPLATS_BUILDING_MESHES). `&cover=0` drops the coarse cover level under the
+      // detail window.
       ...(url.searchParams.get('cover') === '0' ? { cover: false } : {}),
-      ...(url.searchParams.get('buildingMeshes') === '1' ? { buildingMeshes: true } : {}),
+      ...((): Record<string, unknown> => {
+        const bm = url.searchParams.get('buildingMeshes');
+        if (bm === '1' || (bm === null && envBuildingMeshes)) return { buildingMeshes: true };
+        return bm === '0' ? { buildingMeshes: false } : {};
+      })(),
       // `&sortIntervalMs=` spaces Spark's depth re-sorts (default 100; the low tiers use >= 250)
       sortIntervalMs: numParam('sortIntervalMs'),
       // `&budgetGrowth=2` lets the governor grow the budget past `maxSplats` on a device
@@ -368,15 +379,18 @@ function buildThemeMenu(activeName: string): void {
     };
     splatsBtn.addEventListener('click', () => {
       const turningOn = !map.getSplatsOptions().enabled;
-      if (turningOn && splatsRegion && !splatsFromUrl && kmBetween(map.getView(), splatsRegion) > 3) {
+      const view = map.getView();
+      const nearest = splatsRegions.reduce<SplatsRegion | null>(
+        (best, r) => (!best || kmBetween(view, r) < kmBetween(view, best) ? r : best), null);
+      if (turningOn && nearest && !splatsFromUrl && kmBetween(view, nearest) > 3) {
         const q = new URLSearchParams({
-          lat: String(splatsRegion.lat),
-          lon: String(splatsRegion.lon),
-          zoom: String(splatsRegion.zoom),
+          lat: String(nearest.lat),
+          lon: String(nearest.lon),
+          zoom: String(nearest.zoom),
           tilt: '45',
           satellite: '1'
         });
-        if (splatsRegion.basemap) q.set('pmtiles', `${import.meta.env.BASE_URL}${splatsRegion.basemap}`);
+        if (nearest.basemap) q.set('pmtiles', `${import.meta.env.BASE_URL}${nearest.basemap}`);
         window.location.search = q.toString();
         return;
       }
