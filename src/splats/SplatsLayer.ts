@@ -68,7 +68,9 @@ import {
 } from './groundMaterial.js';
 import {
   buildingGeometry,
+  createBuildingDepthMaterial,
   createBuildingMaterial,
+  disposeBuildingMaterial,
   inflateBuildingMesh,
   parseBuildingMesh,
   setBuildingImagery
@@ -2726,6 +2728,13 @@ export class SplatsLayer {
       mesh.layers.set(SPLAT_THREE_LAYER);
       // after the imagery ground, before the (transparent) splats: they depth-test against it
       mesh.renderOrder = -1;
+      // its depth first, so the facades are shaded once per pixel (see createBuildingDepthMaterial);
+      // a child, so it shows and hides with the mesh
+      const depth = new THREE.Mesh(mesh.geometry, createBuildingDepthMaterial(mat));
+      depth.name = `splat-tile-buildings-depth:${tile.key}`;
+      depth.layers.set(SPLAT_THREE_LAYER);
+      depth.renderOrder = -3;
+      mesh.add(depth);
       if (tile.groundTexture) setBuildingImagery(mat, tile.groundTexture);
       tile.buildings = mesh;
       tile.buildingMaterial = mat;
@@ -3332,7 +3341,8 @@ export class SplatsLayer {
     tile.groundTexture?.dispose();
     tile.groundTexture = null;
     tile.buildings?.geometry.dispose();
-    tile.buildingMaterial?.dispose();
+    for (const c of tile.buildings?.children ?? []) ((c as THREE.Mesh).material as THREE.Material).dispose();
+    if (tile.buildingMaterial) disposeBuildingMaterial(tile.buildingMaterial);
     tile.buildings = null;
     tile.buildingMaterial = null;
   }

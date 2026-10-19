@@ -470,6 +470,50 @@ One frame in flight ships (pure scheduling; reprojection is what makes it free n
 it as a trade before that). The heavier thinning adds little in motion and would change the rest
 picture, so `densityLod` stays at 2.
 
+## 13. Building meshes: held frames that land, and the city (2026-10-18)
+
+User: "when panning around a building the buildings are jerking around".
+
+**Cause: the held-frame warp assumed a flat world.** Mid-drag on the Intel Iris at 2× (motion at
+1×), about 45 % of the presented frames are held ticks that show the last frame reprojected
+(renders 36–57 vs reprojected 28–42 per drag). The warp intersected every pixel's ray with the
+ground plane — exact for the ground, a fraction of a pixel for a house, but a 250 m tower 1.5 km
+away under one frame of an orbit is metres out, and alternating real and warped frames made every
+tall mesh shake. Measured on the Lower Manhattan mesh tiles (render pose A, move the camera 2° of
+orbit, compare the warp with a real render of pose B): mean difference 33.7 / 255, 44 % of pixels
+off by more than 24 levels.
+
+**Fix: refine the warp with the frame's own depth** (Bowles et al., fixed-point iterative warping;
+`ReprojectPass`). Read the depth where the ground-plane guess points, rebuild that world point,
+see where the current camera puts it, step the guess by the miss. At a tower's leading edge the
+iteration can settle on the ground the tower now hides (a valid but occluded fixed point), so it
+runs from three seeds — the ground and planes at half and all of the tallest resident building
+(`SplatsLayer.tallestBuilding`) — and the nearest converged candidate wins. Synthetic downtown,
+one frame of orbit or pan: pixels more than 1 px out drop from 12–59 % to 0.2–1.6 %. Real tiles:
+mean difference 33.7 → 6.3, pixels off by more than 24 levels 44 % → 6 % (left: silhouette lines
+and label text, which has no depth of its own).
+
+Cost: nine depth reads a pixel on held ticks only. Held present at 2880×1800: 5.6 → 14–16 ms; at
+the 1× motion resolution it actually runs at, a quarter of that. Drags A/B (4 each, WebKit): mean
+frame 23.7–31.9 ms (plane warp) vs 23.5–31.6 ms (depth) — no measurable difference.
+
+**City facades** (SplatMap HBDB version 2): buildings from 12 m up, and every building of a tile
+at least 20 % covered by footprints, are dressed from a New York palette in three programs —
+punched masonry, glass curtain wall, ribbon windows — instead of the house styles (vinyl, stucco,
+tan brick) that made Manhattan look like a toy town. The styles moved from a uniform array to a
+float texture (no per-tile style limit), loaded once per fragment.
+
+**Depth pre-pass for the meshes.** The city facade is the costliest fragment the map draws, and
+at 55° tilt over a downtown three or four walls overlap most pixels. A depth-only twin of each
+tile's mesh (same vertex shader, same dithered fade) is drawn first, so the facade shader runs
+once per pixel. Full frame at 2880×1800, interleaved medians: 129 ms without the pre-pass,
+111 ms with it, 116 ms with no buildings at all (the buildings' depth now also rejects the ground
+behind them).
+
+**Where the frame goes now:** the same frame with the splats hidden is 52–54 ms of ~111–126. The
+Manhattan tree splats (1.23 M resident at zoom 16) are the next lever: SplatMap's crown spacing
+(0.5 m) can double, a quarter of the splats for canopy that reads the same at map distance.
+
 ## 10. What is still open
 
 - Spark's one-time initialisation: ~175 ms of main thread on the overlay's first frame, once per

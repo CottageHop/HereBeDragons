@@ -13,6 +13,15 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   from three seeds (ground, half and all of the tallest building) with the nearest converged
   candidate winning, so occluding edges hold too. Lower Manhattan, 2° of orbit: mean difference
   from a real render 33.7 → 6.3. Held ticks only; no measurable change in drag frame times.
+- **Building meshes: city facades.** Buildings from 12 m up (and all of a dense tile's) wear a New
+  York palette — punched masonry (limestone, granite, brick, brownstone), glass curtain walls
+  (mullions, a spandrel at every floor, the sky mirrored in the glass) and ribbon windows — with a
+  shopfront ground floor, a cornice, a per-building tint and floors that darken towards the
+  street. Reads SplatMap's HBDB version 2 (facade program fields, a per-building seed); version 1
+  still loads as houses. Styles are a float texture now (no per-tile limit).
+- **Building meshes: depth pre-pass.** A depth-only twin draws first so the facade shader runs once
+  per pixel instead of once per overlapping wall: 129 → 111 ms a full frame at 2880×1800 on an
+  Intel Iris over Lower Manhattan (116 ms with no buildings at all).
 - **Experimental: `splats.buildingMeshes` — buildings as textured meshes.** SplatMap can now write
   each tile's buildings as triangles (`{y}.bldg`, `--building-meshes`) and keep only the trees as
   splats. The layer draws them opaque under one shader: roofs from the tile's imagery, walls
