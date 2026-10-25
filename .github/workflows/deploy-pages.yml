@@ -14,16 +14,18 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
-# The demo's "3D Satellite" layer: Lower Manhattan and Coeur d'Alene tiles (lidar heights) with
-# their buildings as textured meshes and the trees as splats, kept out of git as a release asset
-# (built by SplatMap, packed by its scripts/pack-tiles.sh) and served from this site. Manhattan
-# covers the example's default view, so the 3D Satellite button works where the page opens; from
-# anywhere else it jumps to the nearest region (VITE_SPLATS_REGION; Coeur d'Alene brings its
-# basemap). The splat-buildings set it replaced is release demo-tiles-manhattan-v2.
+# The demo's "3D Satellite" layer: tiles for Lower Manhattan, Coeur d'Alene and Rigby, Idaho, kept
+# out of git as a release asset (built by SplatMap, packed by its scripts/pack-tiles.sh) and served
+# from this site. Buildings are textured meshes and trees are splats. Manhattan and Coeur d'Alene
+# heights come from lidar; Rigby's are predicted from imagery. House roofs are framed by SplatMap's
+# roof planner. Manhattan covers the example's default view, so the 3D Satellite button works where
+# the page opens; from anywhere else it jumps to the nearest region (VITE_SPLATS_REGION; Coeur
+# d'Alene brings its basemap). The sets this replaced: demo-tiles-mesh-v1 (unframed roofs, no
+# Rigby) and demo-tiles-manhattan-v2 (buildings as splats).
 env:
-  DEMO_TILES_RELEASE: demo-tiles-mesh-v1
-  DEMO_TILES_ASSET: demo-tiles-mesh-v1.tar.gz
-  DEMO_TILES_SHA256: 2fdf16518f6c2fbf8cfe831fc68462e1492cc2c444a3bea77066f3c59a224384
+  DEMO_TILES_RELEASE: demo-tiles-mesh-v2
+  DEMO_TILES_ASSET: demo-tiles-mesh-v2.tar.gz
+  DEMO_TILES_SHA256: 3ba0c998c55895806ad52e1a3ee0a61b7d16818d7c58b493e2572cb34b48832f
 
 jobs:
   build:
@@ -50,7 +52,7 @@ jobs:
       - run: npm run build:demo
         env:
           VITE_SPLATS_TEMPLATE: /HereBeDragons/tiles/full/{z}/{x}/{y}.spz
-          VITE_SPLATS_REGION: 40.7065,-74.009,15;47.7058,-116.7712,17,cda.pmtiles
+          VITE_SPLATS_REGION: 40.7065,-74.009,15;47.7058,-116.7712,17,cda.pmtiles;43.67755,-111.91627,17
           VITE_SPLATS_BUILDING_MESHES: '1'
 
       - name: Add the tiles to the site

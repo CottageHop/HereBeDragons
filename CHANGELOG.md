@@ -6,6 +6,13 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **Demo: framed roofs and Rigby, Idaho.** The Pages demo now serves release
+  `demo-tiles-mesh-v2`. Coeur d'Alene's houses are rebuilt with roofs framed the way a builder
+  would frame them: a squared outline split into a main block and wings, one standard x/12 pitch,
+  cross gables carried into the main ridge, lean-tos over shallow bump-outs, and eaves at storey
+  heights (SplatMap's roof planner). Rigby, Idaho is a third region; its outlines come from
+  Microsoft building footprints and its heights are predicted from imagery. Ground imagery ships as
+  WebP only.
 - **Demo: building meshes on GitHub Pages.** The example's 3D Satellite layer now serves release
   `demo-tiles-mesh-v1`: Lower Manhattan's towers and Coeur d'Alene's homes as textured meshes, the
   trees as splats. `VITE_SPLATS_REGION` takes several regions (`;`-separated; the button opens the
