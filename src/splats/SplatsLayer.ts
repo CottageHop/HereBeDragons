@@ -621,6 +621,27 @@ function defaultPrefersReducedMotion(): boolean {
 
 const EMPTY_KEYS: readonly string[] = [];
 
+/**
+ * A decode that never comes back — a worker lost to an exception or a hang (seen in headless WebKit:
+ * one tile of eight, twice in some thirty loads) — would otherwise hold its in-flight slot for the
+ * rest of the session, and with four slots, four of them stop the overlay dead. The promise settles
+ * with the decode, or rejects after this long; the caller treats a timeout as a tile failure.
+ */
+const DECODE_TIMEOUT_MS = 30_000;
+
+function decoded<T>(initialized: Promise<T>, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what}: decode did not complete in ${DECODE_TIMEOUT_MS} ms`)),
+      DECODE_TIMEOUT_MS
+    );
+    initialized.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (err: unknown) => { clearTimeout(timer); reject(err instanceof Error ? err : new Error(String(err))); }
+    );
+  });
+}
+
 async function defaultFetchTile(url: string, signal?: AbortSignal): Promise<ArrayBuffer | null> {
   const res = await fetch(url, signal ? { signal } : undefined);
   if (res.status === 404) return null;
@@ -1837,7 +1858,7 @@ export class SplatsLayer {
       const liteModifier = tile.liteModifier ?? tile.objectModifier;
       if (liteModifier) mesh.objectModifier = liteModifier;
       if (tile.rippleOn && this.rippleDyno) mesh.worldModifier = this.rippleDyno.modifier;
-      await mesh.initialized;
+      await decoded(mesh.initialized, `${tile.key} lite`);
       if (tile.disposed || tile.meshGone || !this.tiles.has(tile.key)) {
         mesh.dispose();
         tile.liteState = 'none';
@@ -1892,7 +1913,7 @@ export class SplatsLayer {
       mesh.maxSh = 0;
       if (tile.objectModifier) mesh.objectModifier = tile.objectModifier;
       if (tile.rippleOn && this.rippleDyno) mesh.worldModifier = this.rippleDyno.modifier;
-      await mesh.initialized;
+      await decoded(mesh.initialized, `${tile.key} full`);
       if (stale()) {
         tile.upgrade = 'none';
         return;
@@ -2872,8 +2893,14 @@ export class SplatsLayer {
     // ship SH never pays for view-dependent colour in the generate pass.
     mesh.maxSh = 0;
     // Decode (gzip inflate + unpack) runs in Spark's worker pool; this only
-    // yields until the packed splat array is back on the main thread.
-    await mesh.initialized;
+    // yields until the packed splat array is back on the main thread (or the
+    // watchdog gives up on it — see `decoded`).
+    try {
+      await decoded(mesh.initialized, key);
+    } catch (err) {
+      mesh.dispose();
+      throw err;
+    }
 
     const { lat: originLat, lon: originLon } = this.projection.origin;
     const t = splatTileTransform(z, x, y, originLat, originLon);

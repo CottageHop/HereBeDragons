@@ -64,6 +64,12 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   effect: `splats.motionMaxStdDev` (a tighter splat footprint while moving — a uniform) and
   `splats.motionPixelRatio` (a lower pixel ratio for moving frames while splat tiles are resident;
   `0.75` took the moving frame's scene draw from 26 to 17 ms of GPU on the Iris).
+- **A decode that never answers no longer holds a load slot for the rest of the session.** Seen in
+  headless WebKit (one tile of eight, twice in some thirty loads): the tile's fetch completed, its
+  Spark decode never did, and the load kept one of the four in-flight slots until the page was
+  closed. A 30 s watchdog on every decode (tiles, lite twins, full upgrades) now turns that into an
+  ordinary tile failure: the slot is freed, the mesh disposed, the tile retried and, after three
+  tries, given up on.
 - Measured method and numbers: docs/splats-performance.md §14.
 
 ## 0.13.0 — nothing at rest, no stalls in hand

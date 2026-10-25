@@ -3886,3 +3886,34 @@ describe('SplatsLayer motionCover (the cover as the moving picture)', () => {
     expect(h.layer.holdForSwap()).toBe(false);
   });
 });
+
+describe('SplatsLayer decode watchdog', () => {
+  it('a decode that never completes frees its in-flight slot after the watchdog and counts as a failure', async () => {
+    vi.useFakeTimers();
+    try {
+      class HangingMesh extends FakeSplatMesh {
+        constructor(opts: SparkSplatMeshOptions) {
+          super(opts);
+          this.initialized = new Promise(() => {}); // a worker that never answers
+        }
+      }
+      const h = makeLayer({ maxInFlight: 2 }, { loadSpark: async () => ({ ...makeFakeSpark(), SplatMesh: HangingMesh }) });
+      await h.layer.open();
+      h.layer.update();
+      await settle();
+      const priv = h.layer as unknown as { inFlight: number; pending: Map<string, unknown>; failures: Map<string, number> };
+      expect(priv.inFlight).toBe(2);                 // both decodes hang, both slots held …
+      h.layer.update();
+      expect(h.fetchTile).toHaveBeenCalledTimes(2);  // … and nothing more can start
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(priv.inFlight).toBe(0);                 // the watchdog gave up on them …
+      expect(priv.pending.size).toBe(0);
+      expect([...priv.failures.values()]).toEqual([1, 1]); // … as ordinary tile failures (retried, then given up)
+      expect(h.meshes().length).toBe(0);
+      h.layer.update();
+      expect(h.fetchTile).toHaveBeenCalledTimes(4);  // the slots are in use again
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
