@@ -5,6 +5,7 @@ import type { LayerGeometry } from '../tiles/worker/decodeProtocol.js';
 import { LabelKind, type StreetLabelData } from '../tiles/worker/extractors/labels.js';
 import type { StylizedMaterials } from '../materials/StylizedMaterials.js';
 import { COVERAGE_GLSL, patchCoverage, registerCoverageUniforms } from '../materials/coverageShader.js';
+import { zoomToDistance } from '../controls/MapCameraController.js';
 
 /**
  * Three.js layer index reserved for label objects (sprites + street meshes).
@@ -257,6 +258,8 @@ void main() {
  */
 export class LabelsLayer extends Layer {
   readonly name: LayerName = 'labels';
+  /** Smallest on-screen glyph height (CSS px) at which a street name is still a readable word. */
+  static readonly STREET_MIN_PX = 11;
   private builtGroups = new Set<THREE.Group>();
   private readonly opts: LabelsLayerOptions;
   private projector = new THREE.Vector3();
@@ -394,6 +397,11 @@ export class LabelsLayer extends Layer {
     const u = this.placeMaterial.uniforms.uViewport.value as THREE.Vector2;
     u.set(viewport.width, viewport.height);
 
+    // Street names are painted on the ground in world metres, so their on-screen size follows
+    // the camera: the ground metres one CSS pixel spans at the camera target.
+    const metersPerPixel =
+      (2 * zoomToDistance(cameraZoom) * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(1, viewport.height);
+
     interface Candidate {
       mesh: THREE.Mesh;
       kind: LabelKind;
@@ -413,7 +421,11 @@ export class LabelsLayer extends Layer {
         // the road curve, so they don't need screen-space placement.
         if (child.userData.kind === LabelKind.Street) {
           const minZoom = child.userData.minZoom as number;
-          child.visible = cameraZoom >= minZoom;
+          // Legibility gate on top of the tile's min_zoom: a street name whose glyphs come out
+          // under STREET_MIN_PX on screen is a smear of noise along the road, not a label (an 8 m
+          // glyph at zoom 13.8 is 6 px; tiles offer them from zoom 13).
+          const glyphWorld = (child.userData.glyphHeightWorld as number | undefined) ?? Infinity;
+          child.visible = cameraZoom >= minZoom && glyphWorld / metersPerPixel >= LabelsLayer.STREET_MIN_PX;
           continue;
         }
 
@@ -692,7 +704,28 @@ export class LabelsLayer extends Layer {
     // box can be empty / wrong when the merge spans many far-apart roads.
     // Cheap enough to always draw; the GPU's depth test does the real culling.
     mesh.frustumCulled = false;
+    // The smallest glyph in the batch, for the legibility gate in update().
+    mesh.userData.glyphHeightWorld = streets.reduce(
+      (m, s) => Math.min(m, (STREET_STYLES[s.weight] ?? STREET_STYLES[1]).worldHeight),
+      Infinity
+    );
     return mesh;
+  }
+
+  /**
+   * A hidden group wearing both label materials (a place name and a street name), for the
+   * shader warm-up at start-up: compiled with the palette, so the first tile carrying labels
+   * does not pay a shader link on the main thread mid-pan.
+   */
+  warmup(): THREE.Object3D {
+    const group = new THREE.Group();
+    group.name = 'labels-warmup';
+    const place = this.makePlaceLabel('Aa', LabelKind.City);
+    if (place) group.add(place);
+    const street = this.buildStreetMesh([{ text: 'Aa', polyline: [-200, 0, 200, 0], minZoom: 0, weight: 1 }]);
+    if (street) group.add(street);
+    group.traverse((obj) => obj.layers.set(LABEL_THREE_LAYER));
+    return group;
   }
 }
 

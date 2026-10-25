@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectBitmapFlip, type FlipTestCanvas } from '../src/splats/SplatsLayer.js';
+import { detectBitmapFlip, imageryUploadsViaImage, type FlipTestCanvas } from '../src/splats/SplatsLayer.js';
 
 /** A tiny 2D canvas: an RGBA pixel array with just the calls the flip test makes. */
 function fakeCanvas(w: number, h: number): FlipTestCanvas & { px: number[][] } {
@@ -40,5 +40,29 @@ describe('ImageBitmap flipY capability test', () => {
     expect(await detectBitmapFlip(undefined, fakeCanvas)).toBe(false);
     expect(await detectBitmapFlip(honours, undefined)).toBe(false);
     expect(await detectBitmapFlip(async () => { throw new Error('no'); }, fakeCanvas)).toBe(false);
+  });
+});
+
+describe('imageryUploadsViaImage — WebKit takes the <img> path', () => {
+  const safariMac = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15';
+  const playwrightWebKit = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
+  const chromeMac = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+  const edgeWin = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0';
+  const firefox = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:128.0) Gecko/20100101 Firefox/128.0';
+  const iosSafari = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+  const iosChrome = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/126.0.6478.54 Mobile/15E148 Safari/604.1';
+
+  it('is true for Safari, Playwright WebKit and every iOS browser', () => {
+    expect(imageryUploadsViaImage(safariMac, 'Apple Computer, Inc.')).toBe(true);
+    expect(imageryUploadsViaImage(playwrightWebKit, 'Apple Computer, Inc.')).toBe(true);
+    expect(imageryUploadsViaImage(iosSafari, 'Apple Computer, Inc.')).toBe(true);
+    expect(imageryUploadsViaImage(iosChrome, 'Apple Computer, Inc.')).toBe(true);
+  });
+
+  it('is false for Chromium-based browsers and Firefox', () => {
+    expect(imageryUploadsViaImage(chromeMac, 'Google Inc.')).toBe(false);
+    expect(imageryUploadsViaImage(edgeWin, 'Google Inc.')).toBe(false);
+    expect(imageryUploadsViaImage(firefox, '')).toBe(false);
+    expect(imageryUploadsViaImage('', '')).toBe(false);
   });
 });

@@ -8,6 +8,8 @@ export class LayerRegistry {
   private suspended = new Set<LayerName>();
   /** Throttled layers → their tick interval + the time banked so far. */
   private throttled = new Map<LayerName, { intervalMs: number; advance: boolean; accMs: number }>();
+  /** Layers whose clock runs slower than real time (see `setTimeScale`). */
+  private timeScale = new Map<LayerName, number>();
 
   register(name: LayerName, layer: Layer): void {
     this.layers.set(name, layer);
@@ -63,6 +65,16 @@ export class LayerRegistry {
     }
   }
 
+  /**
+   * Scale the time a layer's `update()` sees — the ambient idle (wind dying down): at `0` the
+   * layer is ticked with `dt = 0`, so its animation stands still and it reports nothing dirty;
+   * in between its motion runs slow. `1` (or `null`) is real time. Composes with `setThrottle`.
+   */
+  setTimeScale(name: LayerName, scale: number | null): void {
+    if (scale === null || !(scale < 1)) this.timeScale.delete(name);
+    else this.timeScale.set(name, Math.max(0, scale));
+  }
+
   *entries(): IterableIterator<[LayerName, Layer]> {
     for (const [name, layer] of this.layers) {
       if (this.enabled.get(name) !== false) {
@@ -80,16 +92,17 @@ export class LayerRegistry {
     let dirty = false;
     for (const [name, layer] of this.entries()) {
       if (this.suspended.has(name)) continue;
+      const scale = this.timeScale.get(name) ?? 1;
       const t = this.throttled.get(name);
       if (t) {
         t.accMs += dt * 1000;
         if (t.accMs < t.intervalMs) continue;
-        const banked = t.advance ? t.accMs / 1000 : 0;
+        const banked = t.advance ? (t.accMs / 1000) * scale : 0;
         t.accMs = 0;
         if (layer.update?.(banked)) dirty = true;
         continue;
       }
-      if (layer.update?.(dt)) dirty = true;
+      if (layer.update?.(dt * scale)) dirty = true;
     }
     return dirty;
   }

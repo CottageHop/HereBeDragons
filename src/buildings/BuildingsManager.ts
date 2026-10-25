@@ -435,6 +435,16 @@ export class BuildingsManager {
       `${clampedX.toFixed(1)}px ${clampedY.toFixed(1)}px`;
   }
 
+  /** Hidden objects wearing the highlight materials, for the start-up shader warm-up. */
+  warmupObjects(): THREE.Object3D[] {
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0]), 3));
+    const fillGeo = new THREE.BufferGeometry();
+    fillGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 1]), 3));
+    fillGeo.setIndex([0, 1, 2]);
+    return [new THREE.LineSegments(lineGeo, this.silhouetteMaterial), new THREE.Mesh(fillGeo, this.floorFillMaterial)];
+  }
+
   dispose(): void {
     this.renderer.dom.removeEventListener('pointerdown', this.onPointerDown);
     this.renderer.dom.removeEventListener('pointerup', this.onPointerUp);

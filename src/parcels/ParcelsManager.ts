@@ -97,6 +97,10 @@ export class ParcelsManager {
   private lineMaterial: THREE.LineBasicMaterial;
   private fillMaterial: THREE.MeshBasicMaterial;
   private fillColorExplicit = false;
+  /** Metres per CSS pixel at which the outlines start, and finish, fading out. */
+  private static readonly LINE_FADE_MPP: readonly [number, number] = [4, 8];
+  /** View depths (start, end) of the outline fade — see updateLineFade. */
+  private readonly lineFade = { value: new THREE.Vector2(1e9, 2e9) };
 
   private enabled: boolean;
   private minZoom: number;
@@ -154,6 +158,24 @@ export class ParcelsManager {
       fog: false,
       toneMapped: false
     });
+    // Distance fade. A one-pixel outline is drawn at full strength however far away it is, so on a
+    // tilted view the far field — where a whole lot spans a few pixels — turned into a dark mass of
+    // aliased lines over the buildings. The outlines fade out between LINE_FADE_MPP metres per CSS
+    // pixel (view depth, updated per frame from the camera in updateLineFade): legible lots stay
+    // crisp, the horizon stays clean.
+    this.lineMaterial.onBeforeCompile = (shader) => {
+      shader.uniforms.uHbdLineFade = this.lineFade;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying float vHbdDepth;')
+        .replace('#include <project_vertex>', '#include <project_vertex>\nvHbdDepth = -mvPosition.z;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform vec2 uHbdLineFade;\nvarying float vHbdDepth;')
+        .replace(
+          '#include <color_fragment>',
+          '#include <color_fragment>\ndiffuseColor.a *= 1.0 - smoothstep(uHbdLineFade.x, uHbdLineFade.y, vHbdDepth);'
+        );
+    };
+    this.lineMaterial.customProgramCacheKey = () => 'hbd-parcel-lines:fade';
     this.fillMaterial = new THREE.MeshBasicMaterial({
       color: new THREE.Color(fillColor),
       transparent: true,
@@ -263,6 +285,7 @@ export class ParcelsManager {
       return;
     }
 
+    this.updateLineFade();
     const z = this.chooseZoom(view.zoom);
     const center = lonLatToTile(view.lon, view.lat, z);
     this.lastCenterX = center.x;
@@ -291,6 +314,29 @@ export class ParcelsManager {
     }
 
     this.evictFarTiles(z);
+  }
+
+  /**
+   * The view depths at which the outlines fade: the ground metres one CSS pixel spans grow
+   * linearly with view depth (`depth × 2·tan(fov/2) / viewport height`), so a metres-per-pixel
+   * threshold is a depth threshold for the current camera and canvas.
+   */
+  private updateLineFade(): void {
+    const cam = this.camera.three;
+    const perMetre = (2 * Math.tan((cam.fov * Math.PI) / 360)) / Math.max(1, this.renderer.height);
+    const [near, far] = ParcelsManager.LINE_FADE_MPP;
+    this.lineFade.value.set(near / perMetre, far / perMetre);
+  }
+
+  /** Hidden objects wearing the parcel materials, for the start-up shader warm-up. */
+  warmupObjects(): THREE.Object3D[] {
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0]), 3));
+    const fillGeo = new THREE.BufferGeometry();
+    fillGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 1]), 3));
+    fillGeo.setAttribute('parcelIndex', new THREE.BufferAttribute(new Float32Array(3), 1));
+    fillGeo.setIndex([0, 1, 2]);
+    return [new THREE.LineSegments(lineGeo, this.lineMaterial), new THREE.Mesh(fillGeo, this.fillMaterial)];
   }
 
   dispose(): void {

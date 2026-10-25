@@ -44,6 +44,24 @@ export class PolygonsManager {
   // Public API
   // -------------------------------------------------------------------------
 
+  /**
+   * A hidden triangle wearing a polygon's material (same parameters as every polygon's, so it
+   * shares their program), for the start-up shader warm-up. The material lives as long as the
+   * manager: releasing it would release the program it keeps warm.
+   */
+  warmupObject(): THREE.Object3D {
+    if (!this.warmMaterial) {
+      this.warmMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false
+      });
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 1]), 3));
+    geo.setIndex([0, 1, 2]);
+    return new THREE.Mesh(geo, this.warmMaterial);
+  }
+  private warmMaterial: THREE.MeshBasicMaterial | null = null;
+
   addPolygon(options: PolygonOptions): PolygonHandle {
     if (this.polygons.has(options.id)) this.removePolygon(options.id);
 

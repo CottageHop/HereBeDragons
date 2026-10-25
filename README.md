@@ -743,7 +743,8 @@ await createHereBeDragons(el, {
     tileWindowRadius: 6,          // shrink the pre-loaded buffer (~169 tiles)
     tileWindowRadiusFar: 8,
     workerPoolSize: 2,
-    maxTileApplyMsPerFrame: 3     // tighter budget = smoother input under load
+    maxTileApplyMsPerFrame: 3,    // tighter budget = smoother input under load
+    ambientIdleMs: 4000           // wind/foam/motes die down 4 s after the last touch (Infinity = never)
   }
 });
 ```
@@ -762,6 +763,7 @@ Other levers built into the library:
 - **Disable layers you don't need** `layers: { rails: false, cars: false, labels: false }`. Disabled layers are now skipped at the worker level entirely (no decode cost), not just hidden post-render.
 - **Disable buildings if you only need the base map** the heaviest single extractor. `layers: { buildings: false }`. Frees ~70% of worker CPU per tile.
 - **Disable clouds** `clouds: false`. Saves a full-screen raymarch pass every frame.
+- **Let the map rest.** Nothing renders while nothing changes — and that includes the ambient animations: the wind in the trees and grass, the shoreline foam and the drifting motes run while you interact and die down `performance.ambientIdleMs` (default 4 s) after the last gesture, camera move or pointer crossing, so an idle tab costs no GPU at all. `Infinity` keeps them running for as long as the page is visible; `0` runs them only while the camera moves.
 
 ### Quality tiers
 

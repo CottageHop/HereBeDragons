@@ -75,6 +75,8 @@ import { ScaleBar, type ScaleBarUnits } from './studio/ScaleBar.js';
 import * as THREE from 'three';
 import { MINIATURE_IMAGERY_TILT_SHIFT, resolveTiltShift, type TiltShiftSettings } from './rendering/TiltShiftPass.js';
 import { approach, prefersReducedMotion, tauFor, DURATION, EASE, progress } from './core/motion.js';
+import { AMBIENT_IDLE_MS, stepAmbientEnergy } from './core/ambientIdle.js';
+import type { LayerGeometry } from './tiles/worker/decodeProtocol.js';
 import { logger } from './util/log.js';
 import {
   AUTO_MOTION_RES_FRAME_MS,
@@ -151,11 +153,15 @@ class HereBeDragonsImpl implements HereBeDragons {
    * Frames elapsed since the last actual `composer.render()`. A safety-net
    * heartbeat: even with `needsRender` false we force a render every
    * `RENDER_HEARTBEAT_FRAMES` so any dirty source we forgot to wire up
-   * self-corrects within ~0.5 s instead of leaving a permanently stale
-   * frame. Idle cost is then ~2 fps, not 60 — still cool, still correct.
+   * self-corrects within a few seconds instead of leaving a permanently stale
+   * frame. Every public mutation and every async landing nudges `needsRender`
+   * itself, so the heartbeat is insurance, not a mechanism: at 30 frames it
+   * redrew the whole scene twice a second on a map standing still (30–45 ms
+   * of GPU each at 2× on an Intel Iris — a warm laptop for nothing). 240
+   * frames ≈ 4 s at 60 Hz keeps the insurance at well under 1 % of the GPU.
    */
   private framesSinceRender = 0;
-  private static readonly RENDER_HEARTBEAT_FRAMES = 30;
+  private static readonly RENDER_HEARTBEAT_FRAMES = 240;
   /**
    * Frames to ignore before the FPS-based auto-downgrade starts watching.
    * The first second or two of operation is always slow — shader compile,
@@ -257,6 +263,13 @@ class HereBeDragonsImpl implements HereBeDragons {
   private pitchedRoofsEnabledValue = false;
   /** Global wind-sway multiplier for grass + tree billboards (1 = default). */
   private windStrengthValue = 1;
+  /** `performance.ambientIdleMs`: how long the ambient animations outlive the last interaction. */
+  private readonly ambientIdleMs: number;
+  /** How alive the ambient animations are right now, 0..1 — eased toward 1 while the user is
+   *  interacting and toward 0 once they have been idle for `ambientIdleMs` (see updateAmbientIdle). */
+  private ambientEnergy = 1;
+  /** `performance.now()` the pointer last crossed the map: the user is looking at it. */
+  private lastPointerActivityMs = 0;
   /** Most-recently-applied theme name (via applyTheme). Empty if never set. */
   private currentTheme = '';
   /** Active custom color overrides layered on top of the current theme. */
@@ -712,6 +725,10 @@ class HereBeDragonsImpl implements HereBeDragons {
       ? createAutoMotionResState()
       : null;
     this.autoMotionResFrameMs = options.performance?.autoMotionResFrameMs ?? AUTO_MOTION_RES_FRAME_MS;
+    const ambientIdle = options.performance?.ambientIdleMs;
+    this.ambientIdleMs = typeof ambientIdle === 'number' && !Number.isNaN(ambientIdle) && ambientIdle >= 0
+      ? ambientIdle
+      : AMBIENT_IDLE_MS;
 
     this.source = new PMTilesSource(options.pmtiles_url);
     this.workerPool = new TileWorkerPool({ size: options.performance?.workerPoolSize });
@@ -849,6 +866,8 @@ class HereBeDragonsImpl implements HereBeDragons {
     this.composer.setMouseUv(-10, -10);
     const canvas = this.renderer.dom;
     this.onPointerMove = (e: PointerEvent) => {
+      // The user is looking at the map: the ambient animations stay (or come back) alive.
+      this.lastPointerActivityMs = performance.now();
       const rect = canvas.getBoundingClientRect();
       const u = (e.clientX - rect.left) / rect.width;
       // Three.js / WebGL UV: y=0 is bottom; DOM y=0 is top. Flip.
@@ -1261,6 +1280,9 @@ class HereBeDragonsImpl implements HereBeDragons {
 
     const warmup = new THREE.Group();
     warmup.name = 'ShaderWarmup';
+    // three's compile walks VISIBLE objects, and the render loop is already running: park the
+    // group far below the ground so a frame drawn meanwhile never shows it.
+    warmup.position.y = -100_000;
     for (const slot of Object.values(Palette)) {
       const mat = this.scene.materials.get(slot);
       warmup.add(new THREE.Mesh(geo, mat));
@@ -1275,6 +1297,28 @@ class HereBeDragonsImpl implements HereBeDragons {
         warmup.add(new THREE.Mesh(geo, this.scene.materials.getUnmasked(slot)));
       }
     }
+    // Every other program the map can need, so none of them links on the main thread the first
+    // time a tile or an overlay happens to use it. Measured in WebKit on an Intel Iris: the trees
+    // material linking on the first tile past zoom 14 was a 160 ms frame in the middle of a
+    // wheel zoom; the same again for the first street name, the first parcel tile. Only the
+    // layers that are on — a program nobody will use is start-up time for nothing.
+    const one: LayerGeometry = { positions: new Float32Array([0, 0, 0]), indices: new Uint32Array(0) };
+    const billboardLayers = [this.treesLayer, this.grassLayer, this.signsLayer] as const;
+    for (const layer of billboardLayers) if (this.layers.isEnabled(layer.name)) warmup.add(layer.build(one));
+    if (this.layers.isEnabled('waves')) {
+      warmup.add(this.wavesLayer.build({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 0, 1]),
+        indices: new Uint32Array([0, 1, 2]),
+        attributes: { shoreU: new Float32Array(3), shoreV: new Float32Array(3) }
+      }));
+    }
+    if (this.layers.isEnabled('labels')) warmup.add(this.labelsLayer.warmup());
+    if (this.parcelsManager) for (const o of this.parcelsManager.warmupObjects()) warmup.add(o);
+    warmup.add(this.polygonsManager.warmupObject());
+    for (const o of this.buildingsManager.warmupObjects()) warmup.add(o);
+    if (this.sporesEnabledValue) warmup.add(new THREE.Mesh(this.sporesField.mesh.geometry, this.sporesField.mesh.material));
+    // Drawn once below whatever the camera looks at (see Composer.warmupDraw).
+    warmup.traverse((obj) => { obj.frustumCulled = false; });
     // Live lights influence shader specialization (light count is part of
     // the program key for MeshToonMaterial). Add to the real scene so the
     // compiled programs match what tile meshes will actually run.
@@ -1288,9 +1332,17 @@ class HereBeDragonsImpl implements HereBeDragons {
       } else {
         r.compile(this.scene.three, this.camera.three);
       }
+      if (!this.destroyed) this.composer.warmupDraw();
     } finally {
       this.scene.three.remove(warmup);
-      geo.dispose();
+      // Geometries only — the materials are the live ones (a disposed material would also
+      // release the very program this warmed up). The billboard layers prune their mesh
+      // registries on the geometry's dispose event.
+      const disposed = new Set<THREE.BufferGeometry>([this.sporesField.mesh.geometry]);
+      warmup.traverse((obj) => {
+        const g = (obj as THREE.Mesh).geometry;
+        if (g && !disposed.has(g)) { disposed.add(g); g.dispose(); }
+      });
     }
   }
 
@@ -1414,6 +1466,9 @@ class HereBeDragonsImpl implements HereBeDragons {
       // tileManager / layers report whether they changed the rendered scene.
       const tileDirty = this.tileManager.update(false, frameBudgetOk, suspendBuilds);
       this.baseTileManager?.update(false);
+      // Ambient idle: the wind dies down once the user has been idle a while, so a still map
+      // draws nothing at all (see updateAmbientIdle). Decided before the layers tick.
+      this.updateAmbientIdle(now, dt);
       const layersDirty = this.layers.update(dt);
       // Recompute the parcels overlay's visible tile window + kick loads.
       // Cheap when no overlay is configured (null), disabled, or below its
@@ -1451,20 +1506,26 @@ class HereBeDragonsImpl implements HereBeDragons {
       const bridgesDirty = this.bridgesManager.update(dt);
       // Drifting spores animate while visible (gated by theme + zoom inside).
       const sporesDirty = this.sporesField.update(
-        dt,
+        dt * this.ambientEnergy,
         this.camera.controls.target,
         this.camera.getView().zoom
       );
       this.cloudTime += dt;
 
       // --- dynamic resolution -------------------------------------------
-      // Drop to the cheap motion pixel ratio while the camera moves or tiles
-      // stream, snap back to full res on settle.
-      this.updateDynamicResolution(
-        now,
-        cameraMoved,
-        tileDirty || this.tileManager.isStreaming()
-      );
+      // Drop to the cheap motion pixel ratio while the camera moves, snap
+      // back to full res on settle (tiles still streaming do not hold it).
+      this.updateDynamicResolution(now, cameraMoved);
+      // The motion scale's targets are allocated on an idle tick, never mid-gesture: the first
+      // switch and the first settle of a session otherwise paid ~110 ms for them (Composer.prepareScale).
+      // Also while the auto step (autoMotionResolution) is still armed: it fires mid-pan, and the
+      // settle that follows must find the targets ready.
+      if ((this.dynamicResolutionEnabled || this.autoMotionRes !== null) && !this.renderingLowRes && atRest
+        && !tileDirty && !this.tileManager.isStreaming()
+        && this.effectivePixelRatio > HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP) {
+        const motionScale = HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP / this.effectivePixelRatio;
+        if (!this.composer.isScalePrepared(motionScale)) this.composer.prepareScale(motionScale);
+      }
 
       // --- render-on-demand decision ------------------------------------
       // Only run the (expensive, 5-pass) render when something actually
@@ -2140,18 +2201,25 @@ class HereBeDragonsImpl implements HereBeDragons {
 
   /**
    * Dynamic-resolution decision, run once per RAF tick before the render.
-   * Renders at the cheap motion ratio while the camera is moving or tiles are
-   * streaming, then snaps back to the full rest ratio (and forces one redraw)
-   * once both have been quiet for `DYNAMIC_RES_SETTLE_MS`.
+   * Renders at the cheap motion ratio while the camera is moving, then snaps
+   * back to the full rest ratio (and forces one redraw) once it has been quiet
+   * for `DYNAMIC_RES_SETTLE_MS`.
+   *
+   * Tiles still streaming in after the camera has stopped do NOT hold the
+   * motion ratio: they used to, and on a tilted view the picture then stayed
+   * soft for as long as the stream lasted — measured 3 s and more after the
+   * gesture had ended, every one of those frames drawn at 1× and dissolved
+   * back only at the very end. A landing tile re-renders the still picture
+   * once at full resolution instead (a few tens of ms each, a handful a
+   * second at most), so the map is sharp from the moment the camera rests.
    *
    * @param now           `performance.now()` for this tick.
    * @param cameraMoved   The camera moved this frame (real motion, not our
    *                      own settle redraw — see `cameraDirty`).
-   * @param tilesStreaming Tiles are still fetching / decoding / building.
    */
-  private updateDynamicResolution(now: number, cameraMoved: boolean, tilesStreaming: boolean): void {
+  private updateDynamicResolution(now: number, cameraMoved: boolean): void {
     if (!this.dynamicResolutionEnabled) return;
-    if (cameraMoved || tilesStreaming) this.lastInteractionMs = now;
+    if (cameraMoved) this.lastInteractionMs = now;
     const active = (now - this.lastInteractionMs) < HereBeDragonsImpl.DYNAMIC_RES_SETTLE_MS;
     if (active === this.renderingLowRes) return;
     // Back to the full ratio: capture the moving frame BEFORE the targets are reallocated at the
@@ -2457,6 +2525,35 @@ class HereBeDragonsImpl implements HereBeDragons {
   private static readonly AMBIENT_FROZEN_TICK_MS = 1000;
   /** Ambient throttle interval in force (0 = none), to skip no-op writes. */
   private ambientIntervalMs = 0;
+  /**
+   * Ambient idle. The wind in the trees and grass, the shoreline foam and the drifting motes are
+   * continuous animations: every frame they change the picture, so for as long as one of them is
+   * in view the map re-renders at the display rate — 30–45 ms of GPU per frame at 2× on an
+   * Intel Iris, indefinitely, on a map nobody is touching. Here the animations are alive while
+   * the user is present (a gesture, a camera move or the pointer crossing the map within
+   * `ambientIdleMs`) and die down afterwards: the ambient energy eases toward 0 (see
+   * core/ambientIdle), which both slows the layers' clocks (`LayerRegistry.setTimeScale`) and
+   * lets the wind amplitude settle, so the trees straighten and come to rest instead of freezing
+   * mid-lean. At 0 the layers are ticked with `dt = 0` and report nothing dirty — the map draws
+   * no frame at all until the next interaction, when the breeze picks up again over half a second.
+   */
+  private updateAmbientIdle(now: number, dtS: number): void {
+    const energy = stepAmbientEnergy(this.ambientEnergy, {
+      now,
+      lastActivityMs: Math.max(this.lastCameraMotionMs, this.lastPointerActivityMs),
+      gesturePressed: this.gesturePressed,
+      idleMs: this.ambientIdleMs,
+      dtMs: dtS * 1000,
+      reducedMotion: this.reducedMotion
+    });
+    if (energy === this.ambientEnergy) return;
+    this.ambientEnergy = energy;
+    for (const name of HereBeDragonsImpl.AMBIENT_LAYERS) this.layers.setTimeScale(name, energy < 1 ? energy : null);
+    this.applyWindStrength();
+    // The easing itself changes the picture (amplitude), even on a tick the layers' slowed
+    // clocks barely advance; the layers report dirty for as long as their clocks run.
+    if (energy > 0) this.needsRender = true;
+  }
 
   /**
    * Idle cost. Trees, grass and shoreline foam animate continuously, so while
@@ -2855,9 +2952,15 @@ class HereBeDragonsImpl implements HereBeDragons {
    *  0 = still, >1 = breezier. Persists across theme changes. */
   setWindStrength(multiplier: number): void {
     this.windStrengthValue = Math.max(0, Math.min(3, multiplier));
-    this.grassLayer.setWindStrength(this.windStrengthValue);
-    this.treesLayer.setWindStrength(this.windStrengthValue);
+    this.applyWindStrength();
     this.needsRender = true;
+  }
+
+  /** The wind the billboards feel: the developer's multiplier times the ambient energy. */
+  private applyWindStrength(): void {
+    const wind = this.windStrengthValue * this.ambientEnergy;
+    this.grassLayer.setWindStrength(wind);
+    this.treesLayer.setWindStrength(wind);
   }
 
   getWindStrength(): number {

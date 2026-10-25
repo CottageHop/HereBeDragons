@@ -6,6 +6,54 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## Unreleased
 
+- **A map nobody is touching draws nothing.** The wind in the trees and grass, the shoreline
+  foam and the drifting motes are continuous animations, so for as long as one was in view the map
+  re-rendered every frame — 30–45 ms of GPU a frame at 2× on an Intel Iris, indefinitely, on a
+  still map (a warm laptop, a draining battery). The ambient animations now live while the user is
+  present and die down afterwards: `performance.ambientIdleMs` (default 4 s) after the last
+  gesture, camera move or pointer crossing, the breeze eases out over about a second — the trees
+  straighten and come to rest, the foam slows to a stop — and the map stops drawing altogether,
+  until the next touch brings it back over half a second. `Infinity` keeps the animations running
+  as before. Measured on the demo at zoom 15 in WebKit: 87 renders in 3 s of rest → 0.
+- **The safety heartbeat runs every ~4 s, not twice a second.** Every mutation and every landing
+  nudges the render loop itself; the heartbeat only ever re-drew the same picture (measured:
+  zero pixels changed between heartbeats), at the cost of a full 2× frame twice a second.
+- **No stall at the start or the end of a gesture.** Dynamic resolution re-sized one set of render
+  targets on every flip between the motion and the rest resolution, which released and allocated
+  ~120 MB of textures each time the camera came to rest — a 70–150 ms stall of the main thread in
+  WebKit on every settle. Each render scale now keeps its own targets, and the motion scale's set
+  (with the dissolve's capture target) is allocated on an idle tick, never mid-gesture.
+- **Every shader program draws once at start-up.** The warm-up compiled the palette materials
+  only; the trees, grass, waves, signs, labels, parcels, polygons and building highlights linked
+  their programs on first use — a 160 ms frame in the middle of the first wheel zoom past 14, the
+  same again for the first street name, the first parcel tile, the first settle dissolve. They are
+  warmed with the palette now, and every program is also *drawn* once into tiny targets of the
+  real targets' formats: WebKit's Metal backend builds its pipeline state at the first draw, not
+  at link, and that was most of the cost.
+- **Sharp the moment the camera rests.** Tiles still streaming in after a gesture no longer hold
+  the motion resolution: on a tilted view the picture stayed soft for 3 s and more after the
+  camera had stopped, every frame drawn at 1× and dissolved back only when the last tile landed.
+  A landing tile re-renders the still picture once at full resolution instead.
+- **Parcel outlines fade with distance.** A one-pixel outline drawn at full strength at any
+  distance turned the far field of a tilted view into a dark mass of aliased lines over the
+  buildings; the outlines now fade out between 4 and 8 ground metres per CSS pixel, so legible
+  lots stay crisp and the horizon stays clean.
+- **Street names only when they can be read.** A street name whose glyphs would land under 11 CSS
+  px on screen (an 8 m glyph at zoom 13.8 was 6 px) is a smear along the road, not a label; it is
+  held back until the camera is close enough, whatever the tile's own `min_zoom` offers.
+- Measured together, the production configuration (professional theme, trees, parcels, 150
+  clustered tags) in WebKit at 2× on an Intel Iris: pan / zoom / tilt worst frames 38–47 ms with
+  no frame over 50 ms (before: 88–168 ms spikes on every gesture), and at rest 0 renders in 8 s
+  but one heartbeat.
+- **Splats: imagery through `<img>` on WebKit.** Safari (and every browser on iOS) uploaded the
+  satellite imagery as ImageBitmaps; the decode's completion runs a garbage-collection check in
+  JavaScriptCore that, under the allocation load of a tile landing, deadlocked the page — the
+  frozen tab Safari then kills and reloads with the overlay off (stack:
+  `createImageBitmapAndCallCompletionHandler` → `Heap::collectIfNecessaryOrDefer` →
+  `stopIfNecessarySlow`). Measured on the same tiles in headless WebKit: 2 of 4 loads froze with
+  ImageBitmap uploads, 0 of 3 through `<img>`. WebKit now takes the `<img>` path (about 20 ms of
+  main thread per 2048² image on upload: a hitch, not a freeze); other engines keep the bitmap
+  path and its cheaper landings.
 - **Demo: framed roofs and Rigby, Idaho.** The Pages demo now serves release
   `demo-tiles-mesh-v2`. Coeur d'Alene's houses are rebuilt with roofs framed the way a builder
   would frame them: a squared outline split into a main block and wings, one standard x/12 pitch,

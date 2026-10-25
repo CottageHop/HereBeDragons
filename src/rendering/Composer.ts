@@ -29,12 +29,37 @@ import { type CoverageUniforms, patchCoverage } from '../materials/coverageShade
  * Clouds sit AFTER the outline so they don't get the sketch outline treatment
  * but BEFORE FXAA so the noisy raymarch output gets anti-aliased.
  */
+/**
+ * The render targets of one internal resolution: the colour pass (with its depth texture), the
+ * composite, and the scratch the dissolve / reprojection blend into. One set per render scale
+ * (see `Composer.setRenderScale`), kept resident together.
+ */
+interface TargetSet {
+  scale: number;
+  color: THREE.WebGLRenderTarget;
+  composite: THREE.WebGLRenderTarget;
+  depth: THREE.DepthTexture;
+  blend: THREE.WebGLRenderTarget | null;
+}
+
 export class Composer {
   private renderer: Renderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
 
-  private colorTarget: THREE.WebGLRenderTarget;
+  /**
+   * The targets, one set per internal render scale. Dynamic resolution flips the scale at the
+   * start and end of every gesture; re-sizing one set of targets on each flip meant releasing and
+   * allocating ~120 MB of textures (three HalfFloat 2880×1800 targets and a depth texture at 2×)
+   * every time the camera came to rest — measured as a 70–150 ms stall of the main thread in
+   * WebKit, on every settle. Each scale keeps its own targets instead; a flip just switches which
+   * set draws. A canvas resize re-sizes the active set and drops the others (recreated on demand).
+   */
+  private readonly sets = new Map<number, TargetSet>();
+  private active: TargetSet;
+  private get colorTarget(): THREE.WebGLRenderTarget { return this.active.color; }
+  private get compositeTarget(): THREE.WebGLRenderTarget { return this.active.composite; }
+  private get depthTexture(): THREE.DepthTexture { return this.active.depth; }
   /**
    * Normal + outline targets for the sketch-outline pipeline. Lazy-allocated
    * by `ensureOutlineTargets()` the first time the outline pass actually runs
@@ -53,7 +78,6 @@ export class Composer {
    * default). `ensureNoiseTarget()` materializes + resizes it on demand.
    */
   private noiseTarget: THREE.WebGLRenderTarget | null = null;
-  private compositeTarget: THREE.WebGLRenderTarget;
   /**
    * Half-resolution target the cloud raymarch renders into. Holds premultiplied
    * cloud color (.rgb) + scene transmittance (.a); `cloudComposite` folds it
@@ -77,7 +101,6 @@ export class Composer {
   /** Reprojection of the last frame to a newer camera (see `presentReprojected`). */
   private readonly reproject = new ReprojectPass();
   private dissolveFrom: THREE.WebGLRenderTarget | null = null;
-  private dissolveOut: THREE.WebGLRenderTarget | null = null;
   private dissolveActive = false;
   private dissolveT = 0;
   /** `dissolveFrom` holds a frame captured for REPROJECTION across a resize (see captureHeldFrame);
@@ -97,7 +120,6 @@ export class Composer {
   /** MSAA sample count for the lazily-allocated normal target (matches the
    *  color target). Captured from the constructor arg. */
   private readonly msaaSamples: number;
-  private depthTexture: THREE.DepthTexture;
   private outline: OutlinePass;
   private clouds: CloudsPass;
   private cloudComposite: CloudCompositePass;
@@ -143,9 +165,6 @@ export class Composer {
     const w = Math.max(1, Math.round(renderer.width * pr));
     const h = Math.max(1, Math.round(renderer.height * pr));
 
-    this.depthTexture = new THREE.DepthTexture(w, h);
-    this.depthTexture.type = THREE.UnsignedIntType;
-
     // All intermediate render targets store LINEAR values (no sRGB encoding).
     // Color space conversion happens once at the end of the pipeline in
     // FxaaPass before writing to the canvas. This avoids any auto-encode /
@@ -168,15 +187,11 @@ export class Composer {
     // the regular texture so downstream passes (outline/clouds/FXAA) keep
     // sampling 1 sample/pixel as before. `samples: 0` is a plain
     // single-sampled target.
-    this.colorTarget = new THREE.WebGLRenderTarget(w, h, {
-      type: THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.LinearSRGBColorSpace,
-      depthTexture: this.depthTexture,
-      depthBuffer: true,
-      stencilBuffer: false,
-      samples: msaaSamples
-    });
+    //
+    // The colour target, its depth texture and the composite below are allocated per render
+    // scale by `makeSet` (see `sets`); the canvas-resolution set is the first.
+    this.active = this.makeSet(1, w, h);
+    this.sets.set(1, this.active);
 
     // MSAA on the normal target (matches the color-target sample count).
     // Without it, polygon silhouettes in the normal buffer are 1-pixel
@@ -195,14 +210,6 @@ export class Composer {
     //
     // noiseTarget is lazy-allocated by `ensureNoiseTarget` the first time the
     // noise pass is actually used — see field comment.
-
-    this.compositeTarget = new THREE.WebGLRenderTarget(w, h, {
-      type: THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.LinearSRGBColorSpace,
-      depthBuffer: false,
-      stencilBuffer: false
-    });
 
     this.normalMaterial = new THREE.MeshNormalMaterial();
     // (Tile reveal: see `setCoverageUniforms`.)
@@ -267,7 +274,19 @@ export class Composer {
     const s = Number.isFinite(scale) && scale > 0 ? Math.min(scale, 1) : 1;
     if (s === this.renderScale) return;
     this.renderScale = s;
-    this.resize(this.renderer.width, this.renderer.height);
+    let set = this.sets.get(s);
+    if (!set) {
+      const pr = this.renderer.three.getPixelRatio() * s;
+      set = this.makeSet(
+        s,
+        Math.max(1, Math.round(this.renderer.width * pr)),
+        Math.max(1, Math.round(this.renderer.height * pr))
+      );
+      this.sets.set(s, set);
+    }
+    this.active = set;
+    this.applyActiveSize(this.renderer.width, this.renderer.height);
+    this.sceneTexValid = false;
   }
 
   getRenderScale(): number {
@@ -279,16 +298,62 @@ export class Composer {
     return this.compositeTarget.height;
   }
 
+  /** The targets of one render scale: colour (+ depth texture), composite, and a lazy blend scratch. */
+  private makeSet(scale: number, w: number, h: number): TargetSet {
+    const depth = new THREE.DepthTexture(w, h);
+    depth.type = THREE.UnsignedIntType;
+    const color = new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      depthTexture: depth,
+      depthBuffer: true,
+      stencilBuffer: false,
+      samples: this.msaaSamples
+    });
+    const composite = new THREE.WebGLRenderTarget(w, h, {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.LinearSRGBColorSpace,
+      depthBuffer: false,
+      stencilBuffer: false
+    });
+    return { scale, color, composite, depth, blend: null };
+  }
+
+  private disposeSet(set: TargetSet): void {
+    set.color.dispose();
+    set.composite.dispose();
+    set.blend?.dispose();
+    set.depth.dispose();
+  }
+
   resize(width: number, height: number): void {
     const pr = this.renderer.three.getPixelRatio() * this.renderScale;
     const w = Math.max(1, Math.round(width * pr));
     const h = Math.max(1, Math.round(height * pr));
-    this.colorTarget.setSize(w, h);
+    this.active.color.setSize(w, h);
+    this.active.composite.setSize(w, h);
+    this.active.blend?.setSize(w, h);
+    // The other scales' sets are stale at the new size: drop them, they come back on demand.
+    for (const [scale, set] of this.sets) {
+      if (set === this.active) continue;
+      this.disposeSet(set);
+      this.sets.delete(scale);
+    }
+    this.applyActiveSize(width, height);
+    this.sceneTexValid = false;
+  }
+
+  /** Size everything that follows the active set: the lazy targets and the passes' texel sizes. */
+  private applyActiveSize(width: number, height: number): void {
+    const w = this.active.color.width;
+    const h = this.active.color.height;
+    const pr = this.renderer.three.getPixelRatio() * this.renderScale;
     // Lazily-allocated targets resize only if they've been materialized.
     this.normalTarget?.setSize(w, h);
     this.outlineTarget?.setSize(w, h);
     this.noiseTarget?.setSize(w, h);
-    this.compositeTarget.setSize(w, h);
     this.tiltShiftTargets?.[0].setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
     this.tiltShiftTargets?.[1].setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
     this.tiltShiftTargets?.[2].setSize(w, h);
@@ -302,8 +367,91 @@ export class Composer {
     this.outline.setTexel(width, height);
     this.fxaa.setSize(w, h);
     this.clouds.setAspect(w / h);
-    this.dissolveOut?.setSize(w, h);
-    this.sceneTexValid = false;
+  }
+
+  /**
+   * Allocate — and touch, so the GPU really backs them — everything the first switch to `scale`
+   * and the first settle back from it would otherwise allocate mid-gesture: that scale's target
+   * set with its blend scratch, the current scale's blend scratch, and the dissolve's capture
+   * target at the motion size. Measured in WebKit: the first settle of a session stalled the main
+   * thread 110 ms on exactly these allocations. Called by the map on an idle tick, where a stall
+   * costs nothing visible. A no-op once done (until a canvas resize drops the inactive sets).
+   */
+  prepareScale(scale: number): void {
+    const s = Number.isFinite(scale) && scale > 0 ? Math.min(scale, 1) : 1;
+    const r = this.renderer.three;
+    const pr = this.renderer.three.getPixelRatio();
+    let set = this.sets.get(s);
+    if (!set) {
+      set = this.makeSet(
+        s,
+        Math.max(1, Math.round(this.renderer.width * pr * s)),
+        Math.max(1, Math.round(this.renderer.height * pr * s))
+      );
+      this.sets.set(s, set);
+    }
+    const prevTarget = r.getRenderTarget();
+    const touch = (t: THREE.WebGLRenderTarget): void => { r.setRenderTarget(t); r.clear(); };
+    try {
+      for (const owner of [set, this.active]) {
+        if (!owner.blend) {
+          owner.blend = new THREE.WebGLRenderTarget(owner.composite.width, owner.composite.height, {
+            type: THREE.HalfFloatType,
+            format: THREE.RGBAFormat,
+            colorSpace: THREE.LinearSRGBColorSpace,
+            depthBuffer: false,
+            stencilBuffer: false
+          });
+        }
+      }
+      if (set !== this.active) { touch(set.color); touch(set.composite); }
+      touch(set.blend!);
+      touch(this.active.blend!);
+      // The dissolve captures the last MOVING frame, i.e. at the motion scale's size.
+      const from = this.ensureDissolveFrom(set.color.width, set.color.height);
+      touch(from);
+    } finally {
+      r.setRenderTarget(prevTarget);
+    }
+  }
+
+  /** Whether `prepareScale(scale)` has done its work (false again after a canvas resize). */
+  isScalePrepared(scale: number): boolean {
+    const s = Number.isFinite(scale) && scale > 0 ? Math.min(scale, 1) : 1;
+    const set = this.sets.get(s);
+    return !!set && !!set.blend && !!this.active.blend && !!this.dissolveFrom
+      && this.dissolveFrom.width === set.color.width && this.dissolveFrom.height === set.color.height;
+  }
+
+  /**
+   * Draw once with every program the scene and the present-time passes use, into tiny targets of
+   * the real targets' formats. Compiling a program is not the whole of its cost: the GPU builds
+   * its pipeline state the first time a program draws into a given target format (WebKit's
+   * ANGLE-on-Metal), measured as a 150 ms frame when the first settle dissolve ran and 70–160 ms
+   * for the first draw of a material a tile happened to bring. Done here, at start-up, instead.
+   * Objects the caller wants drawn must not be frustum-culled (they can sit anywhere).
+   */
+  warmupDraw(): void {
+    const r = this.renderer.three;
+    const tiny = this.makeSet(1, 4, 4);
+    const prevTarget = r.getRenderTarget();
+    try {
+      r.setRenderTarget(tiny.color);
+      r.clear();
+      this.scene.overrideMaterial = null;
+      r.render(this.scene, this.camera);
+      // The dissolve blend and the reprojection, into a composite-format target.
+      r.setRenderTarget(tiny.composite);
+      this.dissolve.configure(tiny.color.texture, tiny.color.texture, 0.5);
+      r.render(this.dissolve.scene, this.dissolve.camera);
+      const identity = new THREE.Matrix4();
+      this.reproject.configure(tiny.color.texture, identity, identity, new THREE.Vector3(), tiny.composite, tiny.depth, 1);
+      r.render(this.reproject.scene, this.reproject.camera);
+      this.dissolve.configure(null, tiny.color.texture, 1);
+    } finally {
+      r.setRenderTarget(prevTarget);
+      this.disposeSet(tiny);
+    }
   }
 
   /**
@@ -410,10 +558,12 @@ export class Composer {
     return true;
   }
 
-  /** The full-size scratch target the dissolve blend and the reprojection write before FXAA. */
+  /** The full-size scratch target the dissolve blend and the reprojection write before FXAA
+   *  (one per render scale, with the set it belongs to). */
   private ensureBlendTarget(): THREE.WebGLRenderTarget {
-    if (!this.dissolveOut) {
-      this.dissolveOut = new THREE.WebGLRenderTarget(this.compositeTarget.width, this.compositeTarget.height, {
+    const set = this.active;
+    if (!set.blend) {
+      set.blend = new THREE.WebGLRenderTarget(set.composite.width, set.composite.height, {
         type: THREE.HalfFloatType,
         format: THREE.RGBAFormat,
         colorSpace: THREE.LinearSRGBColorSpace,
@@ -421,7 +571,7 @@ export class Composer {
         stencilBuffer: false
       });
     }
-    return this.dissolveOut;
+    return set.blend;
   }
 
   /**
@@ -514,9 +664,8 @@ export class Composer {
    */
   private ensureNoiseTarget(): THREE.WebGLRenderTarget {
     if (this.noiseTarget) return this.noiseTarget;
-    const pr = this.renderer.three.getPixelRatio();
-    const w = Math.max(1, Math.round(this.renderer.width * pr));
-    const h = Math.max(1, Math.round(this.renderer.height * pr));
+    const w = this.active.color.width;
+    const h = this.active.color.height;
     this.noiseTarget = new THREE.WebGLRenderTarget(w, h, {
       type: THREE.HalfFloatType,
       format: THREE.RGBAFormat,
@@ -540,9 +689,8 @@ export class Composer {
     if (this.normalTarget && this.outlineTarget) {
       return { normal: this.normalTarget, outline: this.outlineTarget };
     }
-    const pr = this.renderer.three.getPixelRatio();
-    const w = Math.max(1, Math.round(this.renderer.width * pr));
-    const h = Math.max(1, Math.round(this.renderer.height * pr));
+    const w = this.active.color.width;
+    const h = this.active.color.height;
     // MSAA on the normal target matches the color target (resolved to a plain
     // texture for the Sobel pass) — see the original constructor rationale.
     this.normalTarget = new THREE.WebGLRenderTarget(w, h, {
@@ -572,9 +720,8 @@ export class Composer {
    */
   private ensureCloudTarget(): THREE.WebGLRenderTarget {
     if (this.cloudHalfTarget) return this.cloudHalfTarget;
-    const pr = this.renderer.three.getPixelRatio();
-    const w = Math.max(1, Math.round(this.renderer.width * pr));
-    const h = Math.max(1, Math.round(this.renderer.height * pr));
+    const w = this.active.color.width;
+    const h = this.active.color.height;
     const cw = Math.max(1, Math.round(w * Composer.CLOUD_RES_SCALE));
     const ch = Math.max(1, Math.round(h * Composer.CLOUD_RES_SCALE));
     this.cloudHalfTarget = new THREE.WebGLRenderTarget(cw, ch, {
@@ -746,7 +893,9 @@ export class Composer {
       this.camera.layers.enable(LABEL_THREE_LAYER);
       this.scene.overrideMaterial = null;
 
-      // Pass 3: outline composite → outlineTarget.
+      // Pass 3: outline composite → outlineTarget. The colour + depth inputs follow the active
+      // render scale's targets (they are re-pointed here, not only when the targets were made).
+      this.outline.setInputs(this.colorTarget.texture, normalTarget.texture, this.depthTexture);
       r.setRenderTarget(outlineTarget);
       r.clear();
       this.camera.updateMatrixWorld();
@@ -862,21 +1011,19 @@ export class Composer {
   }
 
   dispose(): void {
-    this.colorTarget.dispose();
+    for (const set of this.sets.values()) this.disposeSet(set);
+    this.sets.clear();
     this.normalTarget?.dispose();
     this.outlineTarget?.dispose();
     this.noiseTarget?.dispose();
-    this.compositeTarget.dispose();
     this.cloudHalfTarget?.dispose();
     this.tiltShiftTargets?.[0].dispose();
     this.tiltShiftTargets?.[1].dispose();
     this.tiltShiftTargets?.[2].dispose();
     this.tiltShift.dispose();
     this.dissolveFrom?.dispose();
-    this.dissolveOut?.dispose();
     this.dissolve.dispose();
     this.reproject.dispose();
-    this.depthTexture.dispose();
     this.normalMaterial.dispose();
     this.outline.dispose();
     this.clouds.dispose();

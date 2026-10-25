@@ -168,6 +168,33 @@ export async function detectBitmapFlip(
   }
 }
 
+/**
+ * Whether this browser should upload imagery through an `<img>` rather than an ImageBitmap:
+ * WebKit — Safari, and every browser on iOS. The ImageBitmap decode's completion runs a garbage
+ * collection check in JavaScriptCore, and under the allocation load of a splat tile landing that
+ * check deadlocked the page (stack: `createImageBitmapAndCallCompletionHandler` →
+ * `Heap::collectIfNecessaryOrDefer` → `stopIfNecessarySlow`, never returning): a frozen tab, which
+ * Safari then kills and reloads with the overlay off. Measured on the same tiles in headless
+ * WebKit: 2 of 4 loads froze with ImageBitmap uploads, 0 of 3 through `<img>`. The `<img>` path
+ * costs ~20 ms of main thread per 2048² image on upload instead — a hitch, not a freeze. Pure
+ * (the strings are passed in) so it is unit-tested.
+ */
+export function imageryUploadsViaImage(userAgent: string, vendor: string): boolean {
+  if (/iP(hone|ad|od)/.test(userAgent)) return true;
+  return /AppleWebKit/.test(userAgent) && /Apple/.test(vendor)
+    && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS/.test(userAgent);
+}
+
+let viaImage: boolean | null = null;
+function imageUploadsPreferred(): boolean {
+  if (viaImage === null) {
+    viaImage = typeof navigator !== 'undefined'
+      && imageryUploadsViaImage(navigator.userAgent ?? '', navigator.vendor ?? '');
+    if (viaImage) logger.info('splat imagery: <img> uploads (WebKit: ImageBitmap decodes can deadlock JavaScriptCore)');
+  }
+  return viaImage;
+}
+
 /** `detectBitmapFlip` with this page's APIs, run once and cached. False where they are missing.
  *  Logs the path taken once, so a device check is one glance at the console. */
 let bitmapFlip: Promise<boolean> | null = null;
@@ -2831,8 +2858,9 @@ export class SplatsLayer {
     // orientation is the one the <img> path gave (row 0 = the tile's north edge at v = 1).
     // WebGL ignores UNPACK_FLIP_Y for ImageBitmaps, so a browser that does not honour the
     // decode's `imageOrientation: 'flipY'` would show the imagery upside down: it gets the <img>
-    // path instead (see bitmapFlipSupported, tested once per page).
-    if (typeof createImageBitmap === 'function' && typeof fetch === 'function') {
+    // path instead (see bitmapFlipSupported, tested once per page). So does WebKit, where the
+    // bitmap decode can deadlock the page (see imageryUploadsViaImage).
+    if (typeof createImageBitmap === 'function' && typeof fetch === 'function' && !imageUploadsPreferred()) {
       return (async () => {
         if (!(await bitmapFlipSupported())) return this.loadTextureViaImage(url, finish);
         try {

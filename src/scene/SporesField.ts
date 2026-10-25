@@ -103,9 +103,14 @@ export class SporesField {
       this.mesh.visible = shouldShow;
     }
     if (!this.shown) return flipped;
+    const moved = (this.material.uniforms.uCamPos.value as THREE.Vector3).x !== cameraTarget.x
+      || (this.material.uniforms.uCamPos.value as THREE.Vector3).z !== cameraTarget.z;
+    (this.material.uniforms.uCamPos.value as THREE.Vector3).set(cameraTarget.x, 0, cameraTarget.z);
+    // A tick that advances no time (the ambient idle) changes nothing on screen unless the
+    // camera moved under the motes; reporting it dirty would keep a still map rendering.
+    if (!(dt > 0)) return flipped || moved;
     this.time += dt;
     this.material.uniforms.uTime.value = this.time;
-    (this.material.uniforms.uCamPos.value as THREE.Vector3).set(cameraTarget.x, 0, cameraTarget.z);
     return true;
   }
 

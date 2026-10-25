@@ -443,6 +443,18 @@ export interface HereBeDragonsOptions {
      * `setDynamicResolution()` takes over from it.
      */
     autoMotionResFrameMs?: number;
+    /**
+     * How long the ambient animations — wind in the trees and grass, shoreline foam, drifting
+     * spores — keep running after the user's last interaction (a camera move, a drag, a wheel
+     * step, the pointer crossing the map), in ms. Default `4000`. Past it the wind dies down over
+     * about a second and the map stops drawing altogether: a still scene costs nothing, where it
+     * used to re-render every frame for as long as a tree was in view (30–45 ms of GPU a frame on
+     * an Intel Iris at 2×, for hours). The breeze picks up again on the next touch. `Infinity`
+     * keeps the animations running for as long as the page is visible, as before; `0` runs them
+     * only while the camera is actually moving. Under `prefers-reduced-motion` the ambient
+     * animations stop as soon as the interaction ends.
+     */
+    ambientIdleMs?: number;
   };
 }
 
