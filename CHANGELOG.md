@@ -4,7 +4,7 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased — the satellite map holds still, and moves without landing
+## 0.14.0 — the satellite map holds still, and moves without landing
 
 - **A still satellite map draws nothing.** With splat tiles resident every redraw is a full splat
   frame (80–170 ms at 2× on an Intel Iris in Safari), and four things kept asking for one on a map
