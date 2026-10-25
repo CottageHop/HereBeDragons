@@ -395,6 +395,39 @@ export interface SplatsConfig {
    */
   motionLod?: boolean;
   /**
+   * The cover as the moving picture (default `true`). While the camera moves fast — a hand on the
+   * map, or the first half of a fling — every detail tile whose cover parent has landed gives way
+   * to that parent, so Spark generates, sorts and draws the cover level alone: a fraction of the
+   * splats, at the level the camera zoom asks for. Detail comes back over the second half of the
+   * glide (`core/motionDetail`), fading in over the still-drawn cover, and the settle dissolve
+   * lands it sharp at rest. The flip into motion is held until the cover set has sorted (see
+   * `holdForSwap`), so the first moving frames are the last picture reprojected rather than a
+   * full-detail frame queued behind a cold GPU. Measured on an Intel Iris in WebKit at 2× (the
+   * Coeur d'Alene demo, 1.5 M splats resident): the moving frame's scene draw 45 → 8 ms of GPU,
+   * the sort's blocking readback 9–13 → 3 ms. Needs `cover`; the lite twins (`motionLod`) take
+   * precedence when on. `false` keeps every detail tile drawn while moving.
+   */
+  motionCover?: boolean;
+  /**
+   * Splat footprint cut-off (standard deviations, see `maxStdDev`) used while the camera moves;
+   * `0` (the default) keeps `maxStdDev`. On a fill-bound GPU the moving frame scales with the
+   * pixels the splats cover, and the quad's area scales with the square of this: `1.5` draws
+   * ~45 % of the area √5 does and cuts the faint Gaussian tails that overlapping neighbours hide
+   * anyway. Restored the tick the camera rests, so the still picture is untouched. A uniform —
+   * no regeneration, no re-sort.
+   */
+  motionMaxStdDev?: number;
+  /**
+   * The pixel ratio (CSS px → device px) the map renders at while the camera moves with splat
+   * tiles resident, default `1` — the map's own motion cap; the still picture always renders at
+   * the display's ratio and the settle dissolve lands it sharp. On a fill-bound GPU a lower ratio
+   * is the plainest lever there is: measured on an Intel Iris in WebKit (Retina display, Coeur
+   * d'Alene demo), `0.75` took the moving frame's scene draw from 26 to 17 ms of GPU and the
+   * pan's p95 from 91 to 80 ms, at the cost of a softer picture while it moves. Values above the
+   * map's cap (1) are ignored.
+   */
+  motionPixelRatio?: number;
+  /**
    * Motion thinning, the governor's FIRST rung: when moving frames run over `targetFrameMs`, keep
    * only a hashed fraction of each tile's splats while the camera moves (0.7, then 0.5, then
    * 0.35), the survivors grown by 1/sqrt(keep) so the surface stays covered; every splat is

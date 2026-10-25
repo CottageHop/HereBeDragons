@@ -73,6 +73,9 @@ export const SPLATS_DEFAULTS = Object.freeze({
   neutralGrade: true,
   leanMap: true,
   motionLod: false,
+  motionCover: true,
+  motionMaxStdDev: 0,
+  motionPixelRatio: 1,
   motionThin: true,
   densityLod: 2,
   miniature: false,
@@ -155,6 +158,9 @@ export interface ResolvedSplatsOptions {
   neutralGrade: boolean;
   leanMap: boolean;
   motionLod: boolean;
+  motionCover: boolean;
+  motionMaxStdDev: number;
+  motionPixelRatio: number;
   motionThin: boolean;
   densityLod: number;
   miniature: boolean;
@@ -334,6 +340,9 @@ export function resolveSplatsOptions(
     neutralGrade: c.neutralGrade !== false,
     leanMap: c.leanMap !== false,
     motionLod: c.motionLod === true,
+    motionCover: c.motionCover !== false,
+    motionMaxStdDev: nonNegativeOr(c.motionMaxStdDev, SPLATS_DEFAULTS.motionMaxStdDev),
+    motionPixelRatio: positiveOr(c.motionPixelRatio, SPLATS_DEFAULTS.motionPixelRatio),
     motionThin: c.motionThin !== false,
     densityLod: nonNegativeOr(c.densityLod, SPLATS_DEFAULTS.densityLod),
     miniature: c.miniature === true,
@@ -432,7 +441,7 @@ export function diffSplatsOptions(
   const scalar = [
     'urlTemplate', 'lowTierUrlTemplate', 'enabled', 'minZoom', 'minTileZoom', 'maxTileZoom', 'lodBias', 'lowTierLodBias',
     'maxCameraZoom', 'maxCameraTilt', 'radius', 'maxInFlight', 'maxSplats', 'lowTierMaxSplats', 'maxStdDev',
-    'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'visibleFirst', 'splatMaxDistance', 'lowTierSplatMaxDistance', 'splatFadeMs', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'engineLod', 'engineLodSplats', 'buildingMeshes', 'governor', 'targetFrameMs', 'budgetGrowth',
+    'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'visibleFirst', 'splatMaxDistance', 'lowTierSplatMaxDistance', 'splatFadeMs', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionCover', 'motionMaxStdDev', 'motionPixelRatio', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'engineLod', 'engineLodSplats', 'buildingMeshes', 'governor', 'targetFrameMs', 'budgetGrowth',
     'levelFadeMs', 'transitionOvershoot', 'prefetchBand', 'levelSelection', 'resolutionMargin', 'resolutionTiltAware'
   ] as const;
   for (const k of scalar) if (prev[k] !== next[k]) changed.push(k);
@@ -523,6 +532,9 @@ export function exportSplatsOptions(o: ResolvedSplatsOptions): SplatsConfig | un
   if (o.keepLabels !== D.keepLabels) out.keepLabels = o.keepLabels;
   if (o.neutralGrade !== D.neutralGrade) out.neutralGrade = o.neutralGrade;
   if (o.motionLod !== D.motionLod) out.motionLod = o.motionLod;
+  if (o.motionCover !== D.motionCover) out.motionCover = o.motionCover;
+  if (!near(o.motionMaxStdDev, D.motionMaxStdDev)) out.motionMaxStdDev = Math.round(o.motionMaxStdDev * 1000) / 1000;
+  if (!near(o.motionPixelRatio, D.motionPixelRatio)) out.motionPixelRatio = Math.round(o.motionPixelRatio * 1000) / 1000;
   if (o.motionThin !== D.motionThin) out.motionThin = o.motionThin;
   if (!near(o.densityLod, D.densityLod)) out.densityLod = o.densityLod;
   if (o.miniature !== D.miniature) out.miniature = o.miniature;
@@ -558,7 +570,7 @@ export function exportSplatsOptions(o: ResolvedSplatsOptions): SplatsConfig | un
 const LITERAL_KEYS: ReadonlyArray<Exclude<keyof SplatsConfig, 'clock'>> = [
   'urlTemplate', 'imageryTemplate', 'enabled', 'minZoom', 'zoomLevel', 'minTileZoom', 'maxTileZoom',
   'lodBias', 'lowTierLodBias', 'maxCameraZoom', 'maxCameraTilt', 'radius', 'maxInFlight', 'maxSplats', 'lowTierMaxSplats',
-  'maxStdDev', 'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'engineLod', 'engineLodSplats', 'buildingMeshes', 'governor', 'targetFrameMs', 'budgetGrowth',
+  'maxStdDev', 'sortIntervalMs', 'lodRenderScale', 'frustumCull', 'hideBasemap', 'keepLabels', 'neutralGrade', 'motionLod', 'motionCover', 'motionMaxStdDev', 'motionPixelRatio', 'motionThin', 'densityLod', 'miniature', 'cover', 'cullBackFaces', 'engineLod', 'engineLodSplats', 'buildingMeshes', 'governor', 'targetFrameMs', 'budgetGrowth',
   'levelFadeMs', 'transitionOvershoot', 'prefetchBand', 'roundedUnion', 'reveal',
   'levelSelection', 'resolutionMargin', 'resolutionTiltAware'
 ];

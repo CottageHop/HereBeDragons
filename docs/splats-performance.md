@@ -570,6 +570,46 @@ behind them. Interleaved A/Bs on the pan window: a 0.75 motion resolution change
 145 ms in every arm), and the governor off (no thinning, 1.5 M active) changed nothing either —
 the frame is bound by neither pixels nor the active count on this GPU.
 
+### The moving picture (later the same day)
+
+With the still map quiet, the moving frame was measured apart: hiding the vector basemap changed
+nothing (scene draw 45 ms either way) and hiding the splats left ~0 ms — the moving frame is the
+splats. GPU-fenced A/Bs on the pan window, steady state at the 1× motion resolution:
+
+| moving picture | scene GPU p50 | pan p95 | worst |
+| --- | --- | --- | --- |
+| detail, governor thinning (0.7) — as shipped | 45 ms | 146 ms | 264 ms |
+| detail, no thinning (1.5 M active) | 40 | 85 | 223 |
+| detail thinned to 0.35 | 24 | 138 | 229 |
+| detail at 0.75× motion resolution | 34 | 142 | 228 |
+| cover only, meshes hidden after load (an experiment) | 8 | 84 | 217 |
+
+So the draw is about half per splat and half per pixel — and the experiment's 8 ms was misleading:
+with the cover's quadrants under detail faded out, only its periphery drew. The real cover is the
+lite pyramid's merged splats, inflated 1.45× by SplatMap's merge, and 250 k of them fill as many
+pixels as a million detail splats: a cover-only frame costs 36–50 ms of GPU. What the cover does
+buy is the START of a gesture: with the detail faded (never hidden — a mapping change costs Spark
+~60 ms of main thread per million splats, measured at every mesh show/hide) and the flip held until
+the sort the hold primed has landed, the first moving frames are reprojected warps instead of a
+220–260 ms full-detail frame drawn while the GPU's clock still ramps.
+
+| `motionCover` (fade-based) | scene GPU p50 | pan p95 | worst | first moving frame |
+| --- | --- | --- | --- | --- |
+| off (as shipped) | 45 | 146 | 264 | 222–264 ms |
+| on | 29 | 97 | 202 | 90 ms (a warp) |
+| on + `motionMaxStdDev` 1.5 | 26 | 91 | 178 | 91 |
+| on + 1.5 + `motionPixelRatio` 0.75 | 17 | 80 | 169 | 94 |
+| on, held-frame targets per size (shipped) | 24 | 80 | 219 | < 50 ms |
+
+The last row is the held-frame fix: `captureHeldFrame` (gesture start) and `beginDissolve`
+(settle) shared one render target and resized it between 2880×1800 and 1440×900 every time — 55 ms
+of main thread at every gesture start, ~20 ms at every settle. One target per size, allocated on
+the idle tick with the motion targets, and the first moving frame left the long-frame list.
+
+What is still heavy, and why: the cover's own fill (the data: a motion pyramid with less merge
+inflation would halve it), the ramp over the second half of the glide (both sets drawn, 53–63 ms
+scene), and the GPU's clock ramp over the first ~500 ms after a rest.
+
 ### Thread flow
 
 - Abandoned loads (a level switch, `updatePrefetch`, a zoom-out, a rebuild) kept their fetch

@@ -43,6 +43,27 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Per-frame housekeeping on a still map allocates nothing: the levels in play and the desired
   tile window are computed once per tick, the fades walk the maps in place, and the distance
   cutoff is resolved once per frame.
+- **The cover is the moving picture.** While the camera moves fast (a hand on the map, the
+  first half of a fling), every detail tile over a landed cover parent fades out through its
+  level-fade uniform — out of Spark's sort and draw at the next sort, with no mesh hidden and so no
+  Spark mapping change (one costs ~60 ms of main thread per million splats) — and the cover's
+  quadrants under it come back; over the second half of the glide detail fades back in over the
+  still-drawn cover (`core/motionDetail`), and the settle dissolve lands it sharp at rest. The flip
+  into motion is held until the moving set has sorted (`holdForSwap` now waits for the sort it
+  primed, not for a mapping change), so the first moving frames are the last picture reprojected
+  instead of a full-detail frame queued behind a cold GPU. New option `splats.motionCover`
+  (default `true`; needs `cover`, `motionLod` takes precedence). Measured on the Coeur d'Alene demo
+  in WebKit at 2× on an Intel Iris: a pan's p95 146 → 80 ms, its worst frame 264 → ~200 ms, the
+  moving frame's scene draw 45 → 24 ms of GPU, the sort's blocking readback 9–13 → 5 ms.
+- **No reallocation at the start of a gesture or at the settle.** The held-frame target was one
+  render target resized between the still picture's size (captured at every gesture start for
+  reprojection) and the motion picture's size (captured at every settle for the dissolve): 55 ms of
+  main thread at every gesture start and ~20 ms at every settle in WebKit at 2880×1800. The composer
+  keeps one capture target per size now, allocated on the same idle tick as the motion targets.
+- Two more levers for fill-bound GPUs, both off by default and documented with their measured
+  effect: `splats.motionMaxStdDev` (a tighter splat footprint while moving — a uniform) and
+  `splats.motionPixelRatio` (a lower pixel ratio for moving frames while splat tiles are resident;
+  `0.75` took the moving frame's scene draw from 26 to 17 ms of GPU on the Iris).
 - Measured method and numbers: docs/splats-performance.md §14.
 
 ## 0.13.0 — nothing at rest, no stalls in hand

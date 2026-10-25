@@ -266,6 +266,11 @@ export class SplatsController {
     return this.resolved.neutralGrade;
   }
 
+  /** The `motionPixelRatio` option in effect (read every frame — no copy). */
+  get motionPixelRatio(): number {
+    return this.resolved.motionPixelRatio;
+  }
+
   /** The `miniature` option in effect (read every frame — no copy). */
   get miniature(): boolean {
     return this.resolved.miniature;

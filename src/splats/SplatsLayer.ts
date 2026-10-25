@@ -216,7 +216,7 @@ export function bitmapFlipSupported(): Promise<boolean> {
 }
 
 /** Longest the map holds its picture for a motion-LoD swap (see `holdForSwap`), ms. */
-const SWAP_HOLD_MAX_MS = 200;
+const SWAP_HOLD_MAX_MS = 300;
 /** Time constant of a governor thinning step while moving, ms (settles in ~3x). */
 const THIN_EASE_TAU_MS = 120;
 /** Lite → full cross-fade at the start of a detail ramp: full fades in, then lite out, ms. */
@@ -522,6 +522,11 @@ interface SplatTile {
   camSet: boolean;
   /** The culling verdict (frustum + distance fade): whether a splat mesh is drawn at all. */
   cullDraw: boolean;
+  /** The frustum test alone (the imagery ground and the buildings follow it). */
+  cullVisible: boolean;
+  /** `motionCover`: how much of this detail tile's splats show while the camera moves, 0‥1 — a
+   *  factor on its level fade (0 takes them out of Spark's sort and draw at the next sort). */
+  motionFade: number;
   /** Imagery ground plane (null when imagery is off). */
   ground: THREE.Mesh | null;
   groundMaterial: THREE.ShaderMaterial | null;
@@ -590,6 +595,8 @@ interface RippleState {
 
 /** Scratch for one tile's 16 union values (weights ×8, bridge growths ×8). */
 const SCRATCH = new Float64Array(16);
+/** A cover tile's quadrant fades with nothing landed over it (see tickMotionLod). */
+const ZERO_QUAD: readonly number[] = [0, 0, 0, 0];
 
 /** The full version of a tile whose lite version holds `liteSplats`: the budget's guess before it
  *  is fetched (SplatMap's lite sets keep 43-53 % of a tile; the real count replaces this on landing). */
@@ -702,6 +709,14 @@ export class SplatsLayer {
   /** Motion LoD (see setCameraMoving): option, the map's motion signal, what is drawn now,
    *  and lite loads in flight. */
   private motionLod: boolean;
+  /** `motionCover`: the cover stands in for detail while the camera moves fast. */
+  private motionCover: boolean;
+  /** `motionMaxStdDev`: Spark's splat footprint cut-off while the camera moves (0 = `maxStdDev`). */
+  private motionMaxStdDev: number;
+  /** Spark's sort start stamp when the swap hold primed it (see holdForSwap). */
+  private primeSortTime = 0;
+  /** The cover is the moving picture right now (detail over a landed cover parent is hidden). */
+  private drawingCover = false;
   private cameraMoving = false;
   /** Motion detail from the map (see setMotionDetail): 0 = motion LoD (also the default, for a
    *  caller that only reports camera motion), 1 = full detail. */
@@ -991,6 +1006,8 @@ export class SplatsLayer {
     this.urlTemplate = o.urlTemplate;
     this.lowTierUrlTemplate = o.lowTierUrlTemplate;
     this.motionLod = o.motionLod;
+    this.motionCover = o.motionCover;
+    this.motionMaxStdDev = o.motionMaxStdDev;
     this.imageryTemplate = effectiveImageryTemplate(o);
     this.imageryDerived = imageryIsDerived(o);
     this.imageryMisses.clear();
@@ -1257,6 +1274,17 @@ export class SplatsLayer {
     // Motion LoD is live: off, the next tick shows the full meshes (lite ones already loaded
     // stay until their tiles go — cheap, and they are wanted again if it is turned back on).
     this.motionLod = o.motionLod;
+    // So is the cover as the moving picture: off, detail is back at once (a ramp in flight would
+    // otherwise leave it half faded).
+    this.motionCover = o.motionCover;
+    this.motionMaxStdDev = o.motionMaxStdDev;
+    if (!o.motionCover) {
+      for (const t of this.tiles.values()) {
+        if (t.motionFade === 1) continue;
+        t.motionFade = 1;
+        this.writeFade(t, t.lastSplatFade, t.lastGroundFade);
+      }
+    }
     // Level-SELECTION knobs are live: they only change which level the next tick asks for, and
     // a level change is already a supported transition.
     this.levelSelection = o.levelSelection;
@@ -1403,6 +1431,8 @@ export class SplatsLayer {
       key: string; z: number; appear: AppearKind; fade: number; groundFade: number;
       /** How far a child has dissolved in over each quadrant: SW, SE, NW, NE. */
       quad: number[];
+      /** `motionCover`: how much of the tile's splats show while the camera moves, 0‥1. */
+      motion: number;
     }>;
   } {
     const now = this.clock();
@@ -1416,7 +1446,8 @@ export class SplatsLayer {
         key: t.key, z: t.z, appear: t.appear,
         fade: fadeValue(fadeProgress(t.fade, now, ms)),
         groundFade: fadeValue(fadeProgress(t.groundFade, now, ms)),
-        quad: t.quadDyno ? t.quadDyno.value.toArray() : [0, 0, 0, 0]
+        quad: t.quadDyno ? t.quadDyno.value.toArray() : [0, 0, 0, 0],
+        motion: t.motionFade
       }))
     };
   }
@@ -1694,31 +1725,75 @@ export class SplatsLayer {
     return this.motionLod && !!this.lowTierUrlTemplate && !this.lowTier && !this.engineLod && this.isActive();
   }
 
+  /** The cover stands in for detail while the camera moves (see `motionCover`). */
+  private motionCoverActive(): boolean {
+    return this.motionCover && this.cover && !this.lowTier && !this.engineLod && !this.motionLodActive()
+      && this.isActive() && this.coverZ() !== null;
+  }
+
+  /** `tile` is a detail tile whose cover parent is resident and staying. */
+  private coverLandedUnder(tile: SplatTile): boolean {
+    const cz = this.coverZ();
+    return cz !== null && tile.z === cz + 1 && this.isLanded(tileKey(cz, tile.tileX >> 1, tile.tileY >> 1));
+  }
+
+  /** `tile` gives way to its cover parent right now (the cover is the moving picture): its splats
+   *  are faded out (`motionFade`), its building meshes hidden. */
+  private hiddenForMotion(tile: SplatTile): boolean {
+    return this.drawingCover && this.coverLandedUnder(tile);
+  }
+
+  /** The cover shows under detail: while it is the moving picture, and through the detail ramp
+   *  that follows, so the ground never thins out mid-glide. */
+  private coverShowsUnderDetail(): boolean {
+    return this.drawingCover || (this.motionCoverActive() && this.cameraMoving);
+  }
+
   private tickMotionLod(): void {
     if (this.disposed) return;
     const active = this.motionLodActive();
-    const useLite = active && this.cameraMoving && this.motionDetail <= 0;
-    if (useLite !== this.drawingLite) {
+    const coverMotion = this.motionCoverActive();
+    // Fast: a hand on the map, or the first half of a glide (see core/motionDetail).
+    const fast = this.cameraMoving && this.motionDetail <= 0;
+    const useLite = active && fast;
+    const useCover = coverMotion && fast;
+    if (useLite !== this.drawingLite || useCover !== this.drawingCover) {
       this.drawingLite = useLite;
-      // Lite → full while still moving (the detail ramp at the end of a glide): cross-fade rather
-      // than swap — a hard swap of every splat for a different set reads as a pop mid-motion.
-      // Into motion, and back to rest, stay hard cuts (covered by the swap hold / settle dissolve).
+      this.drawingCover = useCover;
+      // (Lite twins) lite → full while still moving (the detail ramp at the end of a glide):
+      // cross-fade rather than swap — a hard swap of every splat for a different set reads as a
+      // pop mid-motion. Into motion, and back to rest, stay hard cuts (covered by the swap hold /
+      // settle dissolve).
       const sr = this.sparkRenderer;
-      this.swapFade = !useLite && this.cameraMoving && sr?.display
+      this.swapFade = active && !useLite && this.cameraMoving && sr?.display
         ? { since: this.clock(), mapping: sr.display.mappingVersion, t0: null }
         : null;
       // A new mapping: nothing of the full set is in Spark's ordering yet beyond where it starts.
       this.rampSortKeep = useLite ? 1 : this.rampStartKeep();
       this.rampSortPending = null;
+      // Into the cover: its quadrants under detail come back NOW, and the detail over them fades
+      // to nothing (tickCoverRamp, below) — both in the very set the swap hold primes and sorts.
+      // Written a tick later they would miss that sort and leave the ground under the faded
+      // detail empty until the next one (tickLevelFade keeps the quadrants at 0 for as long as
+      // the cover shows). No mesh is hidden for this: a mapping change costs Spark ~60 ms of
+      // main thread per million splats, and a fade is a uniform.
+      if (useCover) {
+        for (const tile of this.tiles.values()) {
+          if (this.isCoverTile(tile)) this.writeFade(tile, tile.lastSplatFade, tile.lastGroundFade, ZERO_QUAD);
+        }
+      }
       for (const tile of this.tiles.values()) this.applyMeshVisibility(tile);
-      // Into motion: hold the picture until the lite set is sorted (see holdForSwap). Back to
-      // rest needs no hold — the cheap lite set keeps drawing while the full one sorts.
-      this.swapHoldSince = useLite && [...this.tiles.values()].some((t) => t.lite?.visible)
-        ? this.clock()
-        : null;
+      // Into motion: hold the picture until the moving set is sorted (see holdForSwap). Back to
+      // rest needs no hold — the cheap moving set keeps drawing while the full one sorts.
+      let hides = false;
+      for (const t of this.tiles.values()) {
+        if ((useLite && t.lite?.visible) || (useCover && this.hiddenForMotion(t))) { hides = true; break; }
+      }
+      this.swapHoldSince = hides ? this.clock() : null;
       this.swapPrimed = false;
       this.onSceneChange();
     }
+    this.tickCoverRamp();
     // Same tick as the lite flip, so Spark regenerates its splat set once for both.
     this.syncThin();
     this.tickSwapFade();
@@ -1899,12 +1974,21 @@ export class SplatsLayer {
         return false;
       }
       cam.updateMatrixWorld();
+      this.primeSortTime = sr.lastSortTime ?? 0;
       void sr.update({ scene, camera: cam });
       this.swapPrimed = true;
       this.swapHeld = true;
       return true;
     }
-    this.swapHoldSince = null;                // primed and the mappings agree: the sort landed
+    // Primed, and the mappings agree. A moving set that differs from the still one only in its
+    // uniforms (the cover as the moving picture: detail faded, not hidden) never changes the
+    // mapping, so wait for the sort the prime started: a new start stamp, and sorting done. (A
+    // Spark that reports no sort stamps — the tests' stub — releases here.)
+    if (typeof sr.lastSortTime === 'number' && (sr.sorting || sr.lastSortTime === this.primeSortTime)) {
+      this.swapHeld = true;
+      return true;
+    }
+    this.swapHoldSince = null;                // the moving set is what Spark draws now
     return false;
   }
 
@@ -1922,6 +2006,48 @@ export class SplatsLayer {
     const full = !coverLite && (!this.drawingLite || !tile.lite || fading);
     if (tile.mesh.visible !== (show && full)) tile.mesh.visible = show && full;
     if (tile.lite && tile.lite.visible !== (show && lite)) tile.lite.visible = show && lite;
+    // The cover as the moving picture: the splats of a detail tile over a landed cover parent are
+    // FADED out (tickCoverRamp), never hidden — but its building meshes are (the cover's own come
+    // back where its quadrants show).
+    if (tile.buildings) {
+      const b = tile.cullVisible && !this.hiddenForMotion(tile);
+      if (tile.buildings.visible !== b) tile.buildings.visible = b;
+    }
+  }
+
+  /**
+   * Detail over the cover (`motionCover`): faded out while the camera moves fast, fading in over
+   * the second half of the glide as `motionDetail` rises, whole at rest — through each tile's
+   * level-fade uniform, so nothing is hidden or shown (no Spark mapping change): at 0 the splats
+   * leave the sort and the draw at the next sort, on the way back they rejoin at the next one. The
+   * cover stays drawn beneath until rest (see coverShowsUnderDetail). Also switches Spark's splat
+   * footprint cut-off for the moving picture (`motionMaxStdDev`).
+   */
+  private tickCoverRamp(): void {
+    const sr = this.sparkRenderer;
+    let changed = false;
+    if (this.motionCoverActive()) {
+      const ramp = this.cameraMoving && !this.drawingCover && this.motionDetail > 0;
+      const t = ramp ? this.motionDetail : 1;
+      const weight = this.drawingCover ? 0 : ramp ? t * t * (3 - 2 * t) : 1;
+      for (const tile of this.tiles.values()) {
+        if (tile.meshGone || this.isCoverTile(tile)) continue;
+        // (At rest every weight is 1: no parent lookup — a key string per tile per tick — needed.)
+        const w = weight === 1 || !this.coverLandedUnder(tile) ? 1 : weight;
+        if (tile.motionFade === w) continue;
+        tile.motionFade = w;
+        this.writeFade(tile, tile.lastSplatFade, tile.lastGroundFade);
+        changed = true;
+      }
+    }
+    if (sr && this.motionMaxStdDev > 0) {
+      const want = this.cameraMoving && this.isActive() ? this.motionMaxStdDev : this.maxStdDev;
+      if (sr.maxStdDev !== want) {
+        sr.maxStdDev = want;
+        changed = true;
+      }
+    }
+    if (changed) this.onSceneChange();
   }
 
   /**
@@ -2071,7 +2197,8 @@ export class SplatsLayer {
 
   /** Motion LoD is drawing the lite meshes right now. */
   isDrawingLite(): boolean {
-    return this.drawingLite;
+    // The moving picture is up: the lite twins, or the cover standing in for detail.
+    return this.drawingLite || this.drawingCover;
   }
 
   /**
@@ -2082,7 +2209,8 @@ export class SplatsLayer {
     // Not before the layer has been told the camera rests: the landings held during the gesture
     // happen on that tick, and the settle dissolve's hold must still be up to hide them.
     if (this.cameraMoving || this.landedNow || this.landedPrev || this.applyQueue.length > 0) return false;
-    if (this.drawingLite || (this.thinDyno?.value ?? 1) < 1) return false;
+    if (this.drawingLite || this.drawingCover || (this.thinDyno?.value ?? 1) < 1) return false;
+    for (const t of this.tiles.values()) if (t.motionFade < 1) return false;
     const sr = this.sparkRenderer;
     return !sr?.current || !sr.display || sr.current.mappingVersion === sr.display.mappingVersion;
   }
@@ -2798,7 +2926,7 @@ export class SplatsLayer {
     const splats = this.engineLod ? lodTreeSplats(mesh) : (mesh.numSplats ?? mesh.packedSplats?.numSplats ?? 0);
     const tile: SplatTile = {
       key, root, mesh, lite: null, liteState: 'none', objectModifier: dyno?.block ?? null,
-      liteModifier: dyno?.liteBlock ?? null, camDyno: dyno?.cam ?? null, camSet: false, cullDraw: true,
+      liteModifier: dyno?.liteBlock ?? null, camDyno: dyno?.cam ?? null, camSet: false, cullDraw: true, cullVisible: true, motionFade: 1,
       ground, groundMaterial, groundTexture: null, splats,
       worldSize: tileMercator * t.scale,
       distFade: 1, lastSplatFade: 1, lastGroundFade: 1,
@@ -3712,8 +3840,9 @@ export class SplatsLayer {
     tile.lastSplatFade = splat;
     tile.lastGroundFade = ground;
     // The distance cutoff rides on top of the level fade, and only on the SPLATS — the imagery
-    // ground plane keeps drawing out there, which is the whole point of the cutoff.
-    splat *= tile.distFade * this.zoomFade;
+    // ground plane keeps drawing out there, which is the whole point of the cutoff. So does the
+    // motion weight (`motionCover`): detail that gives way to its cover while the camera moves.
+    splat *= tile.distFade * this.zoomFade * tile.motionFade;
     // …and the fade toward `minZoom` takes the ground too: below it the vector map is all there is.
     ground *= this.zoomFade;
     if (tile.fadeDyno && tile.fadeDyno.value !== splat) {
@@ -3830,6 +3959,9 @@ export class SplatsLayer {
 
     // (Deleting the entry being visited is safe in a Map walk; nothing here removes another.)
     const quad = this.quadScratch;
+    // While the cover is the moving picture (and through the ramp after it) its quadrants stay
+    // whole under the detail — see tickMotionLod.
+    const coverShows = this.coverShowsUnderDetail();
     for (const [key, tile] of this.tiles) {
       const leaving = tile.evicting || (this.presence.get(key)?.outMs ?? null) !== null;
       let target: 0 | 1 = 1;
@@ -3872,7 +4004,7 @@ export class SplatsLayer {
       }
       // Zooming in by one level: fade where a child has dissolved in.
       quad[0] = quad[1] = quad[2] = quad[3] = 0;
-      if (za !== null && za === tile.z + 1) {
+      if (za !== null && za === tile.z + 1 && !coverShows) {
         const ref = { z: tile.z, x: tile.tileX, y: tile.tileY };
         for (let cx = tile.tileX * 2; cx <= tile.tileX * 2 + 1; cx++) {
           for (let cy = tile.tileY * 2; cy <= tile.tileY * 2 + 1; cy++) {
@@ -4224,7 +4356,11 @@ export class SplatsLayer {
       }
       // The imagery plane follows the FRUSTUM test only — it is what keeps a distant tile drawn.
       if (tile.ground && tile.ground.visible !== visible) tile.ground.visible = visible;
-      if (tile.buildings && tile.buildings.visible !== visible) tile.buildings.visible = visible;
+      tile.cullVisible = visible;
+      if (tile.buildings) {
+        const b = visible && !this.hiddenForMotion(tile);
+        if (tile.buildings.visible !== b) tile.buildings.visible = b;
+      }
     }
     if (changed) this.onSceneChange();
   }

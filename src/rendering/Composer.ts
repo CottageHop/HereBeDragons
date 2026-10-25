@@ -42,6 +42,9 @@ interface TargetSet {
   blend: THREE.WebGLRenderTarget | null;
 }
 
+/** A render target's size as a map key (see `dissolveFroms`). */
+const sizeKey = (t: { width: number; height: number }): string => `${t.width}x${t.height}`;
+
 export class Composer {
   private renderer: Renderer;
   private scene: THREE.Scene;
@@ -101,6 +104,11 @@ export class Composer {
   /** Reprojection of the last frame to a newer camera (see `presentReprojected`). */
   private readonly reproject = new ReprojectPass();
   private dissolveFrom: THREE.WebGLRenderTarget | null = null;
+  /** The capture targets by size: the settle dissolve captures at the MOTION scale's size and the
+   *  gesture start keeps the last still frame at the REST scale's size (see captureHeldFrame) — one
+   *  target each, so neither capture resizes the other's. Resizing one back and forth cost 55 ms
+   *  of main thread at every gesture start and ~20 ms at every settle (WebKit, 2880×1800). */
+  private readonly dissolveFroms = new Map<string, THREE.WebGLRenderTarget>();
   private dissolveActive = false;
   private dissolveT = 0;
   /** `dissolveFrom` holds a frame captured for REPROJECTION across a resize (see captureHeldFrame);
@@ -341,6 +349,10 @@ export class Composer {
       this.disposeSet(set);
       this.sets.delete(scale);
     }
+    // So are the captured frames (of the old sizes): the next capture allocates afresh.
+    for (const t of this.dissolveFroms.values()) t.dispose();
+    this.dissolveFroms.clear();
+    this.dissolveFrom = null;
     this.applyActiveSize(width, height);
     this.sceneTexValid = false;
   }
@@ -407,9 +419,11 @@ export class Composer {
       if (set !== this.active) { touch(set.color); touch(set.composite); }
       touch(set.blend!);
       touch(this.active.blend!);
-      // The dissolve captures the last MOVING frame, i.e. at the motion scale's size.
-      const from = this.ensureDissolveFrom(set.color.width, set.color.height);
-      touch(from);
+      // The settle dissolve captures the last MOVING frame (the motion scale's size) and the
+      // gesture start keeps the last STILL frame for reprojection (the rest scale's size): one
+      // target each, allocated here on an idle tick (see dissolveFroms).
+      touch(this.ensureDissolveFrom(set.color.width, set.color.height));
+      touch(this.ensureDissolveFrom(this.active.color.width, this.active.color.height));
     } finally {
       r.setRenderTarget(prevTarget);
     }
@@ -419,8 +433,8 @@ export class Composer {
   isScalePrepared(scale: number): boolean {
     const s = Number.isFinite(scale) && scale > 0 ? Math.min(scale, 1) : 1;
     const set = this.sets.get(s);
-    return !!set && !!set.blend && !!this.active.blend && !!this.dissolveFrom
-      && this.dissolveFrom.width === set.color.width && this.dissolveFrom.height === set.color.height;
+    return !!set && !!set.blend && !!this.active.blend
+      && this.dissolveFroms.has(sizeKey(set.color)) && this.dissolveFroms.has(sizeKey(this.active.color));
   }
 
   /**
@@ -464,7 +478,7 @@ export class Composer {
     if (!this.sceneTexValid || !this.lastSceneTex) return false;
     const r = this.renderer.three;
     const img = this.lastSceneTex.image as { width: number; height: number };
-    this.ensureDissolveFrom(Math.max(1, img.width), Math.max(1, img.height));
+    this.dissolveFrom = this.ensureDissolveFrom(Math.max(1, img.width), Math.max(1, img.height));
     this.heldForWarp = false;
     this.dissolve.configure(null, this.lastSceneTex, 1);
     r.setRenderTarget(this.dissolveFrom);
@@ -488,7 +502,7 @@ export class Composer {
     if (!this.sceneTexValid || !this.lastSceneTex) return false;
     const r = this.renderer.three;
     const img = this.lastSceneTex.image as { width: number; height: number };
-    this.ensureDissolveFrom(Math.max(1, img.width), Math.max(1, img.height));
+    this.dissolveFrom = this.ensureDissolveFrom(Math.max(1, img.width), Math.max(1, img.height));
     this.dissolve.configure(null, this.lastSceneTex, 1);
     r.setRenderTarget(this.dissolveFrom);
     r.render(this.dissolve.scene, this.dissolve.camera);
@@ -497,19 +511,21 @@ export class Composer {
     return true;
   }
 
+  /** The capture target for a frame of `w` × `h` (one per size, never resized — see dissolveFroms). */
   private ensureDissolveFrom(w: number, h: number): THREE.WebGLRenderTarget {
-    if (!this.dissolveFrom) {
-      this.dissolveFrom = new THREE.WebGLRenderTarget(w, h, {
+    const key = `${w}x${h}`;
+    let target = this.dissolveFroms.get(key);
+    if (!target) {
+      target = new THREE.WebGLRenderTarget(w, h, {
         type: THREE.HalfFloatType,
         format: THREE.RGBAFormat,
         colorSpace: THREE.LinearSRGBColorSpace,
         depthBuffer: false,
         stencilBuffer: false
       });
-    } else if (this.dissolveFrom.width !== w || this.dissolveFrom.height !== h) {
-      this.dissolveFrom.setSize(w, h);
+      this.dissolveFroms.set(key, target);
     }
-    return this.dissolveFrom;
+    return target;
   }
 
   /** Blend factor of the running dissolve: 0 = the captured frame, 1 = the live picture. */
@@ -1021,7 +1037,9 @@ export class Composer {
     this.tiltShiftTargets?.[1].dispose();
     this.tiltShiftTargets?.[2].dispose();
     this.tiltShift.dispose();
-    this.dissolveFrom?.dispose();
+    for (const t of this.dissolveFroms.values()) t.dispose();
+    this.dissolveFroms.clear();
+    this.dissolveFrom = null;
     this.dissolve.dispose();
     this.reproject.dispose();
     this.normalMaterial.dispose();

@@ -3738,3 +3738,151 @@ describe('SplatsLayer: landings in motion, abandoned loads, promised room', () =
     expect(h.layer.isDetailSettled()).toBe(true);
   });
 });
+
+describe('SplatsLayer motionCover (the cover as the moving picture)', () => {
+  const PARENT = '15/5807/11963';
+  const meshes = (h: Harness, prefix: string): THREE.Object3D[] => {
+    const roots = h.scene.getObjectsByProperty('name', 'hbd-splats')[0]?.children ?? [];
+    return roots.flatMap((r) => r.children.filter((c) => c.name.startsWith(prefix)));
+  };
+  const detail = (h: Harness) => meshes(h, 'splat-tile:16/');
+  const coverMeshes = (h: Harness) => meshes(h, 'splat-tile:15/');
+  const state = (h: Harness, key: string) => h.layer.getTransitionState().tiles.find((t) => t.key === key)!;
+  const motions = (h: Harness) => h.layer.getTransitionState().tiles.filter((t) => t.z === 16).map((t) => t.motion);
+  const fadeU = (h: Harness, key: string): number =>
+    (h.layer as unknown as { tiles: Map<string, { fadeDyno: { value: number } }> }).tiles.get(key)!.fadeDyno.value;
+
+  it('in fast motion detail fades out over its landed cover parent — no mesh hidden, the parent whole again the same tick — and fades back over the ramp, whole at rest', async () => {
+    const h = makeLayer({ cover: true });
+    h.view.zoom = 16.5;
+    h.setTime(1000);
+    await h.layer.open();
+    await drain(h, 30);
+    h.setTime(1000 + 350);
+    await drain(h, 2);
+    expect(state(h, PARENT).quad).toEqual([1, 1, 1, 1]); // the dissolves are done: the parent is handed to its children
+    expect(detail(h).length).toBe(9);
+    expect(motions(h)).toEqual(Array(9).fill(1));
+    h.layer.setCameraMoving(true);
+    h.layer.setMotionDetail(0);
+    h.layer.update();
+    expect(motions(h)).toEqual(Array(9).fill(0));           // every detail tile faded out …
+    expect(fadeU(h, '16/11614/23927')).toBe(0);             // … through its level-fade uniform …
+    expect(detail(h).every((m) => m.visible)).toBe(true);   // … with no mesh hidden (no Spark mapping change)
+    expect(coverMeshes(h).every((m) => m.visible)).toBe(true);
+    expect(state(h, PARENT).quad).toEqual([0, 0, 0, 0]);    // the cover whole again, this very tick
+    expect(h.layer.isDrawingLite()).toBe(true);
+    expect(h.layer.isDetailSettled()).toBe(false);
+    // the second half of the glide: detail fading back in over the still-drawn cover
+    h.layer.setMotionDetail(0.5);
+    h.layer.update();
+    expect(state(h, '16/11614/23927').motion).toBeCloseTo(0.5, 5); // smoothstep(0.5)
+    expect(fadeU(h, '16/11614/23927')).toBeCloseTo(0.5, 5);
+    expect(state(h, PARENT).quad).toEqual([0, 0, 0, 0]);
+    h.layer.setMotionDetail(0.9);
+    h.layer.update();
+    expect(state(h, '16/11614/23927').motion).toBeGreaterThan(0.9);
+    expect(h.layer.isDetailSettled()).toBe(false);
+    // rest: whole detail, the cover's quadrants hand over to the children again
+    h.layer.setCameraMoving(false);
+    h.layer.update();
+    expect(motions(h)).toEqual(Array(9).fill(1));
+    expect(fadeU(h, '16/11614/23927')).toBe(1);
+    h.layer.update();
+    expect(state(h, PARENT).quad).toEqual([1, 1, 1, 1]);
+    expect(h.layer.isDrawingLite()).toBe(false);
+    expect(h.layer.isDetailSettled()).toBe(true);
+  });
+
+  it('a detail tile whose cover parent never landed stays drawn in motion (no cover, no hole)', async () => {
+    const h = makeLayer({ cover: true });
+    h.fetchTile.mockImplementation(async (url) => (url.includes('/15/') ? null : new ArrayBuffer(10)));
+    h.view.zoom = 16.5;
+    await h.layer.open();
+    await drain(h, 30);
+    expect(detail(h).length).toBe(9);
+    h.layer.setCameraMoving(true);
+    h.layer.setMotionDetail(0);
+    h.layer.update();
+    expect(motions(h)).toEqual(Array(9).fill(1));
+    expect(fadeU(h, '16/11614/23927')).toBe(1);
+  });
+
+  it('motionCover: false keeps detail whole while moving; turning it off mid-ramp restores detail at once', async () => {
+    const h = makeLayer({ cover: true, motionCover: false });
+    h.view.zoom = 16.5;
+    await h.layer.open();
+    await drain(h, 30);
+    h.layer.setCameraMoving(true);
+    h.layer.setMotionDetail(0);
+    h.layer.update();
+    expect(motions(h)).toEqual(Array(9).fill(1));
+    expect(h.layer.isDrawingLite()).toBe(false);
+    const on = makeLayer({ cover: true });
+    on.view.zoom = 16.5;
+    await on.layer.open();
+    await drain(on, 30);
+    on.layer.setCameraMoving(true);
+    on.layer.setMotionDetail(0);
+    on.layer.update();
+    on.layer.setMotionDetail(0.3);
+    on.layer.update();
+    expect(state(on, '16/11614/23927').motion).toBeLessThan(0.5);
+    on.layer.applyOptions(resolveSplatsOptions({ cover: true, motionCover: false, urlTemplate: 'https://tiles.test/{z}/{x}/{y}.spz', radius: 1, maxInFlight: 100, hideBasemap: true, lodBias: 0 }));
+    expect(motions(on)).toEqual(Array(9).fill(1));
+    expect(fadeU(on, '16/11614/23927')).toBe(1);
+  });
+
+  it('motionMaxStdDev: Spark draws tighter splat footprints while moving, the configured ones at rest', async () => {
+    const h = makeLayer({ cover: true, motionMaxStdDev: 1.5 });
+    await h.layer.open();
+    await drain(h, 6);
+    const sr = h.scene.children.find((c) => c instanceof FakeSparkRenderer) as FakeSparkRenderer & { maxStdDev?: number };
+    expect(sr.maxStdDev).toBeCloseTo(Math.sqrt(5), 9);
+    h.layer.setCameraMoving(true);
+    h.layer.update();
+    expect(sr.maxStdDev).toBe(1.5);
+    h.layer.setCameraMoving(false);
+    h.layer.update();
+    expect(sr.maxStdDev).toBeCloseTo(Math.sqrt(5), 9);
+  });
+
+  it('the flip into the cover holds the map until the sort it primed has landed (the mapping never changes)', async () => {
+    const camera = new THREE.PerspectiveCamera();
+    const h = makeLayer({ cover: true }, { getCamera: () => camera });
+    h.view.zoom = 16.5;
+    await h.layer.open();
+    await drain(h, 30);
+    const sr = h.scene.children.find((c) => c instanceof FakeSparkRenderer) as FakeSparkRenderer & {
+      current?: { mappingVersion: number }; display?: { mappingVersion: number }; sorting?: boolean; lastSortTime?: number;
+      update?: (o: { scene: THREE.Object3D; camera: THREE.Camera }) => Promise<void>;
+    };
+    sr.current = { mappingVersion: 1 };
+    sr.display = sr.current;
+    sr.sorting = false;
+    sr.lastSortTime = 100;
+    // A prime that starts a sort of the same mapping (only uniforms changed).
+    const update = vi.fn(async () => { sr.sorting = true; sr.lastSortTime = 250; });
+    sr.update = update;
+    expect(h.layer.holdForSwap()).toBe(false);
+    h.layer.setCameraMoving(true);
+    h.layer.setMotionDetail(0);
+    h.layer.update();
+    expect(h.layer.holdForSwap()).toBe(true);     // primes …
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(h.layer.holdForSwap()).toBe(true);     // … and waits while the sort runs
+    sr.sorting = false;                            // landed (a new start stamp, sorting done)
+    expect(h.layer.holdForSwap()).toBe(false);
+    expect(h.layer.holdForSwap()).toBe(false);
+    // a sort delayed past the hold's bound cannot hold the map hostage
+    h.layer.setCameraMoving(false);
+    h.layer.update();
+    h.layer.setCameraMoving(true);
+    h.layer.update();
+    sr.update = vi.fn(async () => {});             // primed, but no sort starts
+    expect(h.layer.holdForSwap()).toBe(true);
+    expect(h.layer.holdForSwap()).toBe(true);
+    h.setTime(1_000_000);
+    expect(h.layer.holdForSwap()).toBe(false);
+  });
+});

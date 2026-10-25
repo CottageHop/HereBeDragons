@@ -1536,10 +1536,11 @@ class HereBeDragonsImpl implements HereBeDragons {
       // switch and the first settle of a session otherwise paid ~110 ms for them (Composer.prepareScale).
       // Also while the auto step (autoMotionResolution) is still armed: it fires mid-pan, and the
       // settle that follows must find the targets ready.
+      const motionCap = this.motionPixelRatioCap();
       if ((this.dynamicResolutionEnabled || this.autoMotionRes !== null) && !this.renderingLowRes && atRest
         && !tileDirty && !this.tileManager.isStreaming()
-        && this.effectivePixelRatio > HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP) {
-        const motionScale = HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP / this.effectivePixelRatio;
+        && this.effectivePixelRatio > motionCap) {
+        const motionScale = motionCap / this.effectivePixelRatio;
         if (!this.composer.isScalePrepared(motionScale)) this.composer.prepareScale(motionScale);
       }
 
@@ -2184,9 +2185,16 @@ class HereBeDragonsImpl implements HereBeDragons {
    */
   private desiredPixelRatio(): number {
     if (this.dynamicResolutionEnabled && this.renderingLowRes) {
-      return Math.min(this.effectivePixelRatio, HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP);
+      return Math.min(this.effectivePixelRatio, this.motionPixelRatioCap());
     }
     return this.effectivePixelRatio;
+  }
+
+  /** The pixel ratio moving frames render at: the map's own cap, lowered to the splat overlay's
+   *  `motionPixelRatio` while its tiles are resident (see that option). */
+  private motionPixelRatioCap(): number {
+    const cap = HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP;
+    return this.splats.hasTiles() ? Math.min(cap, this.splats.motionPixelRatio) : cap;
   }
 
   /**
@@ -2247,7 +2255,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     // first ticks of the gesture while the swap hold waits — keep a copy (see captureHeldFrame).
     if (active && this.reprojection && this.splats.hasTiles()
       && Math.abs(this.effectivePixelRatio - this.appliedPixelRatio) < 1e-6
-      && Math.abs(this.effectivePixelRatio - HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP) > 1e-6) {
+      && Math.abs(this.effectivePixelRatio - this.motionPixelRatioCap()) > 1e-6) {
       this.composer.captureHeldFrame();
     }
     this.renderingLowRes = active;
