@@ -527,6 +527,8 @@ interface SplatTile {
   /** `motionCover`: how much of this detail tile's splats show while the camera moves, 0‥1 — a
    *  factor on its level fade (0 takes them out of Spark's sort and draw at the next sort). */
   motionFade: number;
+  /** `tileKey` of the tile's parent one level up (its cover, when it is a detail tile). */
+  parentKey: string;
   /** Imagery ground plane (null when imagery is off). */
   ground: THREE.Mesh | null;
   groundMaterial: THREE.ShaderMaterial | null;
@@ -620,6 +622,8 @@ function defaultPrefersReducedMotion(): boolean {
 }
 
 const EMPTY_KEYS: readonly string[] = [];
+/** Shared empty set (never written: `updateWindow` swaps in its own before adding). */
+const NO_KEYS: Set<string> = new Set();
 
 /**
  * A decode that never comes back — a worker lost to an exception or a hang (seen in headless WebKit:
@@ -736,6 +740,13 @@ export class SplatsLayer {
   private motionMaxStdDev: number;
   /** Spark's sort start stamp when the swap hold primed it (see holdForSwap). */
   private primeSortTime = 0;
+  /**
+   * Splats left Spark's ordering in motion (motion fade, thinning) and have just been let back in:
+   * they draw only once a sort that saw them lands. Until then `isDetailSettled` says no, so the
+   * settle dissolve does not fade into a picture still missing them. `acc` is the accumulator that
+   * was current when they were let back in — a sort of THAT one does not count (see noteReadmit).
+   */
+  private readmit: { stamp: number; acc: unknown } | null = null;
   /** The cover is the moving picture right now (detail over a landed cover parent is hidden). */
   private drawingCover = false;
   private cameraMoving = false;
@@ -899,7 +910,16 @@ export class SplatsLayer {
    * before detail — see the landing policy in `updateWindow`. Each entry
    * re-validates its tile when it runs.
    */
-  private readonly applyQueue: Array<{ run: () => void; z: number }> = [];
+  private readonly applyQueue: Array<{
+    run: () => void;
+    z: number;
+    /** The landing tile's parent key: detail over a LANDED cover parent waits for rest. */
+    parentKey: string;
+    /** A full version replacing a lite tile in place (`loadFull`): always waits for rest. */
+    upgrade?: true;
+    /** Releases what the entry holds when it is discarded unrun (`clearTiles`). */
+    drop?: () => void;
+  }> = [];
   private readonly imageryQueue: Array<() => void> = [];
   /** Decoded tiles waiting in `applyQueue` (their splat counts are known and
    *  already count against the budget). */
@@ -1644,6 +1664,11 @@ export class SplatsLayer {
    * Spark never loaded.
    */
   update(): void {
+    // A sort that started before the readmitted splats were generated (between two ticks, the set
+    // still the old one) sorted a set without them: it does not count (see isDetailSettled).
+    const r = this.readmit;
+    const sr = this.sparkRenderer;
+    if (r && sr && sr.current === r.acc) r.stamp = sr.lastSortTime ?? r.stamp;
     this.updateWindow();
     this.tickMotionLod();
     this.tickDensityLod();
@@ -1752,10 +1777,13 @@ export class SplatsLayer {
       && this.isActive() && this.coverZ() !== null;
   }
 
-  /** `tile` is a detail tile whose cover parent is resident and staying. */
+  /** `tile` is a detail tile whose cover parent is resident, staying, and fully faded in — a parent
+   *  still dissolving in would leave a hole where the detail gives way to it. */
   private coverLandedUnder(tile: SplatTile): boolean {
     const cz = this.coverZ();
-    return cz !== null && tile.z === cz + 1 && this.isLanded(tileKey(cz, tile.tileX >> 1, tile.tileY >> 1));
+    if (cz === null || tile.z !== cz + 1 || !this.isLanded(tile.parentKey)) return false;
+    const parent = this.tiles.get(tile.parentKey)!;
+    return fadeProgress(parent.fade, this.clock(), this.levelFadeMs) >= 1;
   }
 
   /** `tile` gives way to its cover parent right now (the cover is the moving picture): its splats
@@ -1764,10 +1792,23 @@ export class SplatsLayer {
     return this.drawingCover && this.coverLandedUnder(tile);
   }
 
-  /** The cover shows under detail: while it is the moving picture, and through the detail ramp
-   *  that follows, so the ground never thins out mid-glide. */
+  /**
+   * The cover shows under detail: while it is the moving picture, and through the detail ramp that
+   * follows, so the ground never thins out mid-glide — not in slow motion with full detail (it
+   * would only double the picture), and not from the first tick at rest. Read from the inputs, not
+   * from `drawingCover`: `tickLevelFade` asks before `tickMotionLod` flips that flag, and a tick
+   * late the cover's quadrants came back a frame after the detail (a doubled first rest frame and
+   * a second generate and sort).
+   */
   private coverShowsUnderDetail(): boolean {
-    return this.drawingCover || (this.motionCoverActive() && this.cameraMoving);
+    return this.motionCoverActive() && this.cameraMoving && this.motionDetail < 1;
+  }
+
+  /** Splats are let back into Spark's ordering (see `readmit`). */
+  private noteReadmit(): void {
+    const sr = this.sparkRenderer;
+    if (!sr || typeof sr.lastSortTime !== 'number') return; // a Spark without sort stamps: nothing to wait for
+    this.readmit = { stamp: sr.lastSortTime, acc: sr.current };
   }
 
   private tickMotionLod(): void {
@@ -1920,7 +1961,10 @@ export class SplatsLayer {
       }
       const full = mesh;
       mesh = null;
-      this.applyQueue.push({ z: tile.z, run: () => {
+      this.applyQueue.push({ z: tile.z, parentKey: tile.parentKey, upgrade: true, drop: () => {
+        full.dispose();
+        tile.upgrade = 'none';
+      }, run: () => {
         if (stale()) {
           full.dispose();
           tile.upgrade = 'none';
@@ -1969,7 +2013,7 @@ export class SplatsLayer {
    * Spark (`gpuIdle`: the map has no unfinished frame): otherwise the sort's readback blocks the
    * main thread behind the frames already queued, which no cap can cut short.
    */
-  holdForSwap(gpuIdle = true): boolean {
+  holdForSwap(gpuIdle = true, canWaitForSort = true): boolean {
     if (this.swapHoldSince === null) return false;
     const sr = this.sparkRenderer;
     if (this.disposed || !sr?.update || !sr.current || !sr.display
@@ -2005,7 +2049,9 @@ export class SplatsLayer {
     // uniforms (the cover as the moving picture: detail faded, not hidden) never changes the
     // mapping, so wait for the sort the prime started: a new start stamp, and sorting done. (A
     // Spark that reports no sort stamps — the tests' stub — releases here.)
-    if (typeof sr.lastSortTime === 'number' && (sr.sorting || sr.lastSortTime === this.primeSortTime)) {
+    // Only when the map can show the motion meanwhile (`canWaitForSort`: it presents held ticks
+    // reprojected) — without that a held tick is a frozen picture, worse than one stale frame.
+    if (canWaitForSort && typeof sr.lastSortTime === 'number' && (sr.sorting || sr.lastSortTime === this.primeSortTime)) {
       this.swapHeld = true;
       return true;
     }
@@ -2047,20 +2093,30 @@ export class SplatsLayer {
   private tickCoverRamp(): void {
     const sr = this.sparkRenderer;
     let changed = false;
-    if (this.motionCoverActive()) {
-      const ramp = this.cameraMoving && !this.drawingCover && this.motionDetail > 0;
-      const t = ramp ? this.motionDetail : 1;
-      const weight = this.drawingCover ? 0 : ramp ? t * t * (3 - 2 * t) : 1;
-      for (const tile of this.tiles.values()) {
-        if (tile.meshGone || this.isCoverTile(tile)) continue;
-        // (At rest every weight is 1: no parent lookup — a key string per tile per tick — needed.)
-        const w = weight === 1 || !this.coverLandedUnder(tile) ? 1 : weight;
-        if (tile.motionFade === w) continue;
-        tile.motionFade = w;
-        this.writeFade(tile, tile.lastSplatFade, tile.lastGroundFade);
-        changed = true;
+    // A total function of the current state, every tick, for every tile: whatever role a tile has
+    // now (a detail tile promoted to cover by a zoom-in, a tier change, the option turned off
+    // mid-gesture), its weight is recomputed — a weight is never left behind at 0.
+    const active = this.motionCoverActive();
+    const ramp = active && this.cameraMoving && !this.drawingCover && this.motionDetail > 0;
+    const t = ramp ? this.motionDetail : 1;
+    const weight = !active ? 1 : this.drawingCover ? 0 : ramp ? t * t * (3 - 2 * t) : 1;
+    const live = this.levelsInPlay();
+    let readmitted = false;
+    for (const tile of this.tiles.values()) {
+      if (tile.meshGone) continue;
+      let w = 1;
+      if (weight !== 1 && !this.isCoverTile(tile)) {
+        // A level no longer in play (a zoom-out mid-gesture) keeps its weight while the camera
+        // moves — it is dissolving out and must not reappear first — and is released at rest.
+        w = !live.has(tile.z) ? tile.motionFade : this.coverLandedUnder(tile) ? weight : 1;
       }
+      if (tile.motionFade === w) continue;
+      if (w > tile.motionFade && tile.motionFade === 0) readmitted = true;
+      tile.motionFade = w;
+      this.writeFade(tile, tile.lastSplatFade, tile.lastGroundFade);
+      changed = true;
     }
+    if (readmitted) this.noteReadmit();
     if (sr && this.motionMaxStdDev > 0) {
       const want = this.cameraMoving && this.isActive() ? this.motionMaxStdDev : this.maxStdDev;
       if (sr.maxStdDev !== want) {
@@ -2181,7 +2237,11 @@ export class SplatsLayer {
     this.thinWasMoving = moving;
     this.lastThinMs = now;
     let changed = false;
-    if (dyno.value !== full) { dyno.value = full; changed = true; }
+    if (dyno.value !== full) {
+      if (full > dyno.value && !moving) this.noteReadmit(); // thinned splats back at rest: wait for their sort
+      dyno.value = full;
+      changed = true;
+    }
     if (this.liteThinDyno && this.liteThinDyno.value !== lite) { this.liteThinDyno.value = lite; changed = true; }
     if (this.thinBandDyno && this.thinBandDyno.value !== band) { this.thinBandDyno.value = band; changed = true; }
     // Held at the cap: keep Spark sorting (a regeneration marks it dirty), or the cap never lifts.
@@ -2216,6 +2276,11 @@ export class SplatsLayer {
     if (this.sparkRenderer) this.sparkRenderer.focalAdjustment = s;
   }
 
+  /** Splat landings are queued for the next frame at rest (see the landing policy). */
+  hasDeferredLandings(): boolean {
+    return this.applyQueue.length > 0;
+  }
+
   /** Motion LoD is drawing the lite meshes right now. */
   isDrawingLite(): boolean {
     // The moving picture is up: the lite twins, or the cover standing in for detail.
@@ -2233,6 +2298,13 @@ export class SplatsLayer {
     if (this.drawingLite || this.drawingCover || (this.thinDyno?.value ?? 1) < 1) return false;
     for (const t of this.tiles.values()) if (t.motionFade < 1) return false;
     const sr = this.sparkRenderer;
+    // Splats let back in at the rest flip draw only once a sort of a set generated AFTER that has
+    // landed: the same mapping, so the version check below cannot see it.
+    const r = this.readmit;
+    if (r && sr && typeof sr.lastSortTime === 'number') {
+      if (sr.current === r.acc || sr.sorting || sr.lastSortTime === r.stamp) return false;
+      this.readmit = null;
+    }
     return !sr?.current || !sr.display || sr.current.mappingVersion === sr.display.mappingVersion;
   }
 
@@ -2387,9 +2459,10 @@ export class SplatsLayer {
     let projected = this.committedSplats() - this.oldLevelSplats() + this.pending.size * estimate;
     for (const p of this.parked.values()) projected += p.tile.splats;
     // Tiles promised to a load in flight (see the eviction below): still drawn, but spoken for.
-    const promised = new Set<string>();
+    let promised = NO_KEYS;
     for (const p of this.pending.values()) {
       for (const k of p.promisedKeys) {
+        if (promised === NO_KEYS) promised = new Set<string>();
         if (promised.has(k)) continue;
         const t = this.tiles.get(k) ?? this.queuedTiles.get(k);
         if (!t) continue;
@@ -2459,6 +2532,7 @@ export class SplatsLayer {
         // is not here yet.
         if (this.activeLevelTiles() + this.pending.size > 0) {
           const keys: string[] = [];
+          if (promised === NO_KEYS) promised = new Set<string>(); // the dry run records into it
           projected -= this.evictFartherThan(cz, x, y, projected + estimate - budget, { skip: promised, out: keys });
           if (projected + estimate > budget) break;
           if (keys.length > 0) promise = { keys };
@@ -2484,11 +2558,18 @@ export class SplatsLayer {
   private nextMotionLanding(): (() => void) | undefined {
     const q = this.applyQueue;
     if (q.length === 0) return undefined;
+    // An empty view takes whatever is ready: a hitch is better than nothing on screen.
+    if (this.tiles.size === 0) return q.shift()!.run;
+    // The lite twins (motionLod) draw the moving picture: no splat set changes under them at all.
+    if (this.motionLodActive()) return undefined;
     const cz = this.coverZ();
-    const deferDetail = cz !== null && this.tiles.size > 0;
     for (let i = 0; i < q.length; i++) {
       const entry = q[i];
-      if (deferDetail && entry.z !== cz) continue;
+      // Detail over ground its cover parent already shows waits for rest (so does a full version
+      // replacing a lite tile in place); detail with no landed cover under it lands now — ground
+      // the cover does not reach (a missing cover tile, a partial pyramid) must not stay empty.
+      const coverShows = cz !== null && entry.z === cz + 1 && this.isLanded(entry.parentKey);
+      if (entry.upgrade || coverShows) continue;
       q.splice(i, 1);
       return entry.run;
     }
@@ -2721,7 +2802,7 @@ export class SplatsLayer {
       // there), staggered one landing per frame like everything else.
       this.parked.delete(key);
       this.queuedTiles.set(key, tile);
-      this.applyQueue.push({ z: tile.z, run: () => this.admitTile(key, tile) });
+      this.applyQueue.push({ z: tile.z, parentKey: tile.parentKey, run: () => this.admitTile(key, tile) });
       return;
     }
     const budget = this.currentMaxSplats();
@@ -2766,7 +2847,7 @@ export class SplatsLayer {
     // Commit to the budget now; the scene attach (which forces the splat
     // texture upload on the next render) is staggered one per frame.
     this.queuedTiles.set(key, tile);
-    this.applyQueue.push({ z: tile.z, run: () => this.admitTile(key, tile) });
+    this.applyQueue.push({ z: tile.z, parentKey: tile.parentKey, run: () => this.admitTile(key, tile) });
   }
 
   /** Retry the parked tiles (room may have been released since). */
@@ -2953,7 +3034,7 @@ export class SplatsLayer {
     const splats = this.engineLod ? lodTreeSplats(mesh) : (mesh.numSplats ?? mesh.packedSplats?.numSplats ?? 0);
     const tile: SplatTile = {
       key, root, mesh, lite: null, liteState: 'none', objectModifier: dyno?.block ?? null,
-      liteModifier: dyno?.liteBlock ?? null, camDyno: dyno?.cam ?? null, camSet: false, cullDraw: true, cullVisible: true, motionFade: 1,
+      liteModifier: dyno?.liteBlock ?? null, camDyno: dyno?.cam ?? null, camSet: false, cullDraw: true, cullVisible: true, motionFade: 1, parentKey: tileKey(z - 1, x >> 1, y >> 1),
       ground, groundMaterial, groundTexture: null, splats,
       worldSize: tileMercator * t.scale,
       distFade: 1, lastSplatFade: 1, lastGroundFade: 1,
@@ -3656,7 +3737,10 @@ export class SplatsLayer {
     for (const [key, ghost] of [...this.groundGhosts]) this.dropGhost(key, ghost);
     this.levelFading = false;
     this.overSinceMs = null;
-    this.applyQueue.length = 0;
+    // Entries that hold something of their own (a decoded full version) release it.
+    for (const entry of this.applyQueue.splice(0)) entry.drop?.();
+    this.landedNow = false;
+    this.landedPrev = false;
     // Queued imagery closures re-validate their tile and self-dispose, but
     // run them now so their textures don't linger until the next frames.
     for (const fn of this.imageryQueue.splice(0)) fn();

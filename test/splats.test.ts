@@ -3788,8 +3788,7 @@ describe('SplatsLayer motionCover (the cover as the moving picture)', () => {
     h.layer.update();
     expect(motions(h)).toEqual(Array(9).fill(1));
     expect(fadeU(h, '16/11614/23927')).toBe(1);
-    h.layer.update();
-    expect(state(h, PARENT).quad).toEqual([1, 1, 1, 1]);
+    expect(state(h, PARENT).quad).toEqual([1, 1, 1, 1]); // the same tick: one generate, one sort
     expect(h.layer.isDrawingLite()).toBe(false);
     expect(h.layer.isDetailSettled()).toBe(true);
   });
@@ -3820,8 +3819,11 @@ describe('SplatsLayer motionCover (the cover as the moving picture)', () => {
     expect(h.layer.isDrawingLite()).toBe(false);
     const on = makeLayer({ cover: true });
     on.view.zoom = 16.5;
+    on.setTime(1000);
     await on.layer.open();
     await drain(on, 30);
+    on.setTime(1000 + 350); // the cover parents have finished dissolving in (a parent mid-fade keeps its detail)
+    await drain(on, 2);
     on.layer.setCameraMoving(true);
     on.layer.setMotionDetail(0);
     on.layer.update();
@@ -3915,5 +3917,162 @@ describe('SplatsLayer decode watchdog', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe('SplatsLayer motionCover: review fixes', () => {
+  const FADE = 350;
+  const motionOf = (h: Harness, key: string) => h.layer.getTransitionState().tiles.find((t) => t.key === key)!.motion;
+  const quadOf = (h: Harness, key: string) => h.layer.getTransitionState().tiles.find((t) => t.key === key)!.quad;
+  const atLevel = (h: Harness, z: number) => h.layer.getTransitionState().tiles.filter((t) => t.z === z);
+  async function settledAt(zoom: number, config: Partial<import('../src/splats/types.js').SplatsConfig> = {}): Promise<Harness> {
+    const h = makeLayer({ cover: true, ...config });
+    h.view.zoom = zoom;
+    h.setTime(1000);
+    await h.layer.open();
+    await drain(h, 30);
+    h.setTime(1000 + FADE);
+    await drain(h, 2);
+    return h;
+  }
+  const fast = (h: Harness): void => { h.layer.setCameraMoving(true); h.layer.setMotionDetail(0); h.layer.update(); };
+
+  it('a zoom-in across a level mid-gesture: the faded detail, now the cover, is whole again at once', async () => {
+    const h = await settledAt(15.5); // detail z15 over cover z14
+    fast(h);
+    expect(atLevel(h, 15).every((t) => t.motion === 0)).toBe(true);
+    h.view.zoom = 16.5;              // still moving: the level switches, z15 becomes the cover
+    h.layer.update();
+    await settle();
+    h.layer.update();
+    expect(atLevel(h, 15).length).toBe(9);
+    expect(atLevel(h, 15).every((t) => t.motion === 1)).toBe(true);
+    h.layer.setCameraMoving(false);
+    await drain(h, 12);
+    h.setTime(1000 + 4 * FADE);
+    await drain(h, 4);
+    expect(h.layer.getTransitionState().tiles.every((t) => t.motion === 1)).toBe(true);
+    expect(h.layer.isDetailSettled()).toBe(true);
+  });
+
+  it('the feature going away mid-gesture (cover turned off) restores every faded tile', async () => {
+    const h = await settledAt(16.5);
+    fast(h);
+    expect(atLevel(h, 16).every((t) => t.motion === 0)).toBe(true);
+    h.layer.applyOptions(resolveSplatsOptions({ cover: false, urlTemplate: 'https://tiles.test/{z}/{x}/{y}.spz', radius: 1, maxInFlight: 100, hideBasemap: true, lodBias: 0 }));
+    h.layer.update();
+    expect(atLevel(h, 16).every((t) => t.motion === 1)).toBe(true);
+  });
+
+  it('a cover parent still dissolving in keeps its detail drawn (no hole)', async () => {
+    const h = makeLayer({ cover: true });
+    h.view.zoom = 16.5;
+    h.setTime(1000);
+    await h.layer.open();
+    await drain(h, 30);
+    // the clock has not moved: the focus tile's parent dissolved in over it and is still at 0
+    fast(h);
+    expect(motionOf(h, '16/11614/23927')).toBe(1);
+    // the others sit on parents that grew in (opaque at once): they give way
+    expect(motionOf(h, '16/11613/23927')).toBe(0);
+  });
+
+  it('slow motion with full detail leaves the cover handed to its children (no doubled picture)', async () => {
+    const h = await settledAt(16.5);
+    h.layer.setCameraMoving(true);
+    h.layer.setMotionDetail(1); // a nudge: detail never drops
+    h.layer.update();
+    expect(quadOf(h, '15/5807/11963')).toEqual([1, 1, 1, 1]);
+    expect(atLevel(h, 16).every((t) => t.motion === 1)).toBe(true);
+  });
+
+  it('isDetailSettled waits for a sort of a set generated after the detail came back', async () => {
+    const h = await settledAt(16.5);
+    const sr = h.scene.children.find((c) => c instanceof FakeSparkRenderer) as FakeSparkRenderer & {
+      current?: { mappingVersion: number }; display?: { mappingVersion: number }; sorting?: boolean; lastSortTime?: number;
+    };
+    const accA = { mappingVersion: 1 };
+    sr.current = accA; sr.display = accA; sr.sorting = false; sr.lastSortTime = 100;
+    fast(h);
+    h.layer.setCameraMoving(false);
+    h.layer.update();                         // detail let back in
+    expect(h.layer.isDetailSettled()).toBe(false);
+    sr.lastSortTime = 150;                     // a sort of the OLD set starts between two ticks …
+    h.layer.update();                          // … and is discounted (the set is still the old one)
+    sr.sorting = false;
+    const accB = { mappingVersion: 1 };        // the render generates the new set (same mapping)
+    sr.current = accB; sr.display = accB;
+    expect(h.layer.isDetailSettled()).toBe(false);
+    sr.lastSortTime = 200; sr.sorting = true;  // its sort starts …
+    expect(h.layer.isDetailSettled()).toBe(false);
+    sr.sorting = false;                        // … and lands
+    expect(h.layer.isDetailSettled()).toBe(true);
+  });
+
+  it('the swap hold does not wait for the sort when the map cannot present held ticks', async () => {
+    const camera = new THREE.PerspectiveCamera();
+    const h = makeLayer({ cover: true }, { getCamera: () => camera });
+    h.view.zoom = 16.5;
+    h.setTime(1000);
+    await h.layer.open();
+    await drain(h, 30);
+    h.setTime(1000 + FADE);
+    await drain(h, 2);
+    const sr = h.scene.children.find((c) => c instanceof FakeSparkRenderer) as FakeSparkRenderer & {
+      current?: { mappingVersion: number }; display?: { mappingVersion: number }; sorting?: boolean; lastSortTime?: number;
+      update?: () => Promise<void>;
+    };
+    sr.current = { mappingVersion: 1 }; sr.display = sr.current; sr.sorting = false; sr.lastSortTime = 100;
+    sr.update = vi.fn(async () => { sr.sorting = true; sr.lastSortTime = 250; });
+    fast(h);
+    expect(h.layer.holdForSwap(true, false)).toBe(true);  // primes …
+    expect(h.layer.holdForSwap(true, false)).toBe(false); // … and lets the map draw at once
+  });
+});
+
+describe('SplatsLayer landing policy: review fixes', () => {
+  it('detail with no cover tile under it (the cover 404s) still lands in motion, one per frame', async () => {
+    const h = makeLayer({ cover: true });
+    h.fetchTile.mockImplementation(async (url) => (url.includes('/15/') ? null : new ArrayBuffer(10)));
+    h.view.zoom = 16.5;
+    await h.layer.open();
+    h.layer.update();
+    await settle();
+    await settle();
+    h.layer.setCameraMoving(true);
+    h.layer.update();
+    h.layer.update();
+    h.layer.update();
+    expect(h.layer.getStats().tiles).toBe(3);
+  });
+
+  it('with the lite twins on, nothing lands while the camera moves (an empty view excepted)', async () => {
+    const h = makeLayer({ cover: false, motionLod: true, lowTierUrlTemplate: 'https://lite.test/{z}/{x}/{y}.spz' });
+    await h.layer.open();
+    h.layer.update();
+    await settle();
+    h.layer.setCameraMoving(true);
+    h.layer.update();
+    h.layer.update();
+    h.layer.update();
+    expect(h.layer.getStats().tiles).toBe(1);
+    h.layer.setCameraMoving(false);
+    h.layer.update();
+    expect(h.layer.getStats().tiles).toBe(9);
+  });
+
+  it('a level switch clears the landing flags with the tiles (a later settle is not held)', async () => {
+    const h = makeLayer();
+    await h.layer.open();
+    h.layer.update();
+    await settle();
+    h.layer.setCameraMoving(true);
+    h.layer.update();               // a landing in motion
+    h.view.zoom = 12;               // below minZoom: everything goes
+    h.layer.setCameraMoving(false);
+    h.layer.update();
+    expect(h.layer.getStats().tiles).toBe(0);
+    expect(h.layer.isDetailSettled()).toBe(true);
   });
 });

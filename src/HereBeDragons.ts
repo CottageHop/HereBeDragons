@@ -307,6 +307,8 @@ class HereBeDragonsImpl implements HereBeDragons {
     { phase: 'idle', since: 0, fadeStart: 0, ready: false };
   /** Motion LoD was drawing the lite splats on the previous tick (a flip back = detail rising). */
   private lastSplatsLite = false;
+  /** The previous tick counted the camera as at rest (see MOTION_LOD_SETTLE_MS). */
+  private wasAtRest = true;
   /** Detail ramp over the second half of a glide (see core/motionDetail), and the camera pose of
    *  the previous tick it measures the on-screen step from. */
   private readonly motionDetail = createMotionDetail();
@@ -1478,7 +1480,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       this.coverage.setInstant(splatsResident);
       const burstBuilds = splatsResident && !suspendBuilds;
       const tileDirty = this.tileManager.update(false, frameBudgetOk, suspendBuilds, burstBuilds);
-      this.baseTileManager?.update(false, burstBuilds);
+      this.baseTileManager?.update(false, burstBuilds, suspendBuilds);
       // Ambient idle: the wind dies down once the user has been idle a while, so a still map
       // draws nothing at all (see updateAmbientIdle). Decided before the layers tick.
       this.updateAmbientIdle(now, dt);
@@ -1491,6 +1493,12 @@ class HereBeDragonsImpl implements HereBeDragons {
       // follows the camera zoom).
       // Motion LoD: lite tiles while the camera moves, full detail once it has settled.
       const atRest = now - this.lastCameraMotionMs >= HereBeDragonsImpl.MOTION_LOD_SETTLE_MS;
+      // The overlay lands the detail it held back during the gesture on this first tick at rest —
+      // a re-sort and texture uploads in one frame. Hold the last moving frame over it, as the
+      // resolution snap-back does on a Retina display (on a 1x display there is no snap-back to
+      // start the hold, and the landing would be seen).
+      if (atRest && !this.wasAtRest && !cameraMoved && this.splats.hasDeferredLandings()) this.beginSettleFade(now);
+      this.wasAtRest = atRest;
       this.splats.setCameraMoving(!atRest);
       // Detail comes back over the second half of a scroll / fling, not after it.
       this.splats.setMotionDetail(stepMotionDetail(this.motionDetail, {
@@ -1522,7 +1530,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       // Drifting spores animate while visible (gated by theme + zoom inside).
       // (Frozen with the other ambient animations under the lean map — see updateAmbientIdle.)
       const sporesDirty = this.sporesField.update(
-        dt * (this.ambientIntervalMs === Infinity ? 0 : this.ambientEnergy),
+        dt * (this.ambientFrozen() ? 0 : this.ambientEnergy),
         this.camera.controls.target,
         this.camera.getView().zoom
       );
@@ -1606,7 +1614,7 @@ class HereBeDragonsImpl implements HereBeDragons {
       // a few more times behind it (see SplatsLayer.holdForSwap). Bounded by the layer, and only
       // started with no frame left unfinished on the GPU (pacing has just retired the done ones).
       let swapHeld = false;
-      if (willRender && this.splats.holdForSwap(this.frameFences.length === 0)) {
+      if (willRender && this.splats.holdForSwap(this.frameFences.length === 0, this.reprojection)) {
         willRender = false;
         this.needsRender = true;
         rs.swapHeld++;
@@ -1649,11 +1657,11 @@ class HereBeDragonsImpl implements HereBeDragons {
           && now - this.lastCameraMotionMs < HereBeDragonsImpl.SPLATS_MOTION_WINDOW_MS
           && stepAutoMotionResolution(this.autoMotionRes, this.smoothedFrameMs, this.autoMotionResFrameMs)) {
           this.autoMotionRes = null;
-          if (this.effectivePixelRatio > HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP) {
+          if (this.effectivePixelRatio > this.motionPixelRatioCap()) {
             logger.info(
               `auto motion resolution: smoothed moving frame ${this.smoothedFrameMs.toFixed(1)} ms ≥ ` +
               `${this.autoMotionResFrameMs} ms → moving frames render at ` +
-              `${HereBeDragonsImpl.MOTION_PIXEL_RATIO_CAP}×, the picture at rest stays ${this.effectivePixelRatio}×`
+              `${this.motionPixelRatioCap()}×, the picture at rest stays ${this.effectivePixelRatio}×`
             );
             this.applyDynamicResolution(true);
             this.autoDowngradeFrameCount = 0;
@@ -2561,6 +2569,12 @@ class HereBeDragonsImpl implements HereBeDragons {
    * mid-lean. At 0 the layers are ticked with `dt = 0` and report nothing dirty — the map draws
    * no frame at all until the next interaction, when the breeze picks up again over half a second.
    */
+  /** The ambient animations change nothing on screen under the splat overlay: frozen by the lean
+   *  map, or suspended with the rest of the basemap by `hideBasemap: true`. */
+  private ambientFrozen(): boolean {
+    return this.ambientIntervalMs === Infinity || (this.splats.hasTiles() && this.splats.isHidingBasemap());
+  }
+
   private updateAmbientIdle(now: number, dtS: number): void {
     // The lean map has frozen the ambient layers (updateAmbientThrottle: a swaying tree is not
     // worth re-rasterising every resident splat), so the energy changes nothing on screen — yet
@@ -2568,7 +2582,7 @@ class HereBeDragonsImpl implements HereBeDragons {
     // crossing: measured 19 full-resolution renders of 80–175 ms on a still Intel Iris, and a
     // GPU queue the next gesture's first frame then waited behind. It resumes from where it
     // stands when the overlay goes.
-    if (this.ambientIntervalMs === Infinity) return;
+    if (this.ambientFrozen()) return;
     const energy = stepAmbientEnergy(this.ambientEnergy, {
       now,
       lastActivityMs: Math.max(this.lastCameraMotionMs, this.lastPointerActivityMs),

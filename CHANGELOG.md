@@ -70,6 +70,25 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.
   closed. A 30 s watchdog on every decode (tiles, lite twins, full upgrades) now turns that into an
   ordinary tile failure: the slot is freed, the mesh disposed, the tile retried and, after three
   tries, given up on.
+- **Review fixes before release** (an adversarial review of the diff; each has a regression test
+  that fails on the code before it): the settle dissolve no longer fades into a frame drawn before
+  Spark has re-sorted the detail back in (`isDetailSettled` waits for a sort of a set generated
+  after the readmission — the detail used to pop in after the fade on every drag release; the same
+  wait now covers motion thinning restored at rest); a tile faded for motion is restored whatever
+  role it has later (a zoom-in across a level mid-gesture used to leave the new cover invisible for
+  good, and every later settle held to its 700 ms cap); the cover's quadrants come back in the same
+  tick as the detail (no doubled first rest frame, one sort instead of two); slow motion with full
+  detail no longer doubles the cover under it; a cover parent still dissolving in keeps its detail
+  drawn; detail lands in motion where no cover tile shows its ground (a missing cover, a partial
+  pyramid); with the lite twins on, nothing lands while moving, as before; the swap hold does not
+  wait for a sort when the map cannot present reprojected ticks (`performance.reprojection:
+  false`); the map holds its last moving frame over deferred landings on 1× displays too; the
+  underlay's builds wait while a gesture holds the build gate, coalesce over 400 ms (it is the far
+  field, and seen) with its original two fetches in flight; the ambient easing stays quiet under
+  `hideBasemap: true`; a dropped final decode phase no longer leaves a stale pending entry that
+  held every basemap build batch for its full coalesce window; a discarded full-version upgrade
+  disposes its mesh; and the capture-target lookup, the promised-eviction set and the cover-parent
+  lookups no longer allocate on every tick.
 - Measured method and numbers: docs/splats-performance.md §14.
 
 ## 0.13.0 — nothing at rest, no stalls in hand

@@ -57,7 +57,7 @@ const BASE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads'];
 
 const DEFAULT_BASE_ZOOM = 12;
 const DEFAULT_BASE_CACHE_CAP = 32;
-const MAX_IN_FLIGHT = 4;
+const MAX_IN_FLIGHT = 2;
 /** Working-set padding around the camera target tile, in z-tile units. A
  *  z12 tile is ~1/6 the ground footprint of a z11, so PAD 2 (5×5) restores
  *  the coverage the old z11 PAD 1 (3×3) gave AND extends it — enough to fill
@@ -115,9 +115,9 @@ interface QueuedBuild {
   queuedAt: number;
 }
 
-/** Burst: how long a decoded tile waits for the rest of its streaming batch before building anyway.
- *  Long, because under the splat overlay the underlay is not seen at all. */
-const BURST_COALESCE_MS = 1200;
+/** Burst: how long a decoded tile waits for the rest of its streaming batch before building anyway
+ *  (the main grid's window: the underlay is the far field beyond the splat tiles, so it is seen). */
+const BURST_COALESCE_MS = 400;
 
 export class BaseTileManager {
   private cache: TileCache;
@@ -172,12 +172,14 @@ export class BaseTileManager {
    * decoded tile then waits up to BURST_COALESCE_MS for the rest of its batch while fetches and
    * decodes are still in flight, and the batch builds (and redraws) once. Measured on an Intel Iris
    * at 2x: base tiles landing one at a time cost a 130–170 ms frame each, ~7 of them over the
-   * seconds after a load, on a map standing still.
+   * seconds after a load, on a map standing still. `suspendBuilds`: a gesture is live — builds wait.
    */
-  update(forced = false, burst = false): void {
+  update(forced = false, burst = false, suspendBuilds = false): void {
     if (this.disposed) return;
     this.eager = burst;
-    this.drainBuilds(burst);
+    // A live gesture holds every build, like the main grid's (a batch built in the gesture's first
+    // frame is exactly the frame the gate protects); the batch lands when the gate opens.
+    if (!suspendBuilds) this.drainBuilds(burst);
     this.frameCount++;
     if (!forced && this.frameCount % DISPATCH_INTERVAL !== 0) return;
     this.dispatch();

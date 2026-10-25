@@ -734,14 +734,23 @@ export class TileManager {
         z, x, y, data, originLat, originLon, wantedLayers, this.pitchedRoofs,
         (response) => {
           if (this.disposed) return;
+          // Dropping the LAST phase of a decode: nothing will build this tile, so it must leave
+          // `pending` (or, when an earlier phase is still queued, count as queued) — a stale
+          // 'decoding' entry pinned `isStreaming()` and made the burst drain wait out its full
+          // coalesce window after every pan.
+          const drop = (): void => {
+            if (!response.final || this.pending.get(key)?.status !== 'decoding') return;
+            if (this.applyQueue.some((it) => it.key === key)) this.pending.set(key, { status: 'queued' });
+            else this.pending.delete(key);
+          };
           // The grid was suspended (camera zoomed out past the cutoff) while
           // this decode was in flight — drop it so it doesn't queue a build
           // for a tile that's no longer wanted.
-          if (this.mainSuspended) return;
+          if (this.mainSuspended) return drop();
           // A reload happened after this decode was dispatched — its layer set
           // is stale; drop it (the tile has been re-requested under the new gen).
-          if (gen !== this.generation) return;
-          if (!this.isInKeepZone(x, y)) return;
+          if (gen !== this.generation) return drop();
+          if (!this.isInKeepZone(x, y)) return drop();
           // `queued` only once the LAST phase is in: the buildings phase of a two-phase decode is
           // still on its way after the first, and the burst drain must know (see decodesAhead).
           if (response.final) this.pending.set(key, { status: 'queued' });

@@ -42,9 +42,6 @@ interface TargetSet {
   blend: THREE.WebGLRenderTarget | null;
 }
 
-/** A render target's size as a map key (see `dissolveFroms`). */
-const sizeKey = (t: { width: number; height: number }): string => `${t.width}x${t.height}`;
-
 export class Composer {
   private renderer: Renderer;
   private scene: THREE.Scene;
@@ -108,7 +105,7 @@ export class Composer {
    *  gesture start keeps the last still frame at the REST scale's size (see captureHeldFrame) — one
    *  target each, so neither capture resizes the other's. Resizing one back and forth cost 55 ms
    *  of main thread at every gesture start and ~20 ms at every settle (WebKit, 2880×1800). */
-  private readonly dissolveFroms = new Map<string, THREE.WebGLRenderTarget>();
+  private readonly dissolveFroms: THREE.WebGLRenderTarget[] = [];
   private dissolveActive = false;
   private dissolveT = 0;
   /** `dissolveFrom` holds a frame captured for REPROJECTION across a resize (see captureHeldFrame);
@@ -350,8 +347,8 @@ export class Composer {
       this.sets.delete(scale);
     }
     // So are the captured frames (of the old sizes): the next capture allocates afresh.
-    for (const t of this.dissolveFroms.values()) t.dispose();
-    this.dissolveFroms.clear();
+    for (const t of this.dissolveFroms) t.dispose();
+    this.dissolveFroms.length = 0;
     this.dissolveFrom = null;
     this.applyActiveSize(width, height);
     this.sceneTexValid = false;
@@ -434,7 +431,8 @@ export class Composer {
     const s = Number.isFinite(scale) && scale > 0 ? Math.min(scale, 1) : 1;
     const set = this.sets.get(s);
     return !!set && !!set.blend && !!this.active.blend
-      && this.dissolveFroms.has(sizeKey(set.color)) && this.dissolveFroms.has(sizeKey(this.active.color));
+      && this.findDissolveFrom(set.color.width, set.color.height) !== null
+      && this.findDissolveFrom(this.active.color.width, this.active.color.height) !== null;
   }
 
   /**
@@ -511,10 +509,16 @@ export class Composer {
     return true;
   }
 
+  /** The capture target of exactly `w` × `h`, or null (a linear scan of two or three: called on
+   *  every idle tick, so no key strings). */
+  private findDissolveFrom(w: number, h: number): THREE.WebGLRenderTarget | null {
+    for (const t of this.dissolveFroms) if (t.width === w && t.height === h) return t;
+    return null;
+  }
+
   /** The capture target for a frame of `w` × `h` (one per size, never resized — see dissolveFroms). */
   private ensureDissolveFrom(w: number, h: number): THREE.WebGLRenderTarget {
-    const key = `${w}x${h}`;
-    let target = this.dissolveFroms.get(key);
+    let target = this.findDissolveFrom(w, h);
     if (!target) {
       target = new THREE.WebGLRenderTarget(w, h, {
         type: THREE.HalfFloatType,
@@ -523,10 +527,11 @@ export class Composer {
         depthBuffer: false,
         stencilBuffer: false
       });
-      this.dissolveFroms.set(key, target);
+      this.dissolveFroms.push(target);
     }
     return target;
   }
+
 
   /** Blend factor of the running dissolve: 0 = the captured frame, 1 = the live picture. */
   setDissolveT(t: number): void {
@@ -1037,8 +1042,8 @@ export class Composer {
     this.tiltShiftTargets?.[1].dispose();
     this.tiltShiftTargets?.[2].dispose();
     this.tiltShift.dispose();
-    for (const t of this.dissolveFroms.values()) t.dispose();
-    this.dissolveFroms.clear();
+    for (const t of this.dissolveFroms) t.dispose();
+    this.dissolveFroms.length = 0;
     this.dissolveFrom = null;
     this.dissolve.dispose();
     this.reproject.dispose();

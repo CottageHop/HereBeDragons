@@ -23,7 +23,9 @@ export interface SplatsLayerLike {
   /** Whether the camera is moving — motion LoD (see `SplatsLayer.setCameraMoving`). */
   setCameraMoving?(moving: boolean): void;
   /** Skip drawing this frame: a motion-LoD swap is sorting (see `SplatsLayer.holdForSwap`). */
-  holdForSwap?(gpuIdle: boolean): boolean;
+  holdForSwap?(gpuIdle: boolean, canWaitForSort?: boolean): boolean;
+  /** Splat landings are queued for the next frame at rest. */
+  hasDeferredLandings?(): boolean;
   /** Motion LoD is drawing the lite meshes. */
   isDrawingLite?(): boolean;
   /** The composer's internal render scale (see `SplatsLayer.setRenderScale`). */
@@ -235,8 +237,13 @@ export class SplatsController {
 
   /** The overlay asks the map to hold its picture this frame (motion-LoD swap in flight).
    *  `gpuIdle`: the map has no unfinished frame on the GPU (a hold only starts from one). */
-  holdForSwap(gpuIdle: boolean): boolean {
-    return this.current?.holdForSwap?.(gpuIdle) ?? false;
+  holdForSwap(gpuIdle: boolean, canWaitForSort = true): boolean {
+    return this.current?.holdForSwap?.(gpuIdle, canWaitForSort) ?? false;
+  }
+
+  /** Splat landings are queued for the next frame at rest (false with no layer). */
+  hasDeferredLandings(): boolean {
+    return this.current?.hasDeferredLandings?.() ?? false;
   }
 
   /** At-rest detail to draw while the camera still moves, 0‥1 (the end of a glide). */
