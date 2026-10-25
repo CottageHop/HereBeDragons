@@ -4,6 +4,47 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased — the satellite map holds still, and moves without landing
+
+- **A still satellite map draws nothing.** With splat tiles resident every redraw is a full splat
+  frame (80–170 ms at 2× on an Intel Iris in Safari), and four things kept asking for one on a map
+  nobody was touching: the ambient wind's energy easing after each gesture or pointer crossing
+  (~19 frames per interaction, although the lean map had frozen those layers); the far-zoom
+  underlay's tiles, applied one at a time straight from the decode worker (one frame each, every
+  ~400 ms for seconds after a load); the basemap's own tiles trickling in two per frame under an
+  "over budget" gate that the splat frame itself kept shut; and the basemap's tile reveal and
+  building grow-in animations playing under imagery that hides them. Measured on the Coeur
+  d'Alene demo at zoom 15 in headless WebKit at 2×: 41 renders in the 5 s after a load → 0; 19
+  renders in the 6 s after a gesture → 0. Under the overlay the ambient energy no longer requests
+  frames; both tile managers build in bursts — a decoded tile waits (≤ 400 ms, the underlay
+  ≤ 1.2 s) for the rest of its streaming batch and the batch builds and redraws once; the
+  underlay's builds happen in the frame, not in the worker callback; and basemap tiles reveal and
+  land in place at once (`CoverageField.setInstant`, spawn animations snapped). The reveal mask
+  is also no longer baked twice per animated frame (`tickCutout` for the frame's second pass).
+- **Detail tiles no longer land mid-gesture.** With motion LoD off (the default since 0.12),
+  decoded detail tiles landed one per frame while the camera moved — each a new Spark mapping (a
+  regenerate, a sort, and a texture upload that costs ~50 ms of main thread on WebKit): 90–130 ms
+  frames in the middle of a pan. While the camera moves only cover tiles and imagery land now;
+  detail waits for the first frame at rest, which is the frame the settle dissolve holds — so the
+  landing's stall is drawn behind the held picture and never seen (the overlay's rest threshold
+  and dynamic resolution's now agree at 180 ms, and `isDetailSettled` keeps the hold up until
+  those landings have sorted). Without a cover level, or with nothing on screen, detail lands as
+  it comes.
+- **Abandoned tile loads are aborted.** A level switch, a zoom-out or a rebuild used to leave every
+  in-flight fetch running to completion — holding its connection and one of the four in-flight
+  slots for a download nobody would decode (3.4 MB a tile locally; up to 25 s each on a cold
+  GitHub Pages CDN). Loads carry an `AbortController` now; a `fetchTile` override receives the
+  signal, and an abort is not counted against the tile.
+- **Room for a load is promised, not taken.** Making room for a tile about to be fetched dropped
+  the resident tiles it displaces at once — a hole in the picture (the coarse cover showing
+  through) for the 300–600 ms the fetch and decode take, and a Spark re-sort mid-pan for a tile
+  that was not there yet. The displaced tiles are promised to the load and give way when it
+  lands, in the same frame.
+- Per-frame housekeeping on a still map allocates nothing: the levels in play and the desired
+  tile window are computed once per tick, the fades walk the maps in place, and the distance
+  cutoff is resolved once per frame.
+- Measured method and numbers: docs/splats-performance.md §14.
+
 ## 0.13.0 — nothing at rest, no stalls in hand
 
 - **A map nobody is touching draws nothing.** The wind in the trees and grass, the shoreline

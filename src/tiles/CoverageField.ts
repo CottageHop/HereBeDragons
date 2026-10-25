@@ -234,6 +234,8 @@ export class CoverageField {
   private cutFeather = DEFAULT_UNION_FEATHER;
   /** The pushed tiles changed since the last bake. */
   private cutDirty = false;
+  /** `setInstant`: the reveal is snapped (no growth) while the splat overlay is resident. */
+  private instant = false;
   /** Texel bounding box of what is baked into G (x0 > x1 = nothing). */
   private cutBox = { x0: 1, y0: 1, x1: 0, y1: 0 };
   /** G-channel re-bakes so far (tests / HUD). */
@@ -574,7 +576,42 @@ export class CoverageField {
   // -------------------------------------------------------------------------
 
   private animated(): boolean {
-    return this.cfg.enabled && this.cfg.growMs > 0;
+    return this.cfg.enabled && this.cfg.growMs > 0 && !this.instant;
+  }
+
+  /**
+   * Snap the reveal for as long as `on` holds: tiles land settled and leave at once, no growth.
+   * For when the splat overlay is resident — its imagery hides the vector tiles it covers, and
+   * every animated frame of theirs re-rasterised a million splats. Membership, the mask's shape
+   * and the cut-out are untouched; `growMs` is kept for when the animation comes back.
+   */
+  setInstant(on: boolean): void {
+    if (on === this.instant) return;
+    this.instant = on;
+    if (!on) return;
+    // Whatever is mid-growth is simply there; whatever is leaving is gone.
+    for (const [key, p] of this.presence) {
+      if (p.outMs !== null) this.presence.delete(key);
+      else p.inMs = -Infinity;
+    }
+    this.live.clear();
+    this.animating = false;
+    this.invalidate();
+  }
+
+  /**
+   * Bake only the cut-out (`setCutout` since the last tick) — the second pass of a frame, after
+   * `tick()` has advanced the reveal: the splat overlay reports its union after the tile
+   * manager's update, and the two must be drawn from the same instant. Never re-bakes the reveal.
+   */
+  tickCutout(): boolean {
+    if (this.cutMode === 0 || !this.cutDirty || !this.hasCentre || Number.isNaN(this.x0)) return false;
+    const changed = this.bakeCutout(false);
+    if (changed && this.texture) {
+      this.texture.needsUpdate = true;
+      this.bakeCount++;
+    }
+    return changed;
   }
 
   private get cells(): number {

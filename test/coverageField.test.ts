@@ -786,3 +786,81 @@ describe('CoverageField cut-out channel (G)', () => {
     expect((cov.uCoverageTex.value as THREE.DataTexture).format).toBe(THREE.RGFormat);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Under the splat overlay: an instant reveal, and a cut-out pass of its own
+// ---------------------------------------------------------------------------
+
+describe('CoverageField under the splat overlay', () => {
+  const SZ = 16;
+  const S = lonLatToTile(LON, LAT, SZ);
+  const settled = (at: (x: number, y: number) => UnionPresence | undefined, x: number, y: number) => {
+    const out = new Float64Array(16);
+    const g = unionTileValues({ x, y, inMs: -Infinity, outMs: null }, at, 0, 0, out);
+    return { g, values: out };
+  };
+  const lone = settled(() => undefined, S.x, S.y);
+  const centre = (p: Projection, z: number, x: number, y: number): [number, number] => {
+    const r = tileWorldRect(p, z, x, y);
+    return [(r.xMin + r.xMax) / 2, (r.zMin + r.zMax) / 2];
+  };
+  function makeCut(radius = 7) {
+    const t = make(true, radius);
+    t.field.setCutoutReserved(true);
+    t.field.setCutoutMode(1);
+    t.field.setCentre(Z, C.x, C.y);
+    return t;
+  }
+
+  it('setInstant: tiles land at full size and leave at once; growth resumes when it lifts', () => {
+    const t = make(true);
+    t.field.setInstant(true);
+    t.field.addTile(Z, C.x, C.y);
+    expect(t.field.tick()).toBe(true);      // one bake…
+    expect(t.field.active).toBe(false);     // …and nothing animating
+    expect(t.field.coverageAt(...centre(t.projection, Z, C.x, C.y))).toBeCloseTo(1, 1);
+    t.advance(16);
+    expect(t.field.tick()).toBe(false);
+    t.field.removeTile(Z, C.x, C.y);
+    expect(t.field.tileCount).toBe(0);      // gone, no leaving ghost to animate
+    t.field.tick();
+    expect(t.field.active).toBe(false);
+    t.field.setInstant(false);
+    t.field.addTile(Z, C.x + 1, C.y);
+    expect(t.field.tick()).toBe(true);
+    expect(t.field.active).toBe(true);      // growing again, as configured
+  });
+
+  it('setInstant mid-animation snaps what is growing to full size and drops what is leaving', () => {
+    const t = make(true);
+    t.field.addTile(Z, C.x, C.y);
+    t.field.tick();
+    t.field.addTile(Z, C.x + 1, C.y);
+    t.field.tick();
+    t.field.removeTile(Z, C.x + 1, C.y);
+    t.field.tick();
+    expect(t.field.active).toBe(true);
+    t.field.setInstant(true);
+    expect(t.field.tick()).toBe(true);
+    expect(t.field.active).toBe(false);
+    expect(t.field.tileCount).toBe(1);
+    expect(t.field.coverageAt(...centre(t.projection, Z, C.x, C.y))).toBeCloseTo(1, 1);
+    expect(t.field.coverageAt(...centre(t.projection, Z, C.x + 1, C.y))).toBe(0);
+  });
+
+  it('tickCutout bakes a freshly pushed cut-out and never advances the reveal', () => {
+    const t = makeCut();
+    t.field.addTile(Z, C.x, C.y);
+    expect(t.field.tick()).toBe(true);       // the reveal starts growing
+    expect(t.field.active).toBe(true);
+    expect(t.field.tickCutout()).toBe(false); // nothing pushed since: nothing to bake
+    t.field.setCutout([{ z: SZ, x: S.x, y: S.y, ...lone }], FEATHER);
+    expect(t.field.tickCutout()).toBe(true);
+    expect(t.field.cutoutAt(...centre(t.projection, SZ, S.x, S.y))).toBe(1);
+    expect(t.field.tickCutout()).toBe(false); // clean again
+    expect(t.field.active).toBe(true);        // the growing tile was left to the full tick
+    t.field.setCutout([], FEATHER);
+    expect(t.field.tickCutout()).toBe(true);
+    expect(t.field.cutoutAt(...centre(t.projection, SZ, S.x, S.y))).toBe(0);
+  });
+});

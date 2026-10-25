@@ -471,14 +471,28 @@ export interface SplatsLayerDeps {
   loadSpark?: () => Promise<SparkModule>;
   /**
    * Override for the tile fetch. Resolve `null` for "no tile here" (HTTP 404),
-   * reject for a transient failure. Defaults to `fetch` → ArrayBuffer.
+   * reject for a transient failure. Defaults to `fetch` → ArrayBuffer. `signal` is aborted when
+   * the layer stops wanting the tile (a level switch, a zoom-out, a rebuild): a fetch that honours
+   * it frees its connection and its in-flight slot at once instead of finishing a download nobody
+   * will decode.
    */
-  fetchTile?: (url: string) => Promise<ArrayBuffer | null>;
+  fetchTile?: (url: string, signal?: AbortSignal) => Promise<ArrayBuffer | null>;
   /**
    * Override for the imagery load. Resolve `null` for "no image". Defaults to
    * `THREE.TextureLoader` (sRGB, mipmapped, max anisotropy).
    */
   loadTexture?: (url: string) => Promise<THREE.Texture | null>;
+}
+
+/** A tile load in flight (see `loadTile`). */
+interface PendingLoad {
+  /** Load token: a stale one means the result is discarded. */
+  token: number;
+  z: number;
+  /** Aborts the fetch when the load is abandoned (null where `AbortController` is missing). */
+  abort: AbortController | null;
+  /** Resident tiles that give way when this load LANDS (see the eviction in `updateWindow`). */
+  promisedKeys: readonly string[];
 }
 
 /** Everything one resident splat tile owns. */
@@ -598,8 +612,10 @@ function defaultPrefersReducedMotion(): boolean {
   }
 }
 
-async function defaultFetchTile(url: string): Promise<ArrayBuffer | null> {
-  const res = await fetch(url);
+const EMPTY_KEYS: readonly string[] = [];
+
+async function defaultFetchTile(url: string, signal?: AbortSignal): Promise<ArrayBuffer | null> {
+  const res = await fetch(url, signal ? { signal } : undefined);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.arrayBuffer();
@@ -669,7 +685,7 @@ export class SplatsLayer {
   private readonly cutout: SplatCutoutSink | null;
   private readonly getAspect: (() => number) | null;
   private readonly loadSpark: () => Promise<SparkModule>;
-  private readonly fetchTile: (url: string) => Promise<ArrayBuffer | null>;
+  private readonly fetchTile: (url: string, signal?: AbortSignal) => Promise<ArrayBuffer | null>;
   private readonly loadTexture: (url: string) => Promise<THREE.Texture | null>;
   private readonly clock: () => number;
   private readonly prefersReducedMotion: () => boolean;
@@ -811,8 +827,18 @@ export class SplatsLayer {
   private readonly tiles = new Map<string, SplatTile>();
   /** key → load token. A stale in-flight load whose token no longer matches
    *  (cleared by `clearTiles`, or superseded) discards its result. */
-  private readonly pending = new Map<string, { token: number; z: number }>();
+  private readonly pending = new Map<string, PendingLoad>();
   private loadSeq = 0;
+  /** `levelsInPlay()`, cached until the active or cover level changes (asked many times a tick). */
+  private readonly liveLevels: { za: number | null; cz: number | null; set: Set<number> } =
+    { za: NaN, cz: NaN, set: new Set() };
+  /** `desiredTiles()` per level for the current tick (cleared with `centerCache`). */
+  private readonly desiredCache = new Map<
+    number,
+    { cz: number | null; r: number; za: number | null; set: Map<string, { z: number; x: number; y: number }> }
+  >();
+  /** Scratch for `tickLevelFade`'s per-quadrant child fades. */
+  private readonly quadScratch = [0, 0, 0, 0];
   private readonly missing = new Set<string>();
   /**
    * Consecutive load/decode failures per tile, and the keys that have given up.
@@ -830,13 +856,14 @@ export class SplatsLayer {
   private inFlight = 0;
   /**
    * Scene mutations that force a GPU upload on the next render — decoded
-   * tiles (`applyQueue`) and landed imagery textures (`imageryQueue`).
-   * Exactly ONE entry runs per `update()`, tiles before imagery, so a burst
-   * of landings never stacks several multi-MB uploads into a single frame
-   * (the same per-frame cap the basemap's tile builds use). Each entry
+   * tiles (`applyQueue`, each tagged with its level) and landed imagery
+   * textures (`imageryQueue`). At rest every entry runs in one `update()`
+   * (one Spark re-sort for the batch, behind the map's held frame); while the
+   * camera moves one entry runs per `update()`, cover tiles and imagery
+   * before detail — see the landing policy in `updateWindow`. Each entry
    * re-validates its tile when it runs.
    */
-  private readonly applyQueue: Array<() => void> = [];
+  private readonly applyQueue: Array<{ run: () => void; z: number }> = [];
   private readonly imageryQueue: Array<() => void> = [];
   /** Decoded tiles waiting in `applyQueue` (their splat counts are known and
    *  already count against the budget). */
@@ -1797,7 +1824,7 @@ export class SplatsLayer {
       }
       const full = mesh;
       mesh = null;
-      this.applyQueue.push(() => {
+      this.applyQueue.push({ z: tile.z, run: () => {
         if (stale()) {
           full.dispose();
           tile.upgrade = 'none';
@@ -1821,7 +1848,7 @@ export class SplatsLayer {
         tile.root.add(liteMesh);
         this.applyMeshVisibility(tile);
         this.onSceneChange();
-      });
+      } });
       this.onSceneChange();
     } catch (err) {
       tile.upgrade = 'missing';
@@ -2052,6 +2079,9 @@ export class SplatsLayer {
    * mapping still waiting for its first sort. The map's settle dissolve fades in once this holds.
    */
   isDetailSettled(): boolean {
+    // Not before the layer has been told the camera rests: the landings held during the gesture
+    // happen on that tick, and the settle dissolve's hold must still be up to hide them.
+    if (this.cameraMoving || this.landedNow || this.landedPrev || this.applyQueue.length > 0) return false;
     if (this.drawingLite || (this.thinDyno?.value ?? 1) < 1) return false;
     const sr = this.sparkRenderer;
     return !sr?.current || !sr.display || sr.current.mappingVersion === sr.display.mappingVersion;
@@ -2127,6 +2157,7 @@ export class SplatsLayer {
     this.centerLon = focusLL.lon;
     this.centerLat = focusLL.lat;
     this.centerCache.clear();
+    this.desiredCache.clear();
 
     // Pyramid level: what the camera zoom asks for (with hysteresis), unless
     // that level has no tiles here. A change starts a level transition.
@@ -2176,20 +2207,22 @@ export class SplatsLayer {
     // start. At REST every decoded tile and image waiting lands in this one frame: a landing
     // re-sorts Spark's whole set and the sort's readback blocks the main thread for a frame's
     // worth of GPU queue, so a batch costs one stall where one-per-frame cost one per tile
-    // (measured: six stalls, 190–410 ms, over a seven-tile load). The uploads themselves are
-    // cheap now (ImageBitmap imagery ~6 ms, a tile's splat textures ~3 ms). In MOTION one per
-    // frame, as before, and with motion LoD on the splat tiles do not land at all: a landing mid-
-    // pan is a hitch; they land the moment the map settles. Imagery (a texture swap) still lands,
-    // and so does a splat tile when nothing is on screen yet: an empty view is worse than a hitch.
+    // (measured: six stalls, 190–410 ms, over a seven-tile load). The map holds its last moving
+    // frame while this happens (the settle dissolve), so the stall is never seen. In MOTION one
+    // landing per frame, and only what fills the view: cover tiles and imagery. A DETAIL tile
+    // waits for the map to settle — its landing is a new Spark mapping (a regenerate, a sort and
+    // a 5 MB texture upload: a 90–130 ms frame mid-pan on an Intel Iris in Safari, measured) and
+    // the cover already shows that ground, so a hitch buys nothing the eye can use while it moves.
+    // Without a cover level, or with nothing on screen yet, detail lands as it comes: an empty
+    // view is worse than a hitch.
     this.retryParked();
     this.landedPrev = this.landedNow;
     let landed = 0;
     if (!this.cameraMoving) {
-      for (const fn of this.applyQueue.splice(0)) { fn(); landed++; }
+      for (const entry of this.applyQueue.splice(0)) { entry.run(); landed++; }
       for (const fn of this.imageryQueue.splice(0)) { fn(); landed++; }
     } else {
-      const deferSplats = this.motionLodActive() && this.tiles.size > 0;
-      const landing = (deferSplats ? undefined : this.applyQueue.shift()) ?? this.imageryQueue.shift();
+      const landing = this.nextMotionLanding() ?? this.imageryQueue.shift();
       if (landing) { landing(); landed++; }
     }
     this.landedNow = landed > 0;
@@ -2204,6 +2237,17 @@ export class SplatsLayer {
     // not when its fetch starts, so they keep the picture whole meanwhile.
     let projected = this.committedSplats() - this.oldLevelSplats() + this.pending.size * estimate;
     for (const p of this.parked.values()) projected += p.tile.splats;
+    // Tiles promised to a load in flight (see the eviction below): still drawn, but spoken for.
+    const promised = new Set<string>();
+    for (const p of this.pending.values()) {
+      for (const k of p.promisedKeys) {
+        if (promised.has(k)) continue;
+        const t = this.tiles.get(k) ?? this.queuedTiles.get(k);
+        if (!t) continue;
+        promised.add(k);
+        projected -= t.splats;
+      }
+    }
     // Full versions on their way to promoted lite tiles (see loadFull) hold their room already.
     for (const t of this.tiles.values()) if (t.upgrade === 'loading') projected += fullGuess(t.splats, estimate) - t.splats;
     // Most relevant first: by where each tile falls on SCREEN, not by grid
@@ -2255,25 +2299,51 @@ export class SplatsLayer {
       ) {
         continue;
       }
+      let promise: { keys: string[] } | null = null;
       if (cz !== coverZ) {
-        // Most-relevant-first residency: make room by dropping resident tiles
-        // that matter clearly LESS than this one; if that still doesn't
-        // fit, the window beyond here is out of budget — stop (the first tile
-        // is always tried so a budget below one tile still shows something).
+        // Most-relevant-first residency: make room by giving up resident tiles that matter
+        // clearly LESS than this one; if that still doesn't fit, the window beyond here is out
+        // of budget — stop (the first tile is always tried so a budget below one tile still
+        // shows something). The room is PROMISED, not taken: those tiles stay drawn until this
+        // load lands and `commitTile` evicts for real, so the picture keeps no hole open for the
+        // 300–600 ms a fetch and decode take, and Spark is not re-sorted mid-pan for a tile that
+        // is not here yet.
         if (this.activeLevelTiles() + this.pending.size > 0) {
-          projected -= this.evictFartherThan(cz, x, y, projected + estimate - budget);
+          const keys: string[] = [];
+          projected -= this.evictFartherThan(cz, x, y, projected + estimate - budget, { skip: promised, out: keys });
           if (projected + estimate > budget) break;
+          if (keys.length > 0) promise = { keys };
         }
         projected += estimate;
       }
       started++;
-      void this.loadTile(cz, x, y, key);
+      void this.loadTile(cz, x, y, key, false, promise);
     }
     this.updatePrefetch(view.zoom, z, started === 0 && this.parked.size === 0);
     // A landing above may have started (or, with `levelFadeMs: 0`, finished)
     // a dissolve: apply it in this very frame.
     this.tickLevelFade();
     this.flushCutout();
+  }
+
+  /**
+   * The next scene mutation to run on a MOVING frame (the landing policy in `updateWindow`): the
+   * first queued landing that is not a detail tile over a resident cover — cover tiles, and detail
+   * when there is no cover level to show that ground meanwhile or nothing is on screen yet. Detail
+   * landings stay queued, in order, for the first frame at rest.
+   */
+  private nextMotionLanding(): (() => void) | undefined {
+    const q = this.applyQueue;
+    if (q.length === 0) return undefined;
+    const cz = this.coverZ();
+    const deferDetail = cz !== null && this.tiles.size > 0;
+    for (let i = 0; i < q.length; i++) {
+      const entry = q[i];
+      if (deferDetail && entry.z !== cz) continue;
+      q.splice(i, 1);
+      return entry.run;
+    }
+    return undefined;
   }
 
   /**
@@ -2302,7 +2372,7 @@ export class SplatsLayer {
     // SET, not `activeZ`: with a cover level in play this line used to kill every cover load on
     // every tick — fetched, decoded, abandoned, fetched again (measured: 9 requests a frame).
     const live = this.levelsInPlay();
-    for (const [key, p] of this.pending) if (!live.has(p.z) && p.z !== pz) this.pending.delete(key);
+    for (const [key, p] of this.pending) if (!live.has(p.z) && p.z !== pz) this.dropPending(key, p);
     if (pz === null || !idle || this.inFlight >= this.maxInFlight) return;
     const n = 2 ** pz;
     const x = Math.min(n - 1, Math.max(0, Math.floor(this.frame.cx * n)));
@@ -2371,9 +2441,19 @@ export class SplatsLayer {
     this.onSceneChange();
   }
 
-  private async loadTile(z: number, x: number, y: number, key: string, prefetch = false): Promise<void> {
+  /** Forget a load in flight: its result is discarded (the `live()` check in `loadTile`) and its
+   *  fetch aborted, so the connection and the in-flight slot are free at once. */
+  private dropPending(key: string, p: PendingLoad): void {
+    this.pending.delete(key);
+    p.abort?.abort();
+  }
+
+  private async loadTile(
+    z: number, x: number, y: number, key: string, prefetch = false, promised: { keys: string[] } | null = null
+  ): Promise<void> {
     const token = ++this.loadSeq;
-    this.pending.set(key, { token, z });
+    const abort = typeof AbortController === 'function' ? new AbortController() : null;
+    this.pending.set(key, { token, z, abort, promisedKeys: promised?.keys ?? EMPTY_KEYS });
     this.inFlight++;
     // Cover tiles come from the lite pyramid when there is one: coarse, mostly far, and the whole
     // window of them is resident — a third of the splats for the same ground is the right price.
@@ -2394,7 +2474,7 @@ export class SplatsLayer {
     // load that outlives its level discards its result here too.
     const live = (): boolean => !this.disposed && this.pending.get(key)?.token === token;
     try {
-      const data = await this.fetchTile(url);
+      const data = await this.fetchTile(url, abort?.signal);
       if (!live()) return dropEarly();
       if (!data) {
         this.missing.add(key);
@@ -2448,6 +2528,9 @@ export class SplatsLayer {
       this.failures.delete(key);
       this.commitTile(key, tile);
     } catch (err) {
+      // Abandoned while in flight (a level switch, the view moved on, a rebuild): the stale token
+      // — and the aborted fetch — say so. Not a failure of the tile.
+      if (!live()) return dropEarly();
       // A tile failure is non-fatal, but it must not be retried forever — see `failures`.
       const n = (this.failures.get(key) ?? 0) + 1;
       this.failures.set(key, n);
@@ -2489,7 +2572,7 @@ export class SplatsLayer {
       // there), staggered one landing per frame like everything else.
       this.parked.delete(key);
       this.queuedTiles.set(key, tile);
-      this.applyQueue.push(() => this.admitTile(key, tile));
+      this.applyQueue.push({ z: tile.z, run: () => this.admitTile(key, tile) });
       return;
     }
     const budget = this.currentMaxSplats();
@@ -2534,7 +2617,7 @@ export class SplatsLayer {
     // Commit to the budget now; the scene attach (which forces the splat
     // texture upload on the next render) is staggered one per frame.
     this.queuedTiles.set(key, tile);
-    this.applyQueue.push(() => this.admitTile(key, tile));
+    this.applyQueue.push({ z: tile.z, run: () => this.admitTile(key, tile) });
   }
 
   /** Retry the parked tiles (room may have been released since). */
@@ -2929,20 +3012,26 @@ export class SplatsLayer {
    * Ordering is NOT meaningful here: the load loop still ranks by screen relevance separately.
    */
   private desiredTiles(z: number): Map<string, { z: number; x: number; y: number }> {
+    // Cached for the tick (it is asked per resident tile by `isCovered`); the centre changes
+    // once a tick, the radius and the cover level rarely, and the result is never mutated.
+    const cz = this.coverZ();
+    const r = this.currentRadius();
+    const cached = this.desiredCache.get(z);
+    if (cached && cached.cz === cz && cached.r === r && cached.za === this.activeZ) return cached.set;
     const c = this.centreAt(z);
     const out = new Map<string, { z: number; x: number; y: number }>();
-    for (const [x, y] of enumerateTileWindow(z, c.x, c.y, this.currentRadius())) {
+    for (const [x, y] of enumerateTileWindow(z, c.x, c.y, r)) {
       out.set(tileKey(z, x, y), { z, x, y });
     }
     // The cover level's own window under it (see coverZ): the same radius at a level whose
     // tiles are twice the size, so it reaches well past the detail window.
-    const cz = this.coverZ();
     if (cz !== null && z === this.activeZ) {
       const cc = this.centreAt(cz);
-      for (const [x, y] of enumerateTileWindow(cz, cc.x, cc.y, this.currentRadius())) {
+      for (const [x, y] of enumerateTileWindow(cz, cc.x, cc.y, r)) {
         out.set(tileKey(cz, x, y), { z: cz, x, y });
       }
     }
+    this.desiredCache.set(z, { cz, r, za: this.activeZ, set: out });
     return out;
   }
 
@@ -2988,7 +3077,7 @@ export class SplatsLayer {
     // set hold more than one level later without this reconciliation quietly dropping the
     // coarse half of a cut (see docs/per-tile-lod.md).
     const live = this.levelsInPlay();
-    for (const [key, p] of this.pending) if (!live.has(p.z)) this.pending.delete(key);
+    for (const [key, p] of this.pending) if (!live.has(p.z)) this.dropPending(key, p);
     for (const [key, tile] of this.queuedTiles) {
       if (live.has(tile.z)) continue;
       this.queuedTiles.delete(key);
@@ -3023,9 +3112,18 @@ export class SplatsLayer {
    * comparison against `activeZ` would silently discard the coarse tiles of the far field.
    */
   private levelsInPlay(): Set<number> {
-    if (this.activeZ === null) return new Set();
+    // One Set, rebuilt only when the levels change: this is asked several times per tick by the
+    // residency and budget code, and a fresh Set each time was per-frame garbage on a still map.
+    // Callers only read it.
+    const za = this.activeZ;
     const cz = this.coverZ();
-    return cz === null ? new Set([this.activeZ]) : new Set([this.activeZ, cz]);
+    const c = this.liveLevels;
+    if (c.za !== za || c.cz !== cz) {
+      c.za = za;
+      c.cz = cz;
+      c.set = za === null ? new Set() : cz === null ? new Set([za]) : new Set([za, cz]);
+    }
+    return c.set;
   }
 
   /**
@@ -3155,8 +3253,9 @@ export class SplatsLayer {
   private evictFarTiles(): void {
     if (!this.hasCenter) return;
     let changed = false;
+    const animated = this.unionAnimated();
     for (const [key, tile] of this.tiles) {
-      const p = this.unionAnimated() ? this.presence.get(key) : undefined;
+      const p = animated ? this.presence.get(key) : undefined;
       // A tile stays while it is in range of ITS level's window. (A tile of
       // the old level whose ground the active level has taken over does not
       // shrink out — it DISSOLVES out: `tickLevelFade`.)
@@ -3196,7 +3295,11 @@ export class SplatsLayer {
    * nothing qualifies, or `needed` ≤ 0). Never touches tiles that matter as
    * much — the caller decides what to do when the freed amount falls short.
    */
-  private evictFartherThan(z: number, x: number, y: number, needed: number): number {
+  private evictFartherThan(
+    z: number, x: number, y: number, needed: number,
+    /** Dry run: skip these keys, record what WOULD go in `out`, drop nothing (see `updateWindow`). */
+    promise?: { skip: Set<string>; out: string[] }
+  ): number {
     if (needed <= 0 || !this.hasCenter || this.activeZ === null) return 0;
     const f = this.frame;
     // Score the incoming tile at ITS OWN level: with a cut in play the candidate may be coarser
@@ -3205,12 +3308,12 @@ export class SplatsLayer {
     const candidates: Array<{ key: string; tile: SplatTile; d: number }> = [];
     const live = this.levelsInPlay(); // hoisted: both loops below run every frame
     for (const [key, tile] of this.tiles) {
-      if (!live.has(tile.z) || tile.evicting || this.isCoverTile(tile)) continue;
+      if (!live.has(tile.z) || tile.evicting || this.isCoverTile(tile) || promise?.skip.has(key)) continue;
       const d = tileScreenRelevance(tile.z, tile.tileX, tile.tileY, f);
       if (d > mine) candidates.push({ key, tile, d });
     }
     for (const [key, tile] of this.queuedTiles) {
-      if (!live.has(tile.z) || this.isCoverTile(tile)) continue;
+      if (!live.has(tile.z) || this.isCoverTile(tile) || promise?.skip.has(key)) continue;
       const d = tileScreenRelevance(tile.z, tile.tileX, tile.tileY, f);
       if (d > mine) candidates.push({ key, tile, d });
     }
@@ -3222,10 +3325,15 @@ export class SplatsLayer {
     let freed = 0;
     for (const c of candidates) {
       if (freed >= needed) break;
-      this.dropTile(c.key, c.tile);
+      if (promise) {
+        promise.skip.add(c.key);
+        promise.out.push(c.key);
+      } else {
+        this.dropTile(c.key, c.tile);
+      }
       freed += c.tile.splats;
     }
-    if (freed > 0) {
+    if (freed > 0 && !promise) {
       this.syncBasemapHidden();
       this.onSceneChange();
     }
@@ -3398,9 +3506,10 @@ export class SplatsLayer {
     // run them now so their textures don't linger until the next frames.
     for (const fn of this.imageryQueue.splice(0)) fn();
     this.overBudget.clear();
-    // Dropping the pending tokens makes in-flight loads discard their result
-    // (see the `live()` re-checks in loadTile).
-    this.pending.clear();
+    // Dropping the pending tokens makes in-flight loads discard their result (see the `live()`
+    // re-checks in loadTile) — and aborts their fetches, so the connections and in-flight slots
+    // are free for the next source at once.
+    for (const [key, p] of this.pending) this.dropPending(key, p);
     // Keep `missing` — those tiles genuinely have no data; re-checking wastes
     // requests. (Cleared only on dispose.)
     this.syncBasemapHidden();
@@ -3448,7 +3557,7 @@ export class SplatsLayer {
     // cuts: there the vector map fades out as the imagery fades in.
     const list = this.cutoutScratch;
     let n = 0;
-    for (const tile of [...this.tiles.values(), ...this.groundGhosts.values()]) {
+    const write = (tile: SplatTile): void => {
       const entry = (list[n] ??= { z: 0, x: 0, y: 0, g: 1, fade: 1 });
       entry.fade = tile.fadeU ? tile.fadeU.uLevelFade.value : 1;
       entry.z = tile.z;
@@ -3467,7 +3576,9 @@ export class SplatsLayer {
         entry.g = 1;
       }
       n++;
-    }
+    };
+    for (const tile of this.tiles.values()) write(tile);
+    for (const tile of this.groundGhosts.values()) write(tile);
     list.length = n;
     sink.setCutout(list, this.union.feather);
     sink.setCutoutMode(this.keepLabels ? 1 : 2);
@@ -3717,8 +3828,9 @@ export class SplatsLayer {
       this.overSinceMs = null;
     }
 
-    const quad = [0, 0, 0, 0];
-    for (const [key, tile] of [...this.tiles]) {
+    // (Deleting the entry being visited is safe in a Map walk; nothing here removes another.)
+    const quad = this.quadScratch;
+    for (const [key, tile] of this.tiles) {
       const leaving = tile.evicting || (this.presence.get(key)?.outMs ?? null) !== null;
       let target: 0 | 1 = 1;
       if (leaving) {
@@ -3776,7 +3888,7 @@ export class SplatsLayer {
       if (tile.fade.dir !== 0 || g.dir !== 0) fading = true;
     }
 
-    for (const [key, ghost] of [...this.groundGhosts]) {
+    for (const [key, ghost] of this.groundGhosts) {
       const g = ghost.groundFade;
       let gp = fadeProgress(g, now, ms);
       if (g.dir < 0 || gp < 1 || this.coverGroundReady(ghost, now)) gp = fadeToward(g, 0, now, ms);
@@ -4047,10 +4159,10 @@ export class SplatsLayer {
    * low / mobile tiers a non-zero floor applies even when the governor is idle.
    */
   private effectiveSplatMaxDistance(): number {
+    // The smallest cutoff in effect, 0 for none (no array: this runs every frame).
     const tierFloor = this.lowTier ? this.lowTierSplatMaxDistance : 0;
-    const candidates = [this.splatMaxDistance, this.governor.splatMaxDistance, tierFloor]
-      .filter((d) => d > 0);
-    return candidates.length ? Math.min(...candidates) : 0;
+    const pick = (cur: number, d: number): number => (d > 0 && (cur === 0 || d < cur) ? d : cur);
+    return pick(pick(pick(0, this.splatMaxDistance), this.governor.splatMaxDistance), tierFloor);
   }
 
   /** Ease the overlay out over the band above `minZoom` (and back in): splats and ground. */
@@ -4078,6 +4190,7 @@ export class SplatsLayer {
     cam.updateMatrixWorld();
     cameraFrustum(cam, this.cullFrustum);
     let changed = false;
+    const cutoff = this.effectiveSplatMaxDistance();
     for (const tile of this.tiles.values()) {
       const visible = tileVisible(
         this.cullFrustum,
@@ -4086,7 +4199,6 @@ export class SplatsLayer {
       // Past `splatMaxDistance` the splats go but the imagery stays: same photograph, and an
       // individual splat is under a pixel out there, so only the relief is lost.
       let splatsVisible = visible;
-      const cutoff = this.effectiveSplatMaxDistance();
       if (visible && cutoff > 0) {
         this.cullBox.getCenter(this.cullCentre);
         if (this.cullCentre.distanceTo(cam.position) > cutoff) splatsVisible = false;

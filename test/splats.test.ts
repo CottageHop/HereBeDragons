@@ -507,7 +507,7 @@ interface Harness {
   layer: SplatsLayer;
   scene: THREE.Scene;
   view: CameraView;
-  fetchTile: ReturnType<typeof vi.fn<(url: string) => Promise<ArrayBuffer | null>>>;
+  fetchTile: ReturnType<typeof vi.fn<(url: string, signal?: AbortSignal) => Promise<ArrayBuffer | null>>>;
   loadTexture: ReturnType<typeof vi.fn<(url: string) => Promise<THREE.Texture | null>>>;
   hidden: boolean[];
   sceneChanges: () => number;
@@ -529,7 +529,7 @@ function makeLayer(
   // Looking straight down: the window is centred on the target and tiles rank
   // by ground distance (tilted views are covered by the relevance tests).
   const view: CameraView = { lat: ORIGIN.lat, lon: ORIGIN.lon, zoom: 17, tilt: 0, bearing: 0 };
-  const fetchTile = vi.fn<(url: string) => Promise<ArrayBuffer | null>>(async () => new ArrayBuffer(10));
+  const fetchTile = vi.fn<(url: string, signal?: AbortSignal) => Promise<ArrayBuffer | null>>(async () => new ArrayBuffer(10));
   const loadTexture = vi.fn<(url: string) => Promise<THREE.Texture | null>>(
     async () => new THREE.Texture()
   );
@@ -3603,5 +3603,138 @@ describe('SplatsLayer cover level', () => {
     const back = (h.layer as unknown as { tiles: Map<string, T> }).tiles.get(z15[0][0]);
     expect(back?.lite?.visible).toBe(true);
     expect(back?.mesh.visible).toBe(false);
+  });
+});
+
+describe('SplatsLayer: landings in motion, abandoned loads, promised room', () => {
+  const levels = (h: Harness): Record<number, number> => {
+    const out: Record<number, number> = {};
+    for (const m of h.meshes()) {
+      const z = Number(m.name.replace('splat-tile:', '').split('/')[0]);
+      out[z] = (out[z] ?? 0) + 1;
+    }
+    return out;
+  };
+
+  it('while the camera moves, cover tiles land one per frame and detail waits for rest (an empty view takes the first tile)', async () => {
+    const h = makeLayer({ cover: true });
+    h.view.zoom = 16.5;
+    await h.layer.open();
+    h.layer.update(); // every fetch starts (maxInFlight 100)
+    await settle();
+    await settle(); // everything decoded and queued, nothing on screen yet
+    expect(h.layer.getStats().tiles).toBe(0);
+    h.layer.setCameraMoving(true);
+    // An empty view: the first queued landing — the detail tile under the view focus — goes in.
+    h.layer.update();
+    expect(levels(h)).toEqual({ 16: 1 });
+    // From then on, one landing per update and only the cover: the eight other detail tiles
+    // (a Spark re-sort and a texture upload each) stay queued for the first frame at rest.
+    for (let i = 0; i < 12; i++) h.layer.update();
+    expect(levels(h)).toEqual({ 15: 9, 16: 1 });
+    expect(h.layer.isDetailSettled()).toBe(false); // the map's settle hold must stay up for them
+    h.layer.setCameraMoving(false);
+    h.layer.update(); // at rest: the whole batch in one frame (one re-sort)
+    expect(levels(h)).toEqual({ 15: 9, 16: 9 });
+    expect(h.layer.getStats().tiles).toBe(18);
+  });
+
+  it('without a cover level detail still lands in motion, one per frame (an empty cover would be a hole)', async () => {
+    const h = makeLayer({ cover: false });
+    await h.layer.open();
+    h.layer.update();
+    await settle();
+    h.layer.setCameraMoving(true);
+    h.layer.update();
+    h.layer.update();
+    expect(h.layer.getStats().tiles).toBe(2);
+  });
+
+  it('an abandoned load is aborted: the fetch signal fires, its slot is free for the new level at once, and it is no failure', async () => {
+    const h = makeLayer({ maxInFlight: 2 });
+    const signals: AbortSignal[] = [];
+    h.fetchTile.mockImplementation((_url, signal) => new Promise<ArrayBuffer | null>((_resolve, reject) => {
+      // A fetch that honours the signal (never resolves on its own here).
+      if (signal) {
+        signals.push(signal);
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }
+    }));
+    await h.layer.open();
+    h.layer.update();
+    expect(h.fetchTile).toHaveBeenCalledTimes(2); // two in flight, no slot for more
+    h.layer.update();
+    expect(h.fetchTile).toHaveBeenCalledTimes(2);
+    expect(signals.map((s) => s.aborted)).toEqual([false, false]);
+    // The level switches under them: both loads are abandoned — and aborted.
+    h.view.zoom = 15.5;
+    h.layer.update();
+    expect(signals.map((s) => s.aborted)).toEqual([true, true]);
+    await settle(); // the rejections land: the slots are released
+    h.layer.update();
+    expect(h.fetchTile).toHaveBeenCalledTimes(4);
+    expect(h.fetchTile.mock.calls.slice(2).every(([u]) => u.includes('/15/'))).toBe(true);
+    // An abort is not a tile failure: nothing is counted against the tiles, none given up on.
+    const priv = h.layer as unknown as { missing: Set<string>; failures: Map<string, number> };
+    expect(priv.missing.size).toBe(0);
+    expect(priv.failures.size).toBe(0);
+    // Zooming out below minZoom clears everything — the loads in flight too.
+    h.view.zoom = 12;
+    h.layer.update();
+    expect(signals.slice(2).map((s) => s.aborted)).toEqual([true, true]);
+    await settle();
+    expect(priv.failures.size).toBe(0);
+  });
+
+  it('room for a load is promised, not taken: the tile it displaces stays drawn until the load lands', async () => {
+    const h = makeLayer({ maxSplats: 35, maxInFlight: 1 });
+    await h.layer.open();
+    await drain(h, 20);
+    expect(h.layer.getStats().tiles).toBe(3);
+    const before = new Set(h.meshes().map((m) => m.name));
+    expect(before.has('splat-tile:16/11613/23927')).toBe(true); // the west edge
+    // Hold the next fetch, so the moment between "started" and "landed" can be seen.
+    const held: Array<(v: ArrayBuffer | null) => void> = [];
+    h.fetchTile.mockImplementation(() => new Promise<ArrayBuffer | null>((resolve) => { held.push(resolve); }));
+    // One tile east: the new centre must come in and the old west edge give way to it.
+    h.view.lon += 360 / 2 ** 16;
+    h.layer.update();
+    expect(held.length).toBe(1);
+    expect(h.fetchTile.mock.calls.at(-1)![0]).toBe('https://tiles.test/16/11615/23927.spz');
+    // The load has started — and nothing has been dropped for it: the picture stays whole.
+    expect(h.layer.getStats()).toMatchObject({ tiles: 3, splats: 30 });
+    expect(new Set(h.meshes().map((m) => m.name))).toEqual(before);
+    h.layer.update();
+    expect(new Set(h.meshes().map((m) => m.name))).toEqual(before);
+    // It lands: the west edge goes in the same frame, residency stays three tiles.
+    held.splice(0).forEach((r) => r(new ArrayBuffer(10)));
+    await settle();
+    h.layer.update();
+    const names = new Set(h.meshes().map((m) => m.name));
+    expect(h.layer.getStats()).toMatchObject({ tiles: 3, splats: 30 });
+    expect(names.has('splat-tile:16/11615/23927')).toBe(true);
+    expect(names.has('splat-tile:16/11613/23927')).toBe(false);
+  });
+
+  it('isDetailSettled: not while the camera moves, nor on the frames a landing takes', async () => {
+    const h = makeLayer();
+    await h.layer.open();
+    await drain(h, 6);
+    expect(h.layer.isDetailSettled()).toBe(true);
+    h.layer.setCameraMoving(true);
+    expect(h.layer.isDetailSettled()).toBe(false);
+    h.layer.setCameraMoving(false);
+    expect(h.layer.isDetailSettled()).toBe(true);
+    // A tile landing: the frame it lands on and the one after are transition frames.
+    h.view.lon += 360 / 2 ** 16;
+    h.layer.update();
+    await settle();
+    h.layer.update(); // lands
+    expect(h.layer.isDetailSettled()).toBe(false);
+    h.layer.update();
+    expect(h.layer.isDetailSettled()).toBe(false);
+    h.layer.update();
+    h.layer.update();
+    expect(h.layer.isDetailSettled()).toBe(true);
   });
 });

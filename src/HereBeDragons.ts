@@ -351,8 +351,12 @@ class HereBeDragonsImpl implements HereBeDragons {
   private frameFences: { sync: WebGLSync; at: number }[] = [];
   /** Frames allowed on the GPU at once under pacing (see gpuStillBusy). */
   private static readonly FRAMES_IN_FLIGHT = 1;
-  /** Motion LoD: full-detail splat tiles come back this long after the camera's last move. */
-  private static readonly MOTION_LOD_SETTLE_MS = 250;
+  /** The splat overlay counts the camera as at rest this long after its last move: full detail
+   *  comes back and the landings held during the gesture happen. The SAME instant dynamic
+   *  resolution snaps back and the settle dissolve starts holding the last moving frame (see
+   *  DYNAMIC_RES_SETTLE_MS), so the landing frame — texture uploads, a Spark re-sort — is drawn
+   *  behind that held frame and never seen. */
+  private static readonly MOTION_LOD_SETTLE_MS = 180;
   /** Never hold a frame back longer than this, whatever the fence says (lost context, driver). */
   private static readonly PACING_MAX_HOLD_MS = 100;
   /** `splats.leanMap` in effect right now: splats showing, the map's own effects parked. */
@@ -381,9 +385,10 @@ class HereBeDragonsImpl implements HereBeDragons {
    * How long after the last camera move / tile stream to wait before snapping
    * back to full resolution. Long enough that the damping inertia tail and the
    * brief gaps between tile builds don't trigger a premature (and costly)
-   * re-allocation to full res mid-interaction.
+   * re-allocation to full res mid-interaction. Tied to the splat overlay's own
+   * rest threshold on purpose — see MOTION_LOD_SETTLE_MS.
    */
-  private static readonly DYNAMIC_RES_SETTLE_MS = 180;
+  private static readonly DYNAMIC_RES_SETTLE_MS = HereBeDragonsImpl.MOTION_LOD_SETTLE_MS;
   /**
    * Whether scroll/zoom smoothness is prioritized over tile loading by
    * suspending mesh construction during a gesture. See the
@@ -1464,8 +1469,16 @@ class HereBeDragonsImpl implements HereBeDragons {
         msSinceMotion: now - this.lastCameraMotionMs
       });
       // tileManager / layers report whether they changed the rendered scene.
-      const tileDirty = this.tileManager.update(false, frameBudgetOk, suspendBuilds);
-      this.baseTileManager?.update(false);
+      // Under the splat overlay every basemap redraw is a full splat frame (80 ms at 2x on an Intel
+      // Iris), so at rest the basemap's pending tile builds land in ONE frame instead of two per
+      // frame trickling over seconds (measured: 41 redraws in 3.3 s after a load, each a full
+      // frame) — and its tiles reveal at once rather than growing in under the imagery that
+      // hides them (another full frame per animated tick).
+      const splatsResident = this.splats.hasTiles();
+      this.coverage.setInstant(splatsResident);
+      const burstBuilds = splatsResident && !suspendBuilds;
+      const tileDirty = this.tileManager.update(false, frameBudgetOk, suspendBuilds, burstBuilds);
+      this.baseTileManager?.update(false, burstBuilds);
       // Ambient idle: the wind dies down once the user has been idle a while, so a still map
       // draws nothing at all (see updateAmbientIdle). Decided before the layers tick.
       this.updateAmbientIdle(now, dt);
@@ -1493,10 +1506,12 @@ class HereBeDragonsImpl implements HereBeDragons {
       this.lastSplatsLite = splatsLite;
       this.syncLeanMap();
       // `hideBasemap: 'covered'`: the overlay has just reported this frame's
-      // rounded union — bake it NOW (a no-op when nothing moved), so the
+      // rounded union — bake the CUT-OUT now (a no-op when nothing moved), so the
       // vector map's cut and the imagery it complements are drawn from the
-      // same instant rather than a frame apart.
-      if (this.coverage.tick()) this.needsRender = true;
+      // same instant rather than a frame apart. The reveal itself was advanced
+      // by the tile manager's update above; a second full tick here re-baked it
+      // on every animated frame.
+      if (this.coverage.tickCutout()) this.needsRender = true;
       this.syncMiniature();
       if (this.tickTiltShift(dt)) this.needsRender = true;
       this.updateSplatsGrade(dt * 1000);
@@ -1505,8 +1520,9 @@ class HereBeDragonsImpl implements HereBeDragons {
       // changes; a rebuild is a visible scene change.
       const bridgesDirty = this.bridgesManager.update(dt);
       // Drifting spores animate while visible (gated by theme + zoom inside).
+      // (Frozen with the other ambient animations under the lean map — see updateAmbientIdle.)
       const sporesDirty = this.sporesField.update(
-        dt * this.ambientEnergy,
+        dt * (this.ambientIntervalMs === Infinity ? 0 : this.ambientEnergy),
         this.camera.controls.target,
         this.camera.getView().zoom
       );
@@ -2538,6 +2554,13 @@ class HereBeDragonsImpl implements HereBeDragons {
    * no frame at all until the next interaction, when the breeze picks up again over half a second.
    */
   private updateAmbientIdle(now: number, dtS: number): void {
+    // The lean map has frozen the ambient layers (updateAmbientThrottle: a swaying tree is not
+    // worth re-rasterising every resident splat), so the energy changes nothing on screen — yet
+    // its easing used to request a frame on every tick for ~1.7 s after each gesture or pointer
+    // crossing: measured 19 full-resolution renders of 80–175 ms on a still Intel Iris, and a
+    // GPU queue the next gesture's first frame then waited behind. It resumes from where it
+    // stands when the overlay goes.
+    if (this.ambientIntervalMs === Infinity) return;
     const energy = stepAmbientEnergy(this.ambientEnergy, {
       now,
       lastActivityMs: Math.max(this.lastCameraMotionMs, this.lastPointerActivityMs),

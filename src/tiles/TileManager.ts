@@ -117,6 +117,10 @@ const ZOOM_HYSTERESIS = 0.4;
  * Capping the count spreads uploads across frames so no single render stalls.
  */
 const MAX_BUILDS_PER_FRAME = 2;
+/** Time budget for a BURST drain (see `update`): every pending build in one frame, within this. */
+const BURST_APPLY_BUDGET_MS = 20;
+/** Burst: how long a decoded tile waits for the rest of its streaming batch before building anyway. */
+export const BURST_COALESCE_MS = 400;
 
 /**
  * Default camera zoom below which the main z14 grid is SUSPENDED — its tiles
@@ -228,7 +232,8 @@ export interface TileManagerDeps {
 }
 
 interface PendingState {
-  status: 'fetching' | 'decoding';
+  /** `queued`: decoded, its phases wait in `applyQueue` to be built. */
+  status: 'fetching' | 'decoding' | 'queued';
 }
 
 /** One worker-phase response queued for off-thread mesh construction. */
@@ -237,6 +242,8 @@ interface PendingApply {
   z: number;
   x: number;
   y: number;
+  /** `performance.now()` when it was queued (the burst drain coalesces by age). */
+  queuedAt: number;
   /**
    * Whichever layers were requested for the tile (mirrors the worker's
    * `wantedLayers`). Used to know which entries in `geometries` to read.
@@ -281,6 +288,8 @@ export class TileManager {
    * dispatch loop respects on-the-wire concurrency.
    */
   private inFlightFetches = 0;
+  /** The last dispatch sweep left wanted tiles unrequested (no slot, or a 429 cooldown). */
+  private moreToDispatch = false;
   /** Attempts so far for tiles that failed at least once. Cleared on success. */
   private failCounts = new Map<string, number>();
   /** Earliest `performance.now()` at which a failed tile may be retried. */
@@ -403,9 +412,9 @@ export class TileManager {
    *   the camera is idle, the loop skips `composer.render()` entirely so the
    *   GPU isn't pegged on a static scene.
    */
-  update(forced = false, frameBudgetOk = true, suspendBuilds = false): boolean {
+  update(forced = false, frameBudgetOk = true, suspendBuilds = false, burstBuilds = false): boolean {
     if (this.disposed) return false;
-    const dirty = this.updateTiles(forced, frameBudgetOk, suspendBuilds);
+    const dirty = this.updateTiles(forced, frameBudgetOk, suspendBuilds, burstBuilds);
     // Tile reveal: advance the rounded-union mask LAST, so tiles built and the
     // centre tile recorded this frame are in the texture the frame draws with.
     // Runs even while the main grid is suspended (ejected tiles shrink out).
@@ -413,7 +422,15 @@ export class TileManager {
     return this.deps.coverage?.tick() ? true : dirty;
   }
 
-  private updateTiles(forced: boolean, frameBudgetOk: boolean, suspendBuilds: boolean): boolean {
+  /**
+   * `burstBuilds`: build the pending tiles in ONE frame (within BURST_APPLY_BUDGET_MS), ignoring
+   * the per-frame count cap and the over-budget trickle — and let a decoded tile wait up to
+   * BURST_COALESCE_MS for the rest of its batch while fetches and decodes are still in flight.
+   * For when each REDRAW is what costs: with the splat overlay resident every frame re-rasterises
+   * a million splats (80–170 ms on an Intel Iris at 2x), so one frame with all the builds beats a
+   * frame per tile as they trickle in (measured: 17 redraws over the 2 s after a pan).
+   */
+  private updateTiles(forced: boolean, frameBudgetOk: boolean, suspendBuilds: boolean, burstBuilds = false): boolean {
 
     // Spawn animations are cheap (a few position writes) and matter for
     // visual smoothness, so they advance every frame. The apply-queue drain
@@ -434,13 +451,16 @@ export class TileManager {
       // Mesh construction is the only gesture-gated work: skip it entirely
       // while a gesture is live (suspendBuilds), otherwise drain on the frame
       // budget plus the guaranteed over-budget trickle.
-      if (!suspendBuilds && (frameBudgetOk || this.frameCount % BUDGET_THROTTLE_INTERVAL === 0)) {
-        if (this.drainApplyQueue()) dirty = true;
+      if (!suspendBuilds && (burstBuilds || frameBudgetOk || this.frameCount % BUDGET_THROTTLE_INTERVAL === 0)) {
+        const coalesce = burstBuilds && this.applyQueue.length > 0 && this.decodesAhead()
+          && performance.now() - this.applyQueue[0].queuedAt < BURST_COALESCE_MS;
+        if (!coalesce && this.drainApplyQueue(burstBuilds)) dirty = true;
       }
       // Spawn drop-in animations are cheap position writes for already-built
       // tiles — keep them advancing even mid-gesture so in-flight reveals
-      // don't freeze.
-      if (this.advanceSpawnAnimations()) dirty = true;
+      // don't freeze. Under the splat overlay (burst) they snap instead: the
+      // imagery hides them, and every animated tick was a full splat frame.
+      if (this.advanceSpawnAnimations(burstBuilds)) dirty = true;
     }
 
     // PolyMap pattern: the heavy visibility recompute + dispatch + evict
@@ -576,6 +596,7 @@ export class TileManager {
       this.rateLimitedUntil = null;
     }
 
+    this.moreToDispatch = false;
     for (const c of candidates) {
       const key = tileKey(z, c.x, c.y);
       if (this.missing.has(key)) continue;
@@ -585,8 +606,12 @@ export class TileManager {
       if (attempts >= MAX_TILE_RETRIES) continue;
       const wait = this.retryAfter.get(key);
       if (wait != null && wait > now) continue;
+      // Wanted tiles are left for a later sweep: parked until the cooldown ends, or until an
+      // in-flight slot frees. The burst drain reads this as "more are coming" (see decodesAhead).
+      this.moreToDispatch = true;
       if (cooling) break; // park the rest of the sweep until cooldown ends
       if (this.inFlightFetches >= MAX_IN_FLIGHT) break;
+      this.moreToDispatch = false;
       void this.loadTile(z, c.x, c.y);
     }
 
@@ -607,6 +632,14 @@ export class TileManager {
    */
   isStreaming(): boolean {
     return this.inFlightFetches > 0 || this.applyQueue.length > 0 || this.pending.size > 0;
+  }
+
+  /** More phases are on their way to `applyQueue`: tiles fetching or decoding, or wanted tiles
+   *  the last dispatch sweep had no slot for yet. */
+  private decodesAhead(): boolean {
+    if (this.inFlightFetches > 0 || this.moreToDispatch) return true;
+    for (const p of this.pending.values()) if (p.status !== 'queued') return true;
+    return false;
   }
 
   /**
@@ -709,13 +742,17 @@ export class TileManager {
           // is stale; drop it (the tile has been re-requested under the new gen).
           if (gen !== this.generation) return;
           if (!this.isInKeepZone(x, y)) return;
+          // `queued` only once the LAST phase is in: the buildings phase of a two-phase decode is
+          // still on its way after the first, and the burst drain must know (see decodesAhead).
+          if (response.final) this.pending.set(key, { status: 'queued' });
           this.applyQueue.push({
             key,
             z: response.z,
             x: response.x,
             y: response.y,
             layers: wantedLayers,
-            geometries: response.geometries
+            geometries: response.geometries,
+            queuedAt: performance.now()
           });
         }
       );
@@ -1039,15 +1076,16 @@ export class TileManager {
    * (large viewports, many layers + buildings) would stall the queue.
    */
   /** @returns true if at least one tile mesh was built (scene changed). */
-  private drainApplyQueue(): boolean {
+  private drainApplyQueue(burst = false): boolean {
     let processed = 0;
     const start = performance.now();
-    const budget = this.applyBudgetMs;
+    const budget = burst ? Math.max(this.applyBudgetMs, BURST_APPLY_BUDGET_MS) : this.applyBudgetMs;
+    const cap = burst ? Infinity : MAX_BUILDS_PER_FRAME;
     while (this.applyQueue.length > 0) {
       // Stop on EITHER the time budget (CPU build cost) or the per-frame count
       // cap (bounds GPU uploads next render) — whichever hits first. At least
       // one tile always builds so the queue can't stall.
-      if (processed > 0 && (processed >= MAX_BUILDS_PER_FRAME || performance.now() - start >= budget)) break;
+      if (processed > 0 && (processed >= cap || performance.now() - start >= budget)) break;
       // Pick the item whose tile is closest to the camera target, instead
       // of the front of the queue. `lastCenterX/Y` is the screen-center
       // tile coord (refreshed by the dispatch sweep ≥ once every
@@ -1078,7 +1116,7 @@ export class TileManager {
         this.pending.delete(item.key);
         continue;
       }
-      this.applyPhase(item);
+      this.applyPhase(item, burst);
       processed++;
     }
     return processed > 0;
@@ -1089,7 +1127,8 @@ export class TileManager {
    * Creates the group + adds it to the scene on first sight; subsequent
    * phases for the same tile find the cached group and add into it in place.
    */
-  private applyPhase(item: PendingApply): void {
+  /** `snap`: no spawn animation — the tile and its buildings land in their final place (burst). */
+  private applyPhase(item: PendingApply, snap = false): void {
     let tile = this.cache.get(item.z, item.x, item.y);
     if (!tile) {
       tile = new TileGroup(item.z, item.x, item.y);
@@ -1104,7 +1143,7 @@ export class TileManager {
       // the slab is hidden under the ground plane for the first ~1.6 s, so
       // the disc would grow over nothing). `tileReveal: { rise: true }` keeps
       // both.
-      if (this.spawnDurationMs > 0 && this.slabRise()) {
+      if (!snap && this.spawnDurationMs > 0 && this.slabRise()) {
         tile.position.y = -TILE_SPAWN_DROP;
         tile.userData.spawnStartMs = performance.now();
       } else {
@@ -1131,6 +1170,7 @@ export class TileManager {
       // enough that we're past its end, give the building mesh ITS OWN
       // spawn animation so it visibly rises from below ground.
       if (
+        !snap &&
         layerName === 'buildings' &&
         this.spawnDurationMs > 0 &&
         tile.userData.spawnStartMs === undefined
@@ -1166,9 +1206,10 @@ export class TileManager {
    * does no further work for them.
    */
   /** @returns true if at least one tile or per-mesh spawn animation is still running. */
-  private advanceSpawnAnimations(): boolean {
+  private advanceSpawnAnimations(snap = false): boolean {
     const now = performance.now();
-    const duration = this.spawnDurationMs;
+    // `snap`: finish every animation in flight this tick (one redraw), as if the duration were 0.
+    const duration = snap ? 0 : this.spawnDurationMs;
     let active = false;
     for (const [, tile] of this.cache.entries()) {
       // Tile-level animation (covers phase-1 layers — water, landuse, roads).

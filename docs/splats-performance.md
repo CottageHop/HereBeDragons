@@ -514,6 +514,73 @@ behind them).
 Manhattan tree splats (1.23 M resident at zoom 16) are the next lever: SplatMap's crown spacing
 (0.5 m) can double, a quarter of the splats for canopy that reads the same at map distance.
 
+## 14. The still map and the moving frame, measured where they are drawn (2026-10-25)
+
+User: "make a run at the performance of the splat map … clean it up and make it apple smooth. Make
+sure thread flow and processing is completely flawless."
+
+Method: the Coeur d'Alene demo tiles from the local container (`/full` + `/lite`), the user's
+framing (`lat=47.7079&lon=-116.7709&zoom=16.5&tilt=62`, capped by the overlay to zoom 15 / tilt
+45: 4 detail + 4 cover tiles, 1.52 M splats), headless WebKit 1440×900 at 2× (the user's Safari
+engine; its rAF ran at 60 Hz in some runs and 30 Hz in others, so judge counts and long frames, not
+cadence). A probe (`scratchpad pw/probe_splats.mjs`) wraps the composer, Spark's `updateInternal` /
+`driveSort` / `readbackDepth`, the layer's `admitTile`, every GL readback and texture upload, traps
+the `needsRender` setter to record WHO asks for a frame while the camera is still, and fences the
+GPU after Spark's generate, the scene draw, the post passes and each present so their GPU cost can
+be read off completion order. Windows: load, 5 s rest, a 600 ms pan with its glide, rest again.
+
+### What asked for frames on a still map
+
+Every render with splat tiles resident is a full splat frame — 80–170 ms here. Four sources, all
+found by the setter trap:
+
+| source | renders | fix |
+| --- | --- | --- |
+| ambient energy easing (`updateAmbientIdle`) after a gesture or a pointer crossing, with the ambient layers already frozen by the lean map | ~19 per interaction, 80–175 ms each | no energy easing while the layers are frozen |
+| far-zoom underlay (`BaseTileManager`) applying each decoded tile from the worker callback, 2 in flight per 10-frame sweep | ~8 after a load, every ~420 ms, 130–170 ms each | builds happen in the tick, coalesced (≤ 1.2 s) while more are coming; 4 in flight, slots refilled on completion |
+| basemap builds (`TileManager`): two per frame, and the "over budget" trickle (the splat frame itself is over budget) | 17 after a pan, 41 after a load | burst drain under the overlay: a decoded tile waits ≤ 400 ms for its batch (fetching, decoding, or unrequested after a capped sweep, or its second decode phase), then everything builds in one frame |
+| basemap tile reveal and building grow-in animations under the imagery that hides them (and the reveal mask baked twice per frame) | the rest of those | `CoverageField.setInstant` while splats are resident; spawn animations snapped; `tickCutout` for the frame's second pass |
+
+Result: renders in the 5 s after a load 41 → 0; in the 6 s after a gesture 19 → 0; the pan window
+carries 2 basemap redraws instead of 12–14.
+
+### What a landing cost mid-pan
+
+With motion LoD off, `deferSplats` was false and detail tiles landed one per frame while moving.
+Attributed: a 91–131 ms frame whose render spent 46–60 ms inside one `texSubImage` (Spark's
+packed-splat texture; Chromium does the same upload in ~3 ms), plus the mapping change's
+regenerate and sort. Detail now waits for rest; cover and imagery still land in motion. The first
+rest frame is the frame the settle dissolve holds (both thresholds 180 ms, `isDetailSettled`
+false until the landings have sorted), so the batch lands behind the held picture: measured
+`land … hold … R:63 tex:59` with nothing presented but the held frame.
+
+### What the moving frame is made of
+
+GPU fences, steady state of the pan at the 1× motion resolution, ~1.05 M active splats:
+
+| segment | GPU, ms |
+| --- | --- |
+| Spark generate (every moving frame: `viewChanged`) | 5–16 |
+| scene draw (splats + basemap + imagery grounds) | 25–48 |
+| warp present / blend present | ≤ 2 |
+
+The first three frames after ~2 s of rest cost 2–3× that (generate 18–43, scene 90–139) and
+decay over ~500 ms: a GPU clock ramp, not a software queue — the sort readback waited 180–200 ms
+behind them. Interleaved A/Bs on the pan window: a 0.75 motion resolution changed nothing (p95
+145 ms in every arm), and the governor off (no thinning, 1.5 M active) changed nothing either —
+the frame is bound by neither pixels nor the active count on this GPU.
+
+### Thread flow
+
+- Abandoned loads (a level switch, `updatePrefetch`, a zoom-out, a rebuild) kept their fetch
+  running and their in-flight slot taken until the download finished. They are aborted now
+  (`PendingLoad.abort`, the signal handed to `fetchTile`); an abort is not a failure.
+- Room for a load was taken at fetch start (a hole for 300–600 ms, a re-sort mid-pan). It is
+  promised now and taken when the load lands (`evictFartherThan` dry run, `PendingLoad.promisedKeys`).
+- `levelsInPlay()` and `desiredTiles()` are cached (one Set and one Map per tick instead of
+  dozens), `tickLevelFade` / `flushCutout` no longer copy the tile maps every frame, the distance
+  cutoff is resolved once per frame.
+
 ## 10. What is still open
 
 - Spark's one-time initialisation: ~175 ms of main thread on the overlay's first frame, once per
@@ -531,3 +598,10 @@ Manhattan tree splats (1.23 M resident at zoom 16) are the next lever: SplatMap'
   synchronously, so this stays with Spark.
 - Real devices: Safari (the `createImageBitmap` flip test picks the imagery upload path and logs
   it) and a real phone, as before.
+- The first ~500 ms of a gesture after a rest (§14): the GPU runs 2–3× slower while its clock
+  ramps, and the first sort of the moving set waits behind those frames. Nothing in the page
+  controls the clock; what would help is a cheaper first moving picture.
+- The moving frame on the Iris (§14) is ~45–60 ms whatever the resolution or the active count:
+  the levers left are the number of RESIDENT splats Spark generates each frame (the cover alone
+  in motion, generate at the sort cadence rather than every frame) and the basemap drawn under
+  the cut-out.

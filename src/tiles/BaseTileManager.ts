@@ -57,7 +57,7 @@ const BASE_LAYERS: LayerName[] = ['water', 'waterways', 'landuse', 'roads'];
 
 const DEFAULT_BASE_ZOOM = 12;
 const DEFAULT_BASE_CACHE_CAP = 32;
-const MAX_IN_FLIGHT = 2;
+const MAX_IN_FLIGHT = 4;
 /** Working-set padding around the camera target tile, in z-tile units. A
  *  z12 tile is ~1/6 the ground footprint of a z11, so PAD 2 (5×5) restores
  *  the coverage the old z11 PAD 1 (3×3) gave AND extends it — enough to fill
@@ -101,8 +101,23 @@ export interface BaseTileManagerDeps {
 }
 
 interface PendingState {
-  status: 'fetching' | 'decoding';
+  /** `queued`: decoded, waiting in `applyQueue` for the next `update()` to build it. */
+  status: 'fetching' | 'decoding' | 'queued';
 }
+
+/** A decoded base tile waiting to be built (see `update`). */
+interface QueuedBuild {
+  z: number;
+  x: number;
+  y: number;
+  geometries: Partial<Record<LayerName, LayerGeometry | null>>;
+  /** `performance.now()` when it was queued (the burst drain coalesces by age). */
+  queuedAt: number;
+}
+
+/** Burst: how long a decoded tile waits for the rest of its streaming batch before building anyway.
+ *  Long, because under the splat overlay the underlay is not seen at all. */
+const BURST_COALESCE_MS = 1200;
 
 export class BaseTileManager {
   private cache: TileCache;
@@ -114,6 +129,15 @@ export class BaseTileManager {
   private readonly zoom: number;
   private inFlightFetches = 0;
   private frameCount = 0;
+  /** The last dispatch left wanted tiles unrequested (no free slot). */
+  private moreToDispatch = false;
+  /** `burst` on the last `update()`: slots are refilled as soon as a fetch completes, so the whole
+   *  working set streams in one go and builds (and redraws) once. */
+  private eager = false;
+  /** Decoded tiles waiting to be built on the next `update()` (never from the worker callback:
+   *  a build is a GPU upload and a redraw, and belongs to the frame, not to whenever a worker
+   *  message happens to land). */
+  private readonly applyQueue: QueuedBuild[] = [];
   /** Scene group that holds every base tile. Parented under SceneRoot.three. */
   private readonly root: THREE.Group;
 
@@ -140,16 +164,28 @@ export class BaseTileManager {
   }
 
   /**
-   * Per-frame tick. Most frames are no-ops: the heavy visibility recompute
-   * runs every DISPATCH_INTERVAL frames because a z11 working set changes
-   * slowly. Returns false — base-tile arrival is signalled via the worker
-   * pool's onPhase, which calls into the parent's needsRender path itself.
+   * Per-frame tick. Decoded tiles are built here (every frame they are waiting), then — every
+   * DISPATCH_INTERVAL frames, because a z11 working set changes slowly — the visibility recompute
+   * and dispatch. A build calls the parent's `onSceneChange` (render-on-demand).
+   *
+   * `burst`: the splat overlay is resident, so every redraw re-rasterises a million splats — a
+   * decoded tile then waits up to BURST_COALESCE_MS for the rest of its batch while fetches and
+   * decodes are still in flight, and the batch builds (and redraws) once. Measured on an Intel Iris
+   * at 2x: base tiles landing one at a time cost a 130–170 ms frame each, ~7 of them over the
+   * seconds after a load, on a map standing still.
    */
-  update(forced = false): void {
+  update(forced = false, burst = false): void {
     if (this.disposed) return;
+    this.eager = burst;
+    this.drainBuilds(burst);
     this.frameCount++;
     if (!forced && this.frameCount % DISPATCH_INTERVAL !== 0) return;
+    this.dispatch();
+  }
 
+  /** The working-set recompute and fetch dispatch for the current view (see `update`). */
+  private dispatch(): void {
+    this.moreToDispatch = false;
     const view = this.deps.camera.getView();
     const center = lonLatToTile(view.lon, view.lat, this.zoom);
     const n = 2 ** this.zoom;
@@ -170,6 +206,7 @@ export class BaseTileManager {
         const wait = this.retryAfter.get(key);
         if (wait != null && wait > now) continue;
         if (this.inFlightFetches >= MAX_IN_FLIGHT) {
+          this.moreToDispatch = true;
           this.evict(center.x, center.y);
           return;
         }
@@ -200,7 +237,10 @@ export class BaseTileManager {
         z, x, y, data, originLat, originLon, BASE_LAYERS, false,
         (response) => {
           if (this.disposed) return;
-          this.applyPhase(response.z, response.x, response.y, response.geometries);
+          this.pending.set(key, { status: 'queued' });
+          this.applyQueue.push({
+            z: response.z, x: response.x, y: response.y, geometries: response.geometries, queuedAt: performance.now()
+          });
         }
       );
     } catch (err) {
@@ -213,7 +253,25 @@ export class BaseTileManager {
       logger.warn(`base tile ${key} failed (attempt ${attempts}/${MAX_TILE_RETRIES}):`, error.message);
     } finally {
       this.inFlightFetches = Math.max(0, this.inFlightFetches - 1);
+      // Eager (overlay resident): refill the slot now rather than at the next sweep, so the
+      // working set arrives as one batch instead of two tiles every ten frames.
+      if (this.eager && this.moreToDispatch && !this.disposed) this.dispatch();
     }
+  }
+
+  /** Build what has decoded (see `update`). */
+  private drainBuilds(burst: boolean): void {
+    if (this.applyQueue.length === 0) return;
+    if (burst && this.decodesAhead() && performance.now() - this.applyQueue[0].queuedAt < BURST_COALESCE_MS) return;
+    for (const item of this.applyQueue.splice(0)) this.applyPhase(item.z, item.x, item.y, item.geometries);
+  }
+
+  /** More builds are on their way to `applyQueue`: tiles fetching or decoding, or wanted tiles
+   *  the last dispatch had no slot for yet. */
+  private decodesAhead(): boolean {
+    if (this.inFlightFetches > 0 || this.moreToDispatch) return true;
+    for (const p of this.pending.values()) if (p.status !== 'queued') return true;
+    return false;
   }
 
   private applyPhase(
@@ -297,6 +355,7 @@ export class BaseTileManager {
   dispose(): void {
     this.disposed = true;
     this.cache.clear();
+    this.applyQueue.length = 0;
     this.pending.clear();
     this.missing.clear();
     this.failCounts.clear();
