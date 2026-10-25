@@ -4,7 +4,7 @@ All notable changes to `@cottagehop/here-be-dragons`.
 
 The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.13.0 — nothing at rest, no stalls in hand
 
 - **A map nobody is touching draws nothing.** The wind in the trees and grass, the shoreline
   foam and the drifting motes are continuous animations, so for as long as one was in view the map
